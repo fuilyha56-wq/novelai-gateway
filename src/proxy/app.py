@@ -4,18 +4,16 @@ NovelAI 透明反向代理网关 — 路由层。
 职责：定义路由、分发请求、调用排队门控。
 """
 
-import asyncio
 import logging
+import mimetypes
 import platform
 import subprocess
-from pathlib import Path
 
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from contextlib import asynccontextmanager
 
 from .config import settings
-from .queue import gate
 from .forwarder import forward, build_response, close_client, _CORS_HEADERS
 from .stats import record_generation
 from .openai import (
@@ -124,7 +122,8 @@ async def serve_image(filename: str):
         raise HTTPException(status_code=403, detail="Access denied")
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="图片不存在")
-    return FileResponse(filepath, media_type="image/png")
+    media_type = mimetypes.guess_type(filepath.name)[0] or "application/octet-stream"
+    return FileResponse(filepath, media_type=media_type)
 
 
 # ── OpenAI 兼容端点 ────────────────────────────────────────
