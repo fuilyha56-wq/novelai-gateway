@@ -79,6 +79,8 @@ class Settings(BaseSettings):
         - UpscaleImage  = BackendUrl + "/ai/upscale" → api.novelai.net
         - TextGenerate  = TextBackendUrl + "/ai/generate" → text.novelai.net
         """
+        if api_path == "/ai/generate-voice":
+            return f"{self.novelai_api_url}{api_path}"
         if api_path.startswith(("/ai/generate", "/ai/generate-stream")):
             return f"{self.novelai_text_url}{api_path}"
         if api_path.startswith((
