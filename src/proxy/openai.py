@@ -158,8 +158,8 @@ def _enforce_limit_model(model: str, body: dict[str, Any]) -> None:
             detail=f"-limit 模型 '{model}' 不允许 action='{action}'，仅支持 generate、img2img 或 infill",
         )
 
-    # 3. n_samples 必须为 1
-    n_samples = _safe_int(body.get("n_samples", 1), 1)
+    # 3. n_samples 必须为 1。OpenAI 兼容入口允许用 n 指定样本数。
+    n_samples = _safe_int(body.get("n_samples", body.get("n", 1)), 1)
     if n_samples != 1:
         raise HTTPException(
             status_code=400,

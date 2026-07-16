@@ -682,7 +682,7 @@ polyexponential
 | 条件 | 必须满足 |
 |---|---|
 | 动作 | `generate`、`img2img` 或 `infill` |
-| 样本数 | `n_samples=1` |
+| 样本数 | `n_samples=1`；OpenAI 字段 `n` 也必须为 `1` |
 | 步数 | `steps<=28` |
 | 像素面积 | `width*height<=1048576` |
 | 参考图 | 不允许 `reference_image`、`reference_images` |
