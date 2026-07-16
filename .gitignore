@@ -1,0 +1,56 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+.env
+images/*.png
+images/*.jpg
+images/*.jpeg
+logs/*.log
+logs/*.json
+.claude/
+.vscode/
+.idea/
+*.swp
+*.bak
+backup_src/
+uv.lock
+config/models.toml
+config/models_suggested.toml
+
+# 临时调研/测试产物，不纳入版本控制
+DESIGN.md
+_*.html
+inpaint_*_result.png
+*_result.png
+.rsh.py
+.rsh_run.py
+_test_*.py
+.test_*.py
+newapi-pricing.md
+
+# 服务器运维/调试脚本
+_check_*.sh
+_fix_*.sh
+_test_*.sh
+
+# Dart 文件（与本项目无关）
+_*.dart
+_dart_files.txt
+
+# 临时下载/工具脚本
+_download*.py
+_rsh*.py
+
+# 临时测试图片
+_test_*.png
+
+# 临时导出文件
+_tree.json
+.upload.py
+
+# 服务器连接指南（含敏感IP信息）
+SERVER_CONNECTION_GUIDE.md

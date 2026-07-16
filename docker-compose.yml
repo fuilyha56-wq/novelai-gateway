@@ -1,0 +1,36 @@
+services:
+  novelai-gateway:
+    build: .
+    image: novelai-gateway:latest
+    container_name: novelai-gateway
+    restart: unless-stopped
+    ports:
+      - "41555:41555"
+    env_file:
+      - .env
+    volumes:
+      # 配置文件（首次部署需从 .example 复制）
+      - ./config:/app/config
+      # 生成的图片持久化
+      - ./images:/app/images
+      # 日志持久化
+      - ./logs:/app/logs
+    # 代理配置（容器通过宿主机 IP 访问代理）
+    environment:
+      - http_proxy=socks5h://172.29.0.1:20170
+      - https_proxy=socks5h://172.29.0.1:20170
+      - all_proxy=socks5h://172.29.0.1:20170
+      - no_proxy=localhost,127.0.0.1,0.0.0.0
+    networks:
+      novelai-net:
+        ipv4_address: 172.29.0.2
+    # 如果不需要 Cloudflare Tunnel，可去掉 cap_add
+    cap_add:
+      - NET_ADMIN
+
+networks:
+  novelai-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24

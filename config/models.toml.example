@@ -1,0 +1,126 @@
+# ============================================
+# NovelAI Gateway 模型配置
+# ============================================
+# 复制本文件为 models.toml 并按需修改。
+# 启动时如果 models.toml 不存在，网关会自动从本文件复制一份。
+
+# ============================================
+# 全局开关
+# ============================================
+# 缺失时: image_enabled 默认 true, chat_enabled/tts_enabled 默认 false
+image_enabled = true
+# 当前持久 API Key 不具备可用的 NovelAI 文本模型；保持关闭，避免暴露必然失败的 nai-chat。
+chat_enabled = false
+tts_enabled = false
+
+# ============================================
+# 图像模型
+# ============================================
+[[image.models]]
+type = "image"
+model_identifier = "nai-v4.5-full"
+name = "nai-diffusion-4-5-full"
+
+[[image.models]]
+type = "image"
+model_identifier = "nai-v4.5-curated"
+name = "nai-diffusion-4-5-curated"
+
+[[image.models]]
+type = "image"
+model_identifier = "nai-v4.5-inpaint"
+name = "nai-diffusion-4-5-full-inpainting"
+
+# ── 限制版（-limit 后缀，不允许消耗 Anlas）──
+# 仅允许走 Opus 免费额度的文生图路径，任一超出 → HTTP 400：
+#   - n_samples = 1
+#   - steps ≤ 28
+#   - 尺寸 ≤ 1024×1024（width*height ≤ 1048576）
+#   - action = generate（非 img2img/infill）
+#   - 无 image / reference_image / reference_images
+#   - service_tier ≠ priority
+# 仅在 /v1/images/generations 端点生效；img2img/inpaint/vibe/upscale/director
+# 等端点入口直接拒绝 -limit 模型（这些操作必然消耗 Anlas）。
+# 适合给 NewAPI 渠道用作"免费额度专用"模型，倍率设为 1 即可。
+[[image.models]]
+type = "image"
+model_identifier = "nai-v4.5-full-limit"
+name = "nai-diffusion-4-5-full"
+
+[[image.models]]
+type = "image"
+model_identifier = "nai-v4.5-curated-limit"
+name = "nai-diffusion-4-5-curated"
+
+[[image.models]]
+type = "image"
+model_identifier = "nai-v4.5-inpaint-limit"
+name = "nai-diffusion-4-5-full-inpainting"
+
+[[image.models]]
+type = "image"
+model_identifier = "nai-v4-curated"
+name = "nai-diffusion-4-curated-preview"
+
+[[image.models]]
+type = "image"
+model_identifier = "nai-v3"
+name = "nai-diffusion-3"
+
+[[image.models]]
+type = "image"
+model_identifier = "nai-v3-furry"
+name = "nai-diffusion-furry-3"
+
+[[image.models]]
+type = "image"
+model_identifier = "nai-v3-inpaint"
+name = "nai-diffusion-3-inpainting"
+
+[[image.models]]
+type = "image"
+model_identifier = "nai-v3-furry-inpaint"
+name = "nai-diffusion-furry-3-inpainting"
+
+# ============================================
+# Chat 模型 (chat_enabled=false 时不暴露)
+# ============================================
+[[chat.models]]
+type = "chat"
+model_identifier = "nai-chat"
+name = "xialong"
+
+# ============================================
+# TTS 模型 (tts_enabled=false 时不暴露)
+# ============================================
+# v1 音色预设
+[[tts.models]]
+type = "tts"
+model_identifier = "tts0-v1-mp3"
+name = "voice=0,version=v1,opus=false,seed=Aini"
+
+[[tts.models]]
+type = "tts"
+model_identifier = "tts0-v1-opus"
+name = "voice=0,version=v1,opus=true,seed=Aini"
+
+[[tts.models]]
+type = "tts"
+model_identifier = "tts1-v1-mp3"
+name = "voice=1,version=v1,opus=false,seed=Kayra"
+
+[[tts.models]]
+type = "tts"
+model_identifier = "tts1-v1-opus"
+name = "voice=1,version=v1,opus=true,seed=Kayra"
+
+# v2 音色预设
+[[tts.models]]
+type = "tts"
+model_identifier = "tts0-v2-mp3"
+name = "voice=0,version=v2,opus=false,seed=Aini"
+
+[[tts.models]]
+type = "tts"
+model_identifier = "tts0-v2-opus"
+name = "voice=0,version=v2,opus=true,seed=Aini"

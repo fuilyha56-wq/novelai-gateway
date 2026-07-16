@@ -1,0 +1,49 @@
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+
+.git/
+.gitignore
+.gitattributes
+
+.env
+.env.example
+
+# 构建产物与缓存
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# 数据目录（容器内会重建，宿主机挂载卷覆盖）
+images/
+logs/
+
+# 临时文件
+*.swp
+*.bak
+backup_src/
+
+# 文档与示例 HTML（镜像内不需要）
+_*.html
+DESIGN.md
+API_REQUEST_DOC.md
+
+# Windows 启动脚本
+start.bat
+
+# 模型配置只保留 .example，真实 models.toml 由宿主机挂入
+config/models.toml
+config/models_suggested.toml
+
+# 输出图片
+*.png
