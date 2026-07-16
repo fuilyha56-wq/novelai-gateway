@@ -8,7 +8,7 @@ from src.proxy.config import settings
 # 只让 gateway logger 输出 INFO，其余静默
 logging.basicConfig(
     level=logging.WARNING,
-    format="%(asctime)s  %(message)s",
+    format="%(asctime)s | %(levelname)-7s | %(name)-10s | %(message)s",
     datefmt="%H:%M:%S",
 )
 logging.getLogger("gateway").setLevel(logging.INFO)

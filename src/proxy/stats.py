@@ -22,7 +22,12 @@ stats_logger = logging.getLogger("stats")
 stats_logger.setLevel(logging.INFO)
 if not stats_logger.handlers:
     fh = logging.FileHandler("logs/stats.log", encoding="utf-8")
-    fh.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+    fh.setFormatter(
+        logging.Formatter(
+            "%(asctime)s | %(levelname)-7s | %(name)-10s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
     stats_logger.addHandler(fh)
 
 STATS_JSON = "logs/stats_summary.json"

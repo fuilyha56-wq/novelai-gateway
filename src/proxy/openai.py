@@ -137,20 +137,25 @@ def _enforce_limit_model(model: str, body: dict[str, Any]) -> None:
     if not is_limit_model(model):
         return
 
-    # 1. 不允许 image / reference_image / reference_images（img2img/inpaint/vibe 都扣 Anlas）
-    for key in ("image", "reference_image", "reference_images"):
+    # 1. 不允许参考图；文生图也不允许携带输入图片。
+    # img2img/infill 的输入图片不额外收费，符合其余边界时仍可使用免费额度。
+    action = body.get("action", "generate")
+    forbidden_image_keys = ["reference_image", "reference_images"]
+    if action == "generate":
+        forbidden_image_keys.append("image")
+    forbidden_image_keys.append("references")
+    for key in forbidden_image_keys:
         if body.get(key):
             raise HTTPException(
                 status_code=400,
                 detail=f"-limit 模型 '{model}' 不允许消耗 Anlas，请移除 {key} 参数或改用原版模型（去掉 -limit 后缀）",
             )
 
-    # 2. action 必须是 generate（img2img/infill 都扣 Anlas）
-    action = body.get("action", "generate")
-    if action != "generate":
+    # 2. action 必须是可使用免费额度的生成模式。
+    if action not in {"generate", "img2img", "infill"}:
         raise HTTPException(
             status_code=400,
-            detail=f"-limit 模型 '{model}' 不允许 action='{action}'，仅支持 generate（文生图）",
+            detail=f"-limit 模型 '{model}' 不允许 action='{action}'，仅支持 generate、img2img 或 infill",
         )
 
     # 3. n_samples 必须为 1
@@ -189,9 +194,11 @@ def _enforce_limit_model(model: str, body: dict[str, Any]) -> None:
 
 
 def _reject_limit_model_for_paid_endpoint(model: str) -> None:
-    """对必然消耗 Anlas 的端点（img2img/inpaint/vibe/upscale/director 等）拒绝 -limit 模型。
+    """对不具备 Opus 免费生成资格的端点拒绝 -limit 模型。
 
-    这些端点本身就会扣 Anlas，-limit 模型（禁止消耗 Anlas）在它们身上没有意义。
+    单张、28 steps 以内且不超过 1024x1024 的图生图或重绘也可使用 Opus
+    免费额度，因此由各端点转换为通用生成参数后调用 ``_enforce_limit_model``。
+    Vibe、参考图、放大和 Director 工具仍必然产生额外 Anlas 费用。
     """
     if is_limit_model(model):
         raise HTTPException(
@@ -477,10 +484,10 @@ def _extract_mask_from_alpha(image_bytes: bytes) -> tuple[str, str]:
 # ── 响应构建 ──────────────────────────────────────────────────
 
 # NovelAI V4.5 Anlas 计费常量
-# V4.5 (version=3) 公式: per_sample = ceil(2.9518e-21 * pixels + 5.7533e-7 * pixels * steps)
+# V4.5 (version=3) 公式: per_sample = ceil(2.951823174884865e-6 * pixels + 5.753298233447344e-7 * pixels * steps)
 # V4.5 不支持 SMEA, smea_factor = 1.0
-# base case: 1024x1024 (1048576 pixels), steps=28 → 17 Anlas
-_BASE_ANLAS = 17.0  # 1024x1024, steps=28 的 Anlas 消耗
+# base case: 1024x1024 (1048576 pixels), steps=28 → 20 Anlas
+_BASE_ANLAS = 20.0  # 1024x1024, steps=28 的 Anlas 消耗
 _BASE_TOKENS = 1000  # base case 对应的 prompt_tokens（NewAPI tiered_expr 基准）
 
 
@@ -498,7 +505,7 @@ def _calc_anlas_cost(
     """根据 NovelAI V4.5 计费规则计算 Anlas 消耗。
 
     公式 (version=3, V4/V4.5):
-        per_sample = ceil(2.9518e-21 * r + 5.7533e-7 * r * steps) * smea_factor
+        per_sample = ceil(2.951823174884865e-6 * r + 5.753298233447344e-7 * r * steps)
         per_sample = max(ceil(per_sample * strength), 2)  # img2img 时
         per_sample = ceil(per_sample * uncond_scale)       # uncond_scale != 1.0 时
         opus_discount = is_opus && steps <= 28 && r <= 1024*1024
@@ -510,8 +517,8 @@ def _calc_anlas_cost(
         - 即: ref_cost = 2 * count + max(0, count - 4) * 2 = 2 * count + 2 * max(0, count - 4)
 
     Precise Reference (Director Reference) 额外计费 (V4.5+):
-        - 每张参考图: 5 Anlas (不走 encode-vibe)
-        - 即: ref_cost = 5 * count
+        - 每张参考图、每个请求样本: 5 Anlas (不走 encode-vibe)
+        - 即: ref_cost = 5 * count * n_samples
 
     Args:
         width: 图像宽度
@@ -529,8 +536,10 @@ def _calc_anlas_cost(
     """
     r = max(width * height, 65536)  # 最小 65536
 
-    # V4.5 per_sample 计算 (smea_factor = 1.0)
-    per_sample = math.ceil(2.9518e-21 * r + 5.7533e-7 * r * steps)
+    # V4.5 per_sample 计算；系数来自 NovelAI 官方前端价格计算器。
+    per_sample = math.ceil(
+        2.951823174884865e-6 * r + 5.753298233447344e-7 * r * steps
+    )
 
     # img2img strength 折扣
     if strength is not None and strength < 1.0:
@@ -548,8 +557,8 @@ def _calc_anlas_cost(
     # 参考图额外计费
     if reference_image_count > 0:
         if reference_mode == "precise":
-            # Precise Reference: 每张 5 Anlas (官方文档确认)
-            total += 5 * reference_image_count
+            # Precise Reference: 每张参考图对每个请求样本收取 5 Anlas。
+            total += 5 * reference_image_count * n_samples
         else:
             # Vibe Transfer: 每张 2 Anlas，超过 4 张后每张额外 2 Anlas
             ref_cost = 2 * reference_image_count
@@ -563,7 +572,7 @@ def _calc_anlas_cost(
 def _anlas_to_tokens(anlas: int) -> int:
     """将 Anlas 消耗映射为 prompt_tokens 供 NewAPI tiered_expr 计费。
 
-    base case: 17 Anlas → 1000 prompt_tokens
+    base case: 20 Anlas → 1000 prompt_tokens
     tiered_expr: tier("base", p * 4800)
     → 1000 * 4800 / 1M * 500K = 2,400,000 = $4.8
 
@@ -600,7 +609,7 @@ def _build_image_response_v2(
     - ``total_tokens`` = prompt_tokens
 
     Anlas 消耗由 gateway 根据 NovelAI V4.5 计费公式计算，
-    NewAPI tiered_expr 只需 tier("base", p * 4800) 即可。
+    NewAPI tiered_expr 应按 20 Anlas = 1000 prompt tokens 配置。
     """
     # 规范化 response_format
     if not response_format or response_format == "auto":
@@ -658,6 +667,36 @@ def _build_image_response_v2(
         "created": int(time.time()),
         "data": [{"b64_json": b64_str, "revised_prompt": prompt}],
         "usage": usage,
+    }
+    return Response(
+        content=json.dumps(result),
+        status_code=200,
+        media_type="application/json",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+
+def _build_png_image_response(
+    png_data: bytes,
+    prompt: str,
+    anlas_cost: int = 0,
+) -> Response:
+    """将工具端点的 PNG 结果包装为 OpenAI b64_json 图像响应。
+
+    PNG 字节不会经过重新编码，因此 NovelAI 写入的图片元数据会随 Base64 一并保留。
+    """
+    prompt_tokens = _anlas_to_tokens(anlas_cost) if anlas_cost > 0 else 0
+    result = {
+        "created": int(time.time()),
+        "data": [{
+            "b64_json": base64.b64encode(png_data).decode("ascii"),
+            "revised_prompt": prompt,
+        }],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": 0,
+            "total_tokens": prompt_tokens,
+        },
     }
     return Response(
         content=json.dumps(result),
@@ -1170,7 +1209,10 @@ async def handle_openai_models() -> Response:
 
 # ── 图像生成 Payload 构建 ─────────────────────────────────────
 
-def _build_generation_payload(body: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
+def _build_generation_payload(
+    body: dict[str, Any],
+    operation: str | None = None,
+) -> tuple[dict[str, Any], str, str]:
     """
     从 OpenAI 格式请求体构建 NAI 图像生成 payload。
 
@@ -1246,6 +1288,76 @@ def _build_generation_payload(body: dict[str, Any]) -> tuple[dict[str, Any], str
         params["reference_image_multiple"] = [body["reference_image"]]
         params["reference_strength_multiple"] = [body.get("reference_strength", 0.6)]
         params["reference_information_extracted_multiple"] = [body.get("reference_information_extracted", 1.0)]
+
+    # NewAPI 等中转通常只放行 /v1/images/generations。通过透传请求头显式
+    # 选择 Precise Reference，避免把普通扩展字段误解为精密参考请求。
+    references = body.get("references")
+    if operation == "precise-reference":
+        if not isinstance(references, list) or not references:
+            raise HTTPException(status_code=400, detail="references must be a non-empty list")
+        if "reference_image" in body:
+            raise HTTPException(
+                status_code=400,
+                detail="references cannot be combined with reference_image",
+            )
+        if "diffusion-4" not in nai_model:
+            raise HTTPException(
+                status_code=400,
+                detail="Precise Reference is only available on V4/V4.5 models",
+            )
+
+        reference_images: list[str] = []
+        reference_strengths: list[float] = []
+        reference_fidelities: list[float] = []
+        reference_descriptions: list[dict[str, Any]] = []
+        valid_types = {"character", "style", "character&style"}
+        for index, reference in enumerate(references):
+            if not isinstance(reference, dict):
+                raise HTTPException(status_code=400, detail=f"references[{index}] must be an object")
+            image = reference.get("reference_image")
+            if not isinstance(image, str) or not image:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"references[{index}] missing reference_image",
+                )
+            reference_type = reference.get("reference_type", "character&style")
+            if reference_type not in valid_types:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"references[{index}].reference_type must be one of: "
+                        f"{', '.join(sorted(valid_types))}"
+                    ),
+                )
+            strength = float(reference.get("strength", 1.0))
+            fidelity = float(reference.get("fidelity", 1.0))
+            if not 0 <= strength <= 1 or not 0 <= fidelity <= 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"references[{index}] strength and fidelity must be between 0 and 1",
+                )
+            reference_images.append(_normalize_precise_reference_image(image))
+            reference_strengths.append(strength)
+            reference_fidelities.append(fidelity)
+            reference_descriptions.append({
+                "caption": {"base_caption": reference_type, "char_captions": []},
+                "legacy_uc": False,
+            })
+
+        params.update({
+            "director_reference_images": reference_images,
+            "director_reference_descriptions": reference_descriptions,
+            "director_reference_information_extracted": reference_fidelities,
+            "director_reference_strength_values": reference_strengths,
+            "director_reference_secondary_strength_values": [
+                1.0 - fidelity for fidelity in reference_fidelities
+            ],
+        })
+    elif references is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="references requires X-NovelAI-Operation: precise-reference",
+        )
 
     # 可选: controlnet
     if "controlnet_condition" in body:
@@ -1414,9 +1526,55 @@ async def handle_openai_generations(request: Request) -> Response:
             except ValueError:
                 pass
 
+    header_operation = request.headers.get("x-novelai-operation", "").strip().lower()
+    body_operation = body.pop("novelai_operation", "")
+    if not isinstance(body_operation, str):
+        raise HTTPException(
+            status_code=400,
+            detail="novelai_operation must be a string",
+        )
+    operation = body_operation.strip().lower()
+    if header_operation and operation and header_operation != operation:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "X-NovelAI-Operation conflicts with novelai_operation; "
+                "provide only one operation value"
+            ),
+        )
+    if not operation:
+        operation = header_operation
+    supported_operations = {
+        "", "generate", "precise-reference", "img2img", "inpainting", "edits",
+        "vibe-transfer", "character-reference", "upscale", "annotate",
+        "director-declutter", "director-bg-remover", "director-lineart", "director-sketch",
+        "director-colorize", "director-emotion",
+    }
+    if operation not in supported_operations:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported novelai_operation. See API_REQUEST_DOC.md for supported values."
+            ),
+        )
+    if operation not in {"", "generate", "precise-reference"}:
+        if operation in {"upscale", "annotate"}:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"novelai_operation='{operation}' is not available through "
+                    "/v1/images/generations because its NewAPI billing mapping is "
+                    "not configured; call its dedicated Gateway endpoint instead"
+                ),
+            )
+        return await _dispatch_image_operation(request, body, operation)
+
     # -limit 模型校验：只允许走 Opus 免费额度的文生图路径
     _enforce_limit_model(body.get("model", ""), body)
-    nai_payload, prompt, response_format = _build_generation_payload(body)
+    if operation == "precise-reference":
+        _reject_limit_model_for_paid_endpoint(body.get("model", ""))
+        body["response_format"] = "b64_json"
+    nai_payload, prompt, response_format = _build_generation_payload(body, operation)
 
     # V4/V4.5 模型带参考图时，需要先通过 encode-vibe 编码
     nai_model = str(nai_payload.get("model", ""))
@@ -1442,7 +1600,8 @@ async def handle_openai_generations(request: Request) -> Response:
     record_generation(content, "/ai/generate-image", width, height)
 
     # 计算 Anlas 消耗 (action=generate, 无 strength 折扣)
-    # 如果带了 reference_image_multiple，需要加上 Vibe Transfer 编码费用
+    # Vibe 参考图会产生编码费用；Precise Reference 按参考数与样本数计费。
+    precise_ref_count = len(params.get("director_reference_images", []))
     ref_count = len(params.get("reference_image_multiple", []))
     anlas_cost = _calc_anlas_cost(
         width=width,
@@ -1450,7 +1609,9 @@ async def handle_openai_generations(request: Request) -> Response:
         steps=params.get("steps", 28),
         n_samples=params.get("n_samples", 1),
         uncond_scale=params.get("uncond_scale", 1.0),
-        reference_image_count=ref_count,
+        is_opus=is_limit_model(body.get("model", "")),
+        reference_image_count=precise_ref_count or ref_count,
+        reference_mode="precise" if precise_ref_count else "vibe",
     )
 
     return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
@@ -1464,7 +1625,7 @@ async def handle_nai_inpainting(request: Request) -> Response:
 
     prompt = body.get("prompt", body.get("input", ""))
     model = body.get("model", "nai-diffusion-4-5-full-inpainting")
-    _reject_limit_model_for_paid_endpoint(model)
+    _enforce_limit_model(model, {**body, "action": "infill"})
     negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
     response_format = body.get("response_format", "b64_json")
     image = body.get("image", "")
@@ -1572,8 +1733,9 @@ async def handle_nai_inpainting(request: Request) -> Response:
         height=height,
         steps=params.get("steps", 28),
         n_samples=1,
-        strength=params.get("strength", 0.7),
+        strength=params.get("inpaintImg2ImgStrength", 1.0),
         uncond_scale=params.get("uncond_scale", 1.0),
+        is_opus=is_limit_model(model),
         reference_image_count=ref_count,
     )
 
@@ -1623,7 +1785,7 @@ async def handle_openai_image_edits(request: Request) -> Response:
         body = await request.json()
         prompt = body.get("prompt", "")
         model = body.get("model", "nai-diffusion-4-5-full-inpainting")
-        _reject_limit_model_for_paid_endpoint(model)
+        _enforce_limit_model(model, {**body, "action": "infill"})
         negative_prompt = body.get("negative_prompt", "") or DEFAULT_NEGATIVE_PROMPT
         response_format = body.get("response_format", "b64_json")
         size_str = body.get("size", "1024x1024")
@@ -1741,8 +1903,9 @@ async def handle_openai_image_edits(request: Request) -> Response:
         height=height,
         steps=params.get("steps", 28),
         n_samples=1,
-        strength=params.get("strength", 0.7),
+        strength=params.get("inpaintImg2ImgStrength", 1.0),
         uncond_scale=params.get("uncond_scale", 1.0),
+        is_opus=is_limit_model(model),
         reference_image_count=ref_count,
     )
 
@@ -1757,7 +1920,7 @@ async def handle_img2img(request: Request) -> Response:
 
     prompt = body.get("prompt", "")
     model = body.get("model", "nai-diffusion-4-5-full")
-    _reject_limit_model_for_paid_endpoint(model)
+    _enforce_limit_model(model, {**body, "action": "img2img"})
     negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
     response_format = body.get("response_format", "b64_json")
     image = body.get("image", "")
@@ -1861,6 +2024,7 @@ async def handle_img2img(request: Request) -> Response:
         n_samples=1,
         strength=params.get("strength", 0.7),
         uncond_scale=params.get("uncond_scale", 1.0),
+        is_opus=is_limit_model(model),
         reference_image_count=ref_count,
     )
 
@@ -2566,7 +2730,7 @@ async def handle_suggest_tags(request: Request) -> Response:
 _DIRECTOR_TOOLS_INFO: dict[str, dict[str, Any]] = {
     "declutter": {
         "req_type": "declutter",
-        "anlas": 2,  # 原免费，现设为 2 Anlas
+        "anlas": 5,
         "extra_fields": [],
     },
     "bg-remover": {
@@ -2576,22 +2740,22 @@ _DIRECTOR_TOOLS_INFO: dict[str, dict[str, Any]] = {
     },
     "lineart": {
         "req_type": "lineart",
-        "anlas": 2,  # 原免费，现设为 2 Anlas
+        "anlas": 5,
         "extra_fields": [],
     },
     "sketch": {
         "req_type": "sketch",
-        "anlas": 2,  # 原免费，现设为 2 Anlas
+        "anlas": 5,
         "extra_fields": [],
     },
     "colorize": {
         "req_type": "colorize",
-        "anlas": 2,  # 原免费，现设为 2 Anlas
+        "anlas": 5,
         "extra_fields": ["prompt", "defry"],
     },
     "emotion": {
         "req_type": "emotion",
-        "anlas": 2,  # 原免费，现设为 2 Anlas
+        "anlas": 5,
         "extra_fields": ["prompt", "defry"],
     },
 }
@@ -2641,7 +2805,7 @@ async def _director_simple(request: Request, tool: str) -> Response:
     都通过 POST /ai/augment-image 发送，用 req_type 字段区分功能。
     图片数据通过 multipart/form-data 传输。
 
-    计费：declutter/lineart/sketch/colorize/emotion = 2 Anlas，bg-remover = 65 Anlas。
+    计费：declutter/lineart/sketch/colorize/emotion = 5 Anlas，bg-remover = 65 Anlas。
     """
     body = await request.json()
     info = _DIRECTOR_TOOLS_INFO[tool]
@@ -2715,6 +2879,69 @@ async def handle_director_emotion(request: Request) -> Response:
     prompt 格式示例："neutral;;"、"happy;;"、"sad;;" 等。
     """
     return await _director_simple(request, "emotion")
+
+
+async def _clone_json_request(request: Request, body: dict[str, Any]) -> Request:
+    """创建保留原请求头、可供专用处理器重新读取 JSON 的请求副本。"""
+    payload = json.dumps(body).encode("utf-8")
+    sent = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal sent
+        if sent:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        sent = True
+        return {"type": "http.request", "body": payload, "more_body": False}
+
+    return Request(dict(request.scope), receive)
+
+
+async def _dispatch_image_operation(
+    request: Request,
+    body: dict[str, Any],
+    operation: str,
+) -> Response:
+    """通过标准 images/generations 路径分派非生成类图像操作。
+
+    NewAPI 只需看到 OpenAI 标准路径；具体图像能力由
+    ``X-NovelAI-Operation`` 选择。二进制 PNG 结果统一转为 b64_json，保留原始
+    PNG 字节和其中的 NovelAI 元数据。
+    """
+    body = {**body, "response_format": "b64_json"}
+    request_copy = await _clone_json_request(request, body)
+    image_handlers = {
+        "img2img": handle_img2img,
+        "inpainting": handle_nai_inpainting,
+        "edits": handle_openai_image_edits,
+        "vibe-transfer": handle_vibe_transfer,
+        "character-reference": handle_character_reference,
+    }
+    handler = image_handlers.get(operation)
+    if handler is not None:
+        return await handler(request_copy)
+
+    png_handlers = {
+        "upscale": (handle_upscale, 0),
+        "annotate": (handle_annotate, 0),
+        "director-declutter": (handle_director_declutter, 5),
+        "director-bg-remover": (handle_director_bg_remover, 65),
+        "director-lineart": (handle_director_lineart, 5),
+        "director-sketch": (handle_director_sketch, 5),
+        "director-colorize": (handle_director_colorize, 5),
+        "director-emotion": (handle_director_emotion, 5),
+    }
+    png_handler_info = png_handlers.get(operation)
+    if png_handler_info is None:
+        raise HTTPException(status_code=400, detail=f"Unsupported image operation: {operation}")
+
+    handler, anlas_cost = png_handler_info
+    binary_response = await handler(request_copy)
+    png_data = binary_response.body
+    return _build_png_image_response(
+        png_data=png_data,
+        prompt=str(body.get("prompt", "")),
+        anlas_cost=anlas_cost,
+    )
 
 
 # ── /v1/chat/completions (真文本 Chat) ────────────────────────
