@@ -69,6 +69,10 @@ SHARED_API_KEY=nai-xxxxxxxx
 # 或
 SHARED_TOKEN={"auth_token":"..."}
 
+# 下游网关鉴权（配置共享凭据时必须设置）
+GATEWAY_PASSWORD=replace-with-a-long-random-secret
+ALLOW_UNAUTHENTICATED_ACCESS=false
+
 HOST=0.0.0.0
 PORT=41555
 MAX_CONCURRENT=1
@@ -77,6 +81,14 @@ COOLDOWN_MAX=1.0
 ```
 
 配置共享凭据后，下游请求中的 Authorization 不用于选择凭据；网关统一使用配置的 NovelAI 凭据访问上游。
+
+同时，下游必须用 `GATEWAY_PASSWORD` 访问所有 `/v1/*` 和 `/_api/*` 接口：
+
+```http
+Authorization: Bearer <GATEWAY_PASSWORD>
+```
+
+若配置了共享凭据但没有配置 `GATEWAY_PASSWORD`，网关默认返回 `503`，防止共享账户被未授权使用。仅可信私网调试可显式设置 `ALLOW_UNAUTHENTICATED_ACCESS=true`。
 
 ### 多 Key 轮询规则
 
@@ -925,7 +937,8 @@ docker compose logs -f novelai-gateway
 | `SHARED_API_KEYS` | 空 | 多个持久 NovelAI API Key；JSON 数组或逗号/分号/换行分隔，优先于单 Key 并按请求轮询 |
 | `SHARED_API_KEY` | 空 | 单个持久 NovelAI API Key；仅在 `SHARED_API_KEYS` 为空时使用 |
 | `SHARED_TOKEN` | 空 | Session token JSON 或裸 token；仅在两类 API Key 配置均为空时使用 |
-| `GATEWAY_PASSWORD` | 空 | 网页代理/管理接口密码保护 |
+| `GATEWAY_PASSWORD` | 空 | 下游 API、透明 API、网页代理及管理接口的访问密码；配置共享凭据时应设置 |
+| `ALLOW_UNAUTHENTICATED_ACCESS` | `false` | 是否允许共享凭据在无下游密码时使用；仅可信私网调试可开启 |
 | `IMAGE_BASE_URL` | 空 | URL 图片响应的公开基础地址 |
 | `MAX_CONCURRENT` | `1` | 重负载并发数 |
 | `QUEUE_TIMEOUT` | `300` | 排队超时秒数 |

@@ -285,48 +285,61 @@ def _get_image_url(request: Request, filename: str) -> str:
     return f"{request.url.scheme}://{request.url.netloc}/images/{filename}"
 
 
+def _extract_pngs_from_response(response_bytes: bytes) -> list[bytes]:
+    """从上游响应中提取全部 PNG 图片，并统一转换为 RGB。"""
+    return [_flatten_to_rgb(raw) for raw in _extract_raw_pngs(response_bytes)]
+
+
 def _extract_png_from_zip(zip_bytes: bytes) -> bytes:
-    """从响应中提取 PNG 图片字节。
+    """兼容旧调用：提取上游响应中的第一张 PNG。"""
+    return _extract_pngs_from_response(zip_bytes)[0]
+
+
+def _extract_raw_pngs(response_bytes: bytes) -> list[bytes]:
+    """从响应中提取全部原始 PNG 字节。
 
     支持三种上游响应格式：
-    1. ZIP 压缩包（v3 模型，Accept: application/zip）：解压取第一个 .png
+    1. ZIP 压缩包（v3 模型，Accept: application/zip）
     2. JSON（v4/v4.5 模型，Accept: application/json）：解析 {"images":[{"image":"<b64>"}]}
     3. 裸 PNG bytes（fallback）
-
-    NAI v4.5 返回的 PNG 是 RGBA 模式（带 alpha 通道），alpha 几乎全不透明。
-    保留 alpha 会导致下游（浏览器放大、JPEG 转换、NewAPI 中转）出现噪点/偏色，
-    因此统一 flatten 到白色背景的 RGB。
     """
-    raw = _extract_raw_png(zip_bytes)
-    return _flatten_to_rgb(raw)
-
-
-def _extract_raw_png(zip_bytes: bytes) -> bytes:
-    """从响应中提取原始 PNG 字节（不做模式转换）。"""
     # 1. 尝试 ZIP
     try:
-        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-            for name in zf.namelist():
-                if name.lower().endswith(".png"):
-                    return zf.read(name)
+        with zipfile.ZipFile(io.BytesIO(response_bytes)) as zf:
+            images = [
+                zf.read(name)
+                for name in zf.namelist()
+                if name.lower().endswith(".png")
+            ]
+            if images:
+                return images
     except (zipfile.BadZipFile, Exception):
         pass
 
     # 2. 尝试 JSON（v4/v4.5 返回格式）
     try:
-        body = json.loads(zip_bytes.decode("utf-8"))
+        body = json.loads(response_bytes.decode("utf-8"))
         images = body.get("images") if isinstance(body, dict) else None
         if isinstance(images, list) and images:
-            first = images[0]
-            if isinstance(first, dict):
-                b64 = first.get("image") or first.get("b64_json")
+            decoded: list[bytes] = []
+            for item in images:
+                if not isinstance(item, dict):
+                    continue
+                b64 = item.get("image") or item.get("b64_json")
                 if isinstance(b64, str) and b64:
-                    return base64.b64decode(b64)
-    except (ValueError, UnicodeDecodeError):
+                    decoded.append(base64.b64decode(b64))
+            if decoded:
+                return decoded
+    except (ValueError, UnicodeDecodeError, TypeError):
         pass
 
     # 3. fallback: 可能直接就是 PNG
-    return zip_bytes
+    return [response_bytes]
+
+
+def _extract_raw_png(zip_bytes: bytes) -> bytes:
+    """兼容旧调用：提取上游响应中的第一张原始 PNG。"""
+    return _extract_raw_pngs(zip_bytes)[0]
 
 
 def _flatten_to_rgb(png_bytes: bytes) -> bytes:
@@ -630,18 +643,20 @@ def _build_image_response_v2(
             headers={"Access-Control-Allow-Origin": "*"},
         )
 
-    # 对于 b64_json 和 url，需要从 ZIP 中提取 PNG
-    png_data = _extract_png_from_zip(content)
+    # 对于 b64_json 和 url，需要从上游响应中提取全部 PNG。
+    png_images = _extract_pngs_from_response(content)
 
     if response_format == "url":
         # 落盘并返回 URL
-        filename = f"{uuid.uuid4().hex}.png"
-        filepath = settings.image_dir / filename
-        filepath.write_bytes(png_data)
-        url = _get_image_url(request, filename)
+        data = []
+        for png_data in png_images:
+            filename = f"{uuid.uuid4().hex}.png"
+            filepath = settings.image_dir / filename
+            filepath.write_bytes(png_data)
+            data.append({"url": _get_image_url(request, filename), "revised_prompt": prompt})
         result = {
             "created": int(time.time()),
-            "data": [{"url": url, "revised_prompt": prompt}],
+            "data": data,
             "usage": usage,
         }
         return Response(
@@ -652,10 +667,15 @@ def _build_image_response_v2(
         )
 
     # b64_json (默认)
-    b64_str = base64.b64encode(png_data).decode("ascii")
     result = {
         "created": int(time.time()),
-        "data": [{"b64_json": b64_str, "revised_prompt": prompt}],
+        "data": [
+            {
+                "b64_json": base64.b64encode(png_data).decode("ascii"),
+                "revised_prompt": prompt,
+            }
+            for png_data in png_images
+        ],
         "usage": usage,
     }
     return Response(
@@ -1232,7 +1252,7 @@ def _build_generation_payload(
         width=width,
         height=height,
         steps=_safe_int(body.get("steps", 28), 28),
-        n_samples=_safe_int(body.get("n_samples", 1), 1),
+        n_samples=_safe_int(body.get("n_samples", body.get("n", 1)), 1),
         scale=float(body.get("scale", body.get("guidance_scale", 5.0))),
         seed=body.get("seed"),
         sampler=body.get("sampler"),

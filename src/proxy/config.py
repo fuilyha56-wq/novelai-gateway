@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # 网页端访问密码保护（留空则不开启密码拦截）
     gateway_password: str = ""
 
+    # 显式允许在配置共享 NovelAI 凭据时关闭下游鉴权。
+    # 默认关闭，避免公网部署意外暴露共享账户。
+    allow_unauthenticated_access: bool = False
+
     # NovelAI 上游地址
     novelai_base_url: str = "https://novelai.net"
     novelai_api_url: str = "https://api.novelai.net"
@@ -124,6 +128,37 @@ class Settings(BaseSettings):
 
         return ""
 
+    def has_shared_credentials(self) -> bool:
+        """是否配置了会被所有下游请求共用的 NovelAI 凭据。"""
+        return bool(
+            _parse_api_keys(self.shared_api_keys)
+            or _normalize_credential(self.shared_api_key)
+            or _normalize_credential(self.shared_token)
+        )
+
+    def is_heavy(self, path: str) -> bool:
+        """判断路径是否为重负载请求。"""
+        return any(path.startswith(p) for p in self.heavy_prefixes)
+
+    def get_upstream_url(self, api_path: str) -> str:
+        """根据 API 路径选择对应的上游服务器。
+
+        image.novelai.net: 图片生成、标签建议、Vibe 编码、导演工具
+        api.novelai.net: 放大、图片标注、用户数据、TTS
+        text.novelai.net: 文本生成
+        """
+        if api_path == "/ai/generate-voice":
+            return f"{self.novelai_api_url}{api_path}"
+        if api_path.startswith((
+            "/ai/generate-image",
+            "/ai/augment-image",
+            "/ai/encode-vibe",
+        )):
+            return f"{self.novelai_image_url}{api_path}"
+        if api_path in {"/ai/generate", "/ai/generate-stream"}:
+            return f"{self.novelai_text_url}{api_path}"
+        return f"{self.novelai_api_url}{api_path}"
+
 
 def get_request_auth_token(request: Any) -> str:
     """为一个下游请求选择并缓存共享凭据，避免内部子请求跨 Key。"""
@@ -139,38 +174,6 @@ def get_request_auth_token(request: Any) -> str:
     if token:
         request.state.gateway_auth_token = token
     return token
-
-    def is_heavy(self, path: str) -> bool:
-        """判断路径是否为重负载请求。"""
-        return any(path.startswith(p) for p in self.heavy_prefixes)
-
-    def get_upstream_url(self, api_path: str) -> str:
-        """根据 API 路径选择对应的上游服务器。
-
-        image.novelai.net: 图像生成、标签建议、Vibe 编码、导演工具(augment-image)
-        api.novelai.net: 放大、annotate-image、用户数据、TTS
-        text.novelai.net: 文本生成
-
-        参考: NAI 官网 JS (_app-*.js) 中 BackendUrl/ImageBackendUrl 的定义:
-        - AnnotateImage = BackendUrl + "/ai/annotate-image"  → api.novelai.net
-        - ImageTool     = ImageBackendUrl + "/ai/augment-image" → image.novelai.net
-        - GenerateImage = ImageBackendUrl + "/ai/generate-image" → image.novelai.net
-        - TagSearch     = ImageBackendUrl + "/ai/generate-image/suggest-tags" → image.novelai.net
-        - EncodeVibe    = ImageBackendUrl + "/ai/encode-vibe" → image.novelai.net
-        - UpscaleImage  = BackendUrl + "/ai/upscale" → api.novelai.net
-        - TextGenerate  = TextBackendUrl + "/ai/generate" → text.novelai.net
-        """
-        if api_path == "/ai/generate-voice":
-            return f"{self.novelai_api_url}{api_path}"
-        if api_path.startswith(("/ai/generate", "/ai/generate-stream")):
-            return f"{self.novelai_text_url}{api_path}"
-        if api_path.startswith((
-            "/ai/generate-image",
-            "/ai/augment-image",
-            "/ai/encode-vibe",
-        )):
-            return f"{self.novelai_image_url}{api_path}"
-        return f"{self.novelai_api_url}{api_path}"
 
 
 settings = Settings()

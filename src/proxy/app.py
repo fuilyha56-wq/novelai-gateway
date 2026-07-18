@@ -7,7 +7,9 @@ NovelAI 透明反向代理网关 — 路由层。
 import logging
 import mimetypes
 import platform
+import secrets
 import subprocess
+from urllib.parse import unquote
 
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
@@ -58,6 +60,12 @@ _DROP_HEADERS = frozenset({
 async def lifespan(_app: FastAPI):
     settings.image_dir.mkdir(parents=True, exist_ok=True)
 
+    if settings.has_shared_credentials() and not settings.gateway_password:
+        if settings.allow_unauthenticated_access:
+            logger.warning("⚠️ 已显式允许无鉴权使用共享 NovelAI 凭据；请勿暴露到公网")
+        else:
+            logger.warning("⚠️ 已配置共享 NovelAI 凭据但未设置 GATEWAY_PASSWORD；受保护 API 将返回 503")
+
     # 加载模型注册表
     try:
         registry = ModelRegistry(settings.models_config)
@@ -96,6 +104,53 @@ def _start_cloudflare_tunnel():
 
 
 app = FastAPI(title="NovelAI Gateway", lifespan=lifespan)
+
+
+def _gateway_auth_error(request: Request) -> Response | None:
+    """校验下游访问权限；返回 None 表示允许访问。"""
+    password = settings.gateway_password
+    if password:
+        authorization = request.headers.get("authorization", "")
+        bearer = authorization[7:] if authorization.lower().startswith("bearer ") else ""
+        cookie = unquote(request.cookies.get("gw_pass", ""))
+        if not (
+            (bearer and secrets.compare_digest(bearer, password))
+            or (cookie and secrets.compare_digest(cookie, password))
+        ):
+            return Response(
+                content='{"detail":"Unauthorized"}',
+                status_code=401,
+                media_type="application/json",
+                headers={**_CORS_HEADERS, "WWW-Authenticate": "Bearer"},
+            )
+        return None
+
+    if settings.has_shared_credentials() and not settings.allow_unauthenticated_access:
+        return Response(
+            content=(
+                '{"detail":"Gateway authentication is required when shared NovelAI '
+                'credentials are configured. Set GATEWAY_PASSWORD, or explicitly set '
+                'ALLOW_UNAUTHENTICATED_ACCESS=true only for a trusted private network."}'
+            ),
+            status_code=503,
+            media_type="application/json",
+            headers=_CORS_HEADERS,
+        )
+    return None
+
+
+@app.middleware("http")
+async def protect_api_routes(request: Request, call_next):
+    """保护会使用 NovelAI 凭据的 OpenAI 与透明 API 入口。"""
+    path = request.url.path
+    # CORS 预检本身不会使用上游凭据，也通常不会携带 Authorization。
+    if request.method != "OPTIONS" and (
+        path.startswith("/v1/") or path.startswith("/_api/")
+    ):
+        error = _gateway_auth_error(request)
+        if error is not None:
+            return error
+    return await call_next(request)
 
 
 # ── 全局异常处理（确保 CORS 头总是返回） ──────────────────────
@@ -324,7 +379,6 @@ async def proxy_site(request: Request, path: str):
 
     # 网页访问安全校验（只在开启了密码且为 GET HTML 请求时做拦截保护）
     if settings.gateway_password and request.method == "GET":
-        from urllib.parse import unquote
         gw_pass = request.cookies.get("gw_pass", "")
         if unquote(gw_pass) != settings.gateway_password:
             from pathlib import Path as _Path
@@ -332,6 +386,12 @@ async def proxy_site(request: Request, path: str):
             if lock_template.exists():
                 return HTMLResponse(content=lock_template.read_text(encoding="utf-8"), status_code=200)
             return Response(content="Gateway Locked. Please set correct gw_pass cookie.", status_code=403)
+
+    # 非 GET 请求无法展示登录页；无密码但配置共享凭据时也必须默认拒绝。
+    if request.method != "GET" or not settings.gateway_password:
+        auth_error = _gateway_auth_error(request)
+        if auth_error is not None:
+            return auth_error
 
     target_url = f"{settings.novelai_base_url}/{path}"
     try:

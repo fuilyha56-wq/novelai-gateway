@@ -45,6 +45,12 @@ SHARED_API_KEY=
 # 或 Session Token（JSON 或裸串，来自浏览器 Local Storage 的 session 项）
 SHARED_TOKEN=
 
+# 下游访问密码（配置共享凭据时必须设置）
+GATEWAY_PASSWORD=请设置一个足够长的随机密码
+
+# 仅可信私网调试时可设为 true；公网部署不要开启
+ALLOW_UNAUTHENTICATED_ACCESS=false
+
 # 服务监听配置
 HOST=0.0.0.0
 PORT=31555
@@ -71,6 +77,14 @@ start.bat
 
 - 本地访问: `http://127.0.0.1:31555`
 - OpenAI 兼容接口: `http://127.0.0.1:31555/v1/chat/completions`
+
+配置共享 NovelAI 凭据后，所有 `/v1/*` 和 `/_api/*` 请求默认要求：
+
+```http
+Authorization: Bearer <GATEWAY_PASSWORD>
+```
+
+未设置 `GATEWAY_PASSWORD` 时，网关会拒绝使用共享凭据的请求，避免公网地址泄露后被他人消耗账户余额。只有在可信私网中，才应显式设置 `ALLOW_UNAUTHENTICATED_ACCESS=true`。
 
 ## 部署到服务器
 
