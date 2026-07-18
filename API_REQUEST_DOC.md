@@ -56,9 +56,15 @@ tts_enabled = false
 
 ## 2. 认证
 
-在 `.env` 中配置共享凭据。`SHARED_API_KEY` 优先于 `SHARED_TOKEN`。
+在 `.env` 中配置共享凭据。若设置 `SHARED_API_KEYS`，它优先于 `SHARED_API_KEY` 和 `SHARED_TOKEN`；否则保持单 Key 兼容顺序：`SHARED_API_KEY` 优先于 `SHARED_TOKEN`。
 
 ```ini
+# 多 Key 轮询：每个下游 HTTP 请求按顺序选择下一把 Key。
+# 支持 JSON 数组，或逗号、分号、换行分隔；JSON 数组在 .env 中须使用单引号包裹。
+SHARED_API_KEYS='["nai-key-a","nai-key-b","nai-key-c"]'
+# SHARED_API_KEYS=nai-key-a,nai-key-b,nai-key-c
+
+# 单 Key 回退（仅当 SHARED_API_KEYS 留空时使用）
 SHARED_API_KEY=nai-xxxxxxxx
 # 或
 SHARED_TOKEN={"auth_token":"..."}
@@ -71,6 +77,15 @@ COOLDOWN_MAX=1.0
 ```
 
 配置共享凭据后，下游请求中的 Authorization 不用于选择凭据；网关统一使用配置的 NovelAI 凭据访问上游。
+
+### 多 Key 轮询规则
+
+- `SHARED_API_KEYS` 可以写为 JSON 数组，或逗号、分号、换行分隔的非空 Key 列表；空项会忽略。
+- 每个下游 HTTP 请求以轮询方式选择一把 Key，例如三把 Key 会按 `A -> B -> C -> A` 分配。
+- 一个请求中的所有内部上游调用固定使用同一把 Key。例如 Vibe/Character Reference 的编码与最终生成、流式 Chat、TTS 都不会在请求中途切换 Key。
+- 透明代理 `/_api/*` 和 OpenAI 包装端点使用同一轮询器；所有指向 NovelAI 上游的请求都会参与轮询。
+- 轮询不根据余额、订阅级别、403/429 或上游错误自动重试、更换 Key；这种自动切换会隐藏真实扣费和权限问题。失败响应会原样返回，下一次下游请求才轮到下一把 Key。
+- 多 Key 模式适合将多个**已获授权、由你控制**的 NovelAI API Key 均衡分配。不要配置来源不明、权限不同或不应共享的凭据。
 
 ## 3. 模型列表
 
@@ -103,7 +118,15 @@ COOLDOWN_MAX=1.0
 | `nai-v3-inpaint` | `nai-diffusion-3-inpainting` |
 | `nai-v3-furry-inpaint` | `nai-diffusion-furry-3-inpainting` |
 
-`-limit` 模型仅可用于 `/v1/images/generations` 的 Opus 免费额度文生图：必须 `n_samples=1`、`steps<=28`、面积不超过 `1024x1024`、`action=generate`、无图像/参考图、且不使用 `service_tier=priority`。其他付费图像端点会拒绝 `-limit` 模型。
+`-limit` 模型是禁止超出 Opus 免费额度的保护性别名，不是“仅文生图”模型。它支持单张、28 steps 以内、面积不超过 `1024x1024` 的文生图、图生图、局部重绘和 ControlNet 条件图生成；完整端点与模型对应关系见下表。会产生额外 Anlas 的参考图、放大或 Director 操作会被拒绝。
+
+| Gateway `-limit` 模型 | 支持的功能 | 可调用端点 | 不支持 |
+|---|---|---|---|
+| `nai-v4.5-full-limit` | 文生图、图生图、OpenAI/NAI 重绘、ControlNet 条件图生成 | `/v1/images/generations`、`/v1/images/img2img`、`/v1/images/inpainting`、`/v1/images/edits` | Vibe、Character/Precise Reference、upscale、Director Tools |
+| `nai-v4.5-curated-limit` | 文生图、图生图、OpenAI/NAI 重绘、ControlNet 条件图生成 | `/v1/images/generations`、`/v1/images/img2img`、`/v1/images/inpainting`、`/v1/images/edits` | Vibe、Character/Precise Reference、upscale、Director Tools |
+| `nai-v4.5-inpaint-limit` | 文生图、图生图、OpenAI/NAI 重绘、ControlNet 条件图生成 | `/v1/images/generations`、`/v1/images/img2img`、`/v1/images/inpainting`、`/v1/images/edits` | Vibe、Character/Precise Reference、upscale、Director Tools |
+
+所有 `-limit` 请求必须同时满足：`n`/`n_samples=1`、`steps<=28`、`width*height<=1048576`、`service_tier` 不为 `priority`、不传 `reference_image`/`reference_images`/`references`。文生图还不能传 `image`；图生图和重绘可以传其必需的 `image`，重绘还可以传 `mask`；ControlNet 条件图可通过 `controlnet_condition`、`controlnet_model`、`controlnet_strength` 使用。超出任一限制，网关返回 `400`，请改用不带 `-limit` 后缀的模型。
 
 ## 4. 通用图像生成
 
@@ -147,6 +170,17 @@ OpenAI 兼容文生图端点。支持 NAI 扩展字段。
 | `controlnet_model` | string | `hed` | ControlNet 模型 |
 | `controlnet_strength` | number | `1.0` | ControlNet 强度 |
 | `service_tier` | string | - | 原样传给上游；`-limit` 模型禁止 `priority` |
+
+#### 控制图生成与使用
+
+控制图由 `POST /v1/images/annotate` 生成，不是直接输出最终作品的文生图功能。先将原图转为边缘、姿态或深度条件图；再把返回 PNG 的 Base64 填进本端点的 `controlnet_condition`，以约束最终生成的构图或姿势。
+
+```text
+原始图片 --POST /v1/images/annotate--> 控制图 PNG
+控制图 PNG --controlnet_condition--> POST /v1/images/generations --> 最终图片
+```
+
+`controlnet_model` 必须与生成控制图时的 `model` 一致，可用值为 `canny`、`hed`、`midas`、`mlsd`、`openpose`、`uniformer`、`fake_scribble`。`controlnet_strength` 由 NovelAI 解释，通常从 `1.0` 开始：调低会更自由地遵从提示词，调高会更严格地保持控制图结构。
 
 NewAPI 等会过滤扩展 body 字段时，可使用下列 Header 覆盖请求值：`X-Sampler`、`X-Noise-Schedule`、`X-Negative-Prompt`、`X-Service-Tier`、`X-Steps`、`X-Seed`、`X-N-Samples`、`X-Scale`。
 
@@ -443,7 +477,7 @@ Director Reference / Precise Reference。只支持 V4/V4.5。必填 `references`
 }
 ```
 
-`reference_type` 只能为 `character`、`style`、`character&style`。`fidelity` 会映射为上游 secondary strength：`1 - fidelity`。
+`reference_type` 只能为 `character`、`style`、`character&style`。NovelAI 当前上游要求每项 `fidelity` **严格为 `1.0`**；网关会在发送前校验，其他值返回 `400`。因此当前不能将 `fidelity` 当作可调强度；请使用 `strength` 调整参考约束强度。
 
 为兼容只放行标准 OpenAI 图像路由的 NewAPI，也可向 `POST /v1/images/generations` 发送完全相同的 `references` 数组，并在 JSON body 中加入 `"novelai_operation":"precise-reference"`。网关以该字段明确启用 Precise Reference；此时不要同时传 `reference_image`。请求头 `X-NovelAI-Operation: precise-reference` 仅保留为兼容旧调用方的备选方案。
 
@@ -478,6 +512,8 @@ Director Reference / Precise Reference。只支持 V4/V4.5。必填 `references`
 ```
 
 网关向上游发送 `{ "model": "canny", "parameters": { "image": "..." } }`，解压 ZIP 后返回 `image/png`，并设置 `X-Annotate-Model` 响应头。
+
+这是控制图生成端点。将其 PNG 响应 Base64 编码后，作为 `/v1/images/generations` 的 `controlnet_condition`，同时设置相同的 `controlnet_model`，才能生成受控制图约束的最终图片。
 
 ### `POST /v1/images/suggest-tags`
 
@@ -550,9 +586,40 @@ $$
 
 ### `POST /v1/chat/completions`
 
-实现为 OpenAI Chat Completions 兼容接口，支持 `messages`、`model`、`stream`、`temperature`、`max_tokens`、`top_p`。启用时可返回标准 JSON 或 SSE。
+OpenAI Chat Completions 兼容接口，直连 Gateway，不经过 NewAPI 图像渠道。支持 `messages`、`model`、`stream`、`temperature`、`max_tokens`、`top_p`。启用时可返回标准 JSON 或 SSE。当前仅支持文本 `messages`，不支持 OpenAI 图片 content parts、视觉理解或其他多模态 Chat 输入；图片能力请使用本文的图像接口。
 
-**当前默认配置禁用**。请求会返回：
+NovelAI 当前产品页面列出 Xialong、GLM-4.6、Erato、Kayra、Clio。网页展示名不一定等于原生文本 API 模型 ID；网关通过 `config/models.toml` 的 `[[chat.models]]` 公开模型。下列两个映射已经使用当前共享凭据在原生文本 API 实测成功：
+
+| Gateway `model` | NovelAI 内部模型名 | 当前状态 |
+|---|---|---|
+| `nai-chat-erato` | `llama-3-erato-v1` | 已实测成功 |
+| `nai-chat-kayra` | `kayra-v1` | 已实测成功 |
+
+当前凭据的原生文本 API 探测结果：`xialong` 与 `clio-v1` 返回“model does not exist”；`glm-4-6` 返回“only available via OpenAI-compatible API”。因此它们没有写入运行时默认模型列表。若未来要接入 GLM-4.6，应连接 NovelAI 提示的专用 OpenAI-compatible 上游，而不是把它配置到本 Gateway 的原生文本转发。
+
+只可使用 `GET /v1/models` 实际返回的 Chat 模型。未知模型会返回 `400`，不会再静默回退为 `xialong`。上游返回 `403` 表示共享凭据没有该文本模型权限，不是 OpenAI 请求格式错误。
+
+非流式调用：
+
+```bash
+curl -X POST http://127.0.0.1:41555/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"nai-chat-erato",
+    "messages":[
+      {"role":"system","content":"Answer concisely."},
+      {"role":"user","content":"Explain what an API gateway is."}
+    ],
+    "temperature":0.8,
+    "max_tokens":200,
+    "top_p":0.9,
+    "stream":false
+  }'
+```
+
+成功时返回 OpenAI `chat.completion` JSON；流式调用将 `stream` 改为 `true`，响应为 `text/event-stream`，终止帧为 `data: [DONE]`。
+
+默认模板中 `chat_enabled=false`。未启用时请求会返回：
 
 ```json
 {
@@ -568,9 +635,72 @@ $$
 
 ### `POST /v1/audio/speech`
 
-实现为 OpenAI TTS 兼容接口，启用时接受 `model`、`input`、`seed`、`voice`，返回 `audio/mpeg` 或 `audio/ogg`。
+OpenAI TTS 兼容接口，直连 Gateway，不经过 NewAPI 图像渠道。所有本节参数都会经过校验后转为 NovelAI 的 `POST /ai/generate-voice` 请求。`model` 提供稳定默认值；下游可按单次请求覆盖版本、预设语音、种子和封装格式。
 
-**当前默认配置禁用**，返回 `403` 和 `tts_disabled`。启用前必须确认账户具备可用 TTS 权限。
+| `model` | NovelAI TTS 默认配置 | 成功响应 |
+|---|---|---|
+| `tts0-v1-mp3` | v1, voice 0, Aini | `audio/mpeg` |
+| `tts0-v1-opus` | v1, voice 0, Aini | `audio/webm` |
+| `tts1-v1-mp3` | v1, voice 1, Kayra | `audio/mpeg` |
+| `tts1-v1-opus` | v1, voice 1, Kayra | `audio/webm` |
+| `tts0-v2-mp3` | v2, voice 0, Aini | `audio/mpeg` |
+| `tts0-v2-opus` | v2, voice 0, Aini | `audio/webm` |
+
+#### TTS 请求参数
+
+| 字段 | 类型与取值 | 默认值 | 映射到 NovelAI | 用途 |
+|---|---|---|---|---|
+| `model` | 已在 `GET /v1/models` 中公开的 TTS ID | `tts0-v2-mp3` | 选择配置默认值 | 选择基础版本、voice、格式与 seed |
+| `input` | 非空 string | 无 | `text` | 要朗读的文本 |
+| `version` | `v1` 或 `v2` | 由 `model` 决定 | `version` | v2 支持 seedmix 与三个独立的声音维度；v1 更简单 |
+| `voice_id` | `-1`、`0`、`1` | 由 `model` 决定 | `voice` | 选择上游预设语音；`-1` 表示自定义种子模式 |
+| `seed` | 非空 string | 由 `model` 决定 | `seed`，并强制 `voice=-1` | 自定义声音；常见人名会影响音色与语调 |
+| `voice` | 非空 string | 无 | 与 `seed` 相同 | OpenAI 兼容的 `seed` 别名；不能与不同的 `seed` 同时使用 |
+| `response_format` | `mp3` 或 `opus` | 由 `model` 决定 | `opus=false/true` | 选择返回容器：MP3 或 WebM/Opus |
+| `opus` | boolean | 由 `model` 决定 | `opus` | `response_format` 的底层等价形式；不可与其冲突 |
+
+`opus=true` 的 NovelAI 当前响应容器为 **WebM/Opus**，故网关返回 `Content-Type: audio/webm`，不是 `audio/ogg`。已通过真实上游验证。
+
+`speed` 和 `volume` 是 NovelAI 网页播放器参数，不会影响下载的音频文件；网关会明确返回 `400`，避免下游误以为它们已经生效。
+
+#### 声音调校方法
+
+- 只换预设声音：传 `voice_id: 0` 或 `voice_id: 1`，不要同时传 `seed`。
+- 自定义声音：传任意非空 `seed`，网关自动使用 `voice_id=-1`。例如 `Maria` 往往产生更偏女性化的音色。
+- v2 混音：`seed` 以 `seedmix:` 开头，用 `+` 混合、用 `-` 减弱某个种子，例如 `seedmix:Kayra+Clio-Calliope`。seedmix 中不能有空格。
+- v2 分维度调校：使用 `|style:`、`|intonation:`、`|cadence:` 分别设置种子。例如：
+
+```text
+seedmix:|style:Kayra+Clio|intonation:Krake+Euterpe|cadence:Genji-Snek
+```
+
+`style` 主要影响整体音调的高低与风格；`intonation` 最明显地决定像哪个人在说话；`cadence` 改变音素的快慢和重音，问句或感叹句更容易听出区别。`seedmix:` 仅适用于 `version: "v2"`。
+
+```bash
+curl -X POST http://127.0.0.1:41555/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"tts0-v2-mp3",
+    "input":"Hello from NovelAI Gateway.",
+    "version":"v2",
+    "seed":"seedmix:Kayra+Clio-Calliope",
+    "response_format":"mp3"
+  }' \
+  --output speech.mp3
+```
+
+Opus 示例：
+
+```bash
+curl -X POST http://127.0.0.1:41555/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"tts0-v2-mp3","input":"Hello.","voice_id":1,"response_format":"opus"}' \
+  --output speech.webm
+```
+
+实际验证中，`tts0-v2-mp3` 返回 `200 audio/mpeg` 与有效 `ID3` MP3 数据；`opus=true` 返回有效的 WebM/Opus 数据。
+
+默认模板中 `tts_enabled=false`。未启用时返回 `403` 和 `tts_disabled`；启用前必须确认账户具备可用 TTS 权限。
 
 ## 10. 管理、静态与透明代理
 
@@ -792,8 +922,9 @@ docker compose logs -f novelai-gateway
 |---|---|---|
 | `HOST` | `0.0.0.0` | 监听地址 |
 | `PORT` | `31555` | 监听端口 |
-| `SHARED_API_KEY` | 空 | 持久 NovelAI API Key，优先级最高 |
-| `SHARED_TOKEN` | 空 | Session token JSON 或裸 token |
+| `SHARED_API_KEYS` | 空 | 多个持久 NovelAI API Key；JSON 数组或逗号/分号/换行分隔，优先于单 Key 并按请求轮询 |
+| `SHARED_API_KEY` | 空 | 单个持久 NovelAI API Key；仅在 `SHARED_API_KEYS` 为空时使用 |
+| `SHARED_TOKEN` | 空 | Session token JSON 或裸 token；仅在两类 API Key 配置均为空时使用 |
 | `GATEWAY_PASSWORD` | 空 | 网页代理/管理接口密码保护 |
 | `IMAGE_BASE_URL` | 空 | URL 图片响应的公开基础地址 |
 | `MAX_CONCURRENT` | `1` | 重负载并发数 |
@@ -822,7 +953,7 @@ docker logs novelai-gateway --tail 30
 |---|---|
 | `502 上游请求失败` | 代理端口、`http_proxy`/`https_proxy`/`all_proxy`、NovelAI 网络连通性、上游超时 |
 | `400 model must be a valid enum value` | 使用 `/v1/models` 返回的模型 ID；annotate 仅使用 7 个已列出的 model |
-| `400` 且 `-limit` 提示 | 改用非 `-limit` 模型，或改为符合免费文生图条件的请求 |
+| `400` 且 `-limit` 提示 | 改用非 `-limit` 模型，或改为符合免费生成边界的单张文生图、图生图或重绘请求 |
 | `500` Director Tool | 确保图片为正常 PNG/JPEG，且 `width`/`height` 与实际图匹配 |
 | `403 chat_disabled` / `tts_disabled` | 当前配置已禁用；确认账户能力后再改 `config/models.toml` 并重启 |
 | `404` 静态图片 | 检查 URL 文件名、`images` 挂载和 `IMAGE_BASE_URL` |
@@ -1115,7 +1246,7 @@ curl -X POST http://127.0.0.1:41555/v1/images/director/emotion \
 curl -X POST http://127.0.0.1:41555/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model":"nai-chat",
+    "model":"nai-chat-xialong",
     "messages":[
       {"role":"system","content":"Answer briefly."},
       {"role":"user","content":"Explain what an API gateway is."}
@@ -1132,12 +1263,12 @@ curl -X POST http://127.0.0.1:41555/v1/chat/completions \
 ```bash
 curl -N -X POST http://127.0.0.1:41555/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"nai-chat","messages":[{"role":"user","content":"Say hello."}],"stream":true}'
+  -d '{"model":"nai-chat-erato","messages":[{"role":"user","content":"Say hello."}],"stream":true}'
 ```
 
 ### 15.17 Text-to-Speech
 
-该端点仅在 `tts_enabled=true` 且模型配置中启用了 TTS 后可用；当前默认配置会返回 `403`。成功响应为 `audio/mpeg`，或模型配置为 Opus 时的 `audio/ogg`：
+该端点仅在 `tts_enabled=true` 且模型配置中启用了 TTS 后可用。成功响应为 `audio/mpeg`，或模型配置/请求指定 Opus 时的 `audio/webm`。完整的参数含义、冲突规则、`seedmix:` 语法见 [TTS 请求参数](#tts-请求参数)。
 
 ```bash
 curl -X POST http://127.0.0.1:41555/v1/audio/speech \
@@ -1145,12 +1276,13 @@ curl -X POST http://127.0.0.1:41555/v1/audio/speech \
   -d '{
     "model":"tts0-v2-mp3",
     "input":"Hello from NovelAI Gateway.",
-    "voice":"Aini"
+    "seed":"seedmix:Kayra+Clio-Calliope",
+    "response_format":"mp3"
   }' \
   --output speech.mp3
 ```
 
-`voice` 会作为 NovelAI TTS 的 seed 使用；也可直接传 `seed` 覆盖模型默认值。
+使用 `response_format:"opus"` 时，输出文件应保存为 `.webm`。
 
 ### 15.18 刷新上游模型建议（管理端点）
 
@@ -1208,12 +1340,25 @@ curl -L http://127.0.0.1:41555/image \
 
 ## 16. 已验证的当前网关行为
 
-运行中的网关已通过以下实际调用验证：
+以下结果来自 2026-07-17 对运行中 Gateway 的实际上游调用。图像测试使用单张 `512x512` 输入或最短提示词；生成类响应均至少包含一张图片，二进制工具均校验了 PNG 文件头。
 
-- 生成、图生图、inpainting、edits、Vibe Transfer、Character Reference、Precise Reference、upscale。
-- 所有 7 种 annotate 模型。
-- suggest-tags。
-- 全部 6 种 Director Tools，且 `5/65` Anlas 响应头正确。
-- Chat 与 TTS 在当前配置下按预期返回禁用 `403`。
+| 功能 | 请求方式 | 实测结果 |
+|---|---|---|
+| 文生图 | `/v1/images/generations`，`nai-v4.5-full-limit` | `200`，OpenAI 图片 JSON |
+| 图生图 | `/v1/images/img2img`，`nai-v4.5-full-limit` | `200`，OpenAI 图片 JSON |
+| NAI 局部重绘 | `/v1/images/inpainting`，`nai-v4.5-inpaint-limit` | `200`，OpenAI 图片 JSON |
+| OpenAI edits | `/v1/images/edits`，`nai-v4.5-inpaint-limit` | `200`，OpenAI 图片 JSON |
+| 控制图链 | `annotate(canny)` 后作为 `controlnet_condition` 生图 | 两步均 `200`，最终图片成功 |
+| Vibe Transfer | `/v1/images/vibe-transfer` | `200`，OpenAI 图片 JSON |
+| Character Reference | `/v1/images/character-reference` | `200`，OpenAI 图片 JSON |
+| Precise Reference | `/v1/images/precise-reference`，`fidelity:1.0` | `200`，OpenAI 图片 JSON |
+| 放大 | `/v1/images/upscale` | `200 image/png` |
+| 控制图预处理 | `/v1/images/annotate` 的 7 个模型 | `canny`、`hed`、`midas`、`mlsd`、`openpose`、`uniformer`、`fake_scribble` 均 `200 image/png` |
+| 标签建议 | `/v1/images/suggest-tags` | `200`，返回 10 个标签 |
+| Director Tools | 全部 6 条 `/v1/images/director/*` 路径 | 均 `200 image/png`；`declutter`、`lineart`、`sketch`、`colorize`、`emotion` 为 5 Anlas，`bg-remover` 为 65 Anlas |
+| Chat | `nai-chat-erato`、`nai-chat-kayra` | 均 `200` |
+| TTS | `/v1/audio/speech` 的 v1、v2 seedmix、WebM/Opus | 均 `200`；MP3 为 `audio/mpeg`，Opus 为 `audio/webm` |
+
+精密参考的 `fidelity` 当前必须严格为 `1.0`；其它值由网关直接返回 `400`。TTS 的 `speed`、`volume` 是网页播放参数，不影响下载音频，网关同样会直接返回 `400`。
 
 部署或修改 `config/models.toml` 后，请重新执行端到端检查，以实际账户权限为准。

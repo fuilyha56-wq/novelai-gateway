@@ -9,7 +9,8 @@
 # ============================================
 # 缺失时: image_enabled 默认 true, chat_enabled/tts_enabled 默认 false
 image_enabled = true
-# 当前持久 API Key 不具备可用的 NovelAI 文本模型；保持关闭，避免暴露必然失败的 nai-chat。
+# 仅当共享 NovelAI 凭据具备文本模型权限时开启。
+# 启用后请保留实际订阅/API Key 可以访问的 [[chat.models]] 条目。
 chat_enabled = false
 tts_enabled = false
 
@@ -85,10 +86,17 @@ name = "nai-diffusion-furry-3-inpainting"
 # ============================================
 # Chat 模型 (chat_enabled=false 时不暴露)
 # ============================================
+# name 为 NovelAI 文本 API 内部模型标识。当前实际可用模型取决于订阅和 API Key 权限。
+# 2026-04 以原生文本 API 实测，Erato 与 Kayra 可用。
 [[chat.models]]
 type = "chat"
-model_identifier = "nai-chat"
-name = "xialong"
+model_identifier = "nai-chat-erato"
+name = "llama-3-erato-v1"
+
+[[chat.models]]
+type = "chat"
+model_identifier = "nai-chat-kayra"
+name = "kayra-v1"
 
 # ============================================
 # TTS 模型 (tts_enabled=false 时不暴露)

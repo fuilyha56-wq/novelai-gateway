@@ -5,10 +5,42 @@
 使用 pydantic-settings 自动加载。
 """
 
+import json
 from pathlib import Path
-from typing import Set
+from threading import Lock
+from typing import Any, Set
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _normalize_credential(value: str) -> str:
+    """清理凭据文本的首尾空白和外层引号。"""
+    return value.strip().strip("'\"")
+
+
+def _parse_api_keys(value: str) -> list[str]:
+    """解析 JSON 数组或逗号、分号、换行分隔的持久 API Key 列表。"""
+    normalized = value.strip()
+    if not normalized:
+        return []
+
+    try:
+        parsed = json.loads(normalized)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if isinstance(parsed, list):
+        return [
+            _normalize_credential(item)
+            for item in parsed
+            if isinstance(item, str) and _normalize_credential(item)
+        ]
+
+    return [
+        _normalize_credential(item)
+        for item in normalized.replace(";", ",").replace("\n", ",").split(",")
+        if _normalize_credential(item)
+    ]
 
 
 class Settings(BaseSettings):
@@ -34,6 +66,9 @@ class Settings(BaseSettings):
     # 共享的 NovelAI 持久 API Key（与 SHARED_TOKEN 二选一，API Key 优先）
     shared_api_key: str = ""
 
+    # 多个持久 API Key。配置后优先于 SHARED_API_KEY，按请求轮询。
+    shared_api_keys: str = ""
+
     # 网页端访问密码保护（留空则不开启密码拦截）
     gateway_password: str = ""
 
@@ -58,6 +93,52 @@ class Settings(BaseSettings):
     upstream_timeout: float = 120.0
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    def model_post_init(self, __context: Any) -> None:
+        """初始化不参与配置序列化的 Key 轮询状态。"""
+        self._api_key_lock = Lock()
+        self._api_key_index = 0
+
+    def get_shared_auth_token(self) -> str:
+        """返回下一把共享凭据，多 API Key 时按请求进行线程安全轮询。"""
+        api_keys = _parse_api_keys(self.shared_api_keys)
+        if api_keys:
+            with self._api_key_lock:
+                api_key = api_keys[self._api_key_index % len(api_keys)]
+                self._api_key_index += 1
+            return api_key
+
+        if self.shared_api_key:
+            return _normalize_credential(self.shared_api_key)
+
+        if self.shared_token:
+            token_str = _normalize_credential(self.shared_token)
+            try:
+                parsed = json.loads(token_str)
+            except json.JSONDecodeError:
+                return token_str
+            if isinstance(parsed, dict):
+                token = parsed.get("auth_token", token_str)
+                return token if isinstance(token, str) else token_str
+            return token_str
+
+        return ""
+
+
+def get_request_auth_token(request: Any) -> str:
+    """为一个下游请求选择并缓存共享凭据，避免内部子请求跨 Key。"""
+    cached_token = getattr(request.state, "gateway_auth_token", None)
+    if isinstance(cached_token, str) and cached_token:
+        return cached_token
+
+    token = settings.get_shared_auth_token()
+    if not token:
+        auth = request.headers.get("authorization", "")
+        token = auth[7:] if auth.startswith("Bearer ") else auth
+
+    if token:
+        request.state.gateway_auth_token = token
+    return token
 
     def is_heavy(self, path: str) -> bool:
         """判断路径是否为重负载请求。"""

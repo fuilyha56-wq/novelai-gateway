@@ -25,7 +25,7 @@ except ImportError:
     Image = None  # PIL 可选，用于未来扩展
     UnidentifiedImageError = Exception
 
-from .config import settings
+from .config import get_request_auth_token, settings
 from .queue import gate
 from .stats import record_generation
 
@@ -69,6 +69,9 @@ VALID_SAMPLERS = {
 }
 VALID_NOISE_SCHEDULES = {"native", "karras", "exponential", "polyexponential"}
 VALID_RESPONSE_FORMATS = {"b64_json", "url", "raw", "nai_json", "auto"}
+VALID_TTS_VERSIONS = {"v1", "v2"}
+VALID_TTS_VOICE_IDS = {-1, 0, 1}
+TTS_RESPONSE_FORMAT_TO_OPUS = {"mp3": False, "opus": True}
 
 
 def _validate_image_params(
@@ -123,14 +126,14 @@ def is_limit_model(model_identifier: str | None) -> bool:
 
 
 def _enforce_limit_model(model: str, body: dict[str, Any]) -> None:
-    """-limit 模型限制：只允许走 Opus 免费额度的文生图路径。
+    """-limit 模型限制：只允许走 Opus 免费额度的生成、图生图或重绘路径。
 
     Opus 免费额度需同时满足：
       - n_samples == 1
-      - 无 image / reference_image / reference_images
+    - 无参考图；generate 不允许输入图片
       - width * height <= 1024*1024
       - steps <= 28
-      - action == generate
+    - action 为 generate、img2img 或 infill
       - service_tier != priority
     任一超出即抛 400。非 -limit 模型直接通过。
     """
@@ -270,21 +273,8 @@ def _normalize_token(raw_token: str) -> str:
 
 
 def _get_auth_token(request: Request) -> str:
-    """提取认证 token：优先用 shared_api_key，其次 shared_token，最后用请求头。"""
-    if settings.shared_api_key:
-        return _normalize_token(settings.shared_api_key)
-    if settings.shared_token:
-        token_str = _normalize_token(settings.shared_token)
-        try:
-            parsed = json.loads(token_str)
-            return parsed.get("auth_token", token_str)
-        except Exception:
-            return token_str
-    # 从请求头获取
-    auth = request.headers.get("authorization", "")
-    if auth.startswith("Bearer "):
-        return auth[7:]
-    return auth
+    """获取当前请求的共享凭据，多 API Key 时复用本请求已轮到的 Key。"""
+    return get_request_auth_token(request)
 
 
 def _get_image_url(request: Request, filename: str) -> str:
@@ -2431,7 +2421,14 @@ async def handle_precise_reference(request: Request) -> Response:
 
         ref_images.append(_normalize_precise_reference_image(ref_img))
         ref_strengths.append(float(ref.get("strength", 1.0)))
-        ref_infos.append(float(ref.get("fidelity", 1.0)))
+        fidelity = float(ref.get("fidelity", 1.0))
+        # NovelAI 当前上游仅接受精密参考的信息提取值恰为 1.0。
+        if fidelity != 1.0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"references[{i}].fidelity must be exactly 1.0",
+            )
+        ref_infos.append(fidelity)
 
         # 构造 director_reference_description
         ref_type = ref.get("reference_type", "character&style")
@@ -3035,12 +3032,14 @@ async def handle_openai_chat_completions(request: Request) -> Response:
     max_tokens = body.get("max_tokens", 200)
     top_p = body.get("top_p", 0.9)
 
-    # 解析 model
-    nai_model = "xialong"
-    if registry:
-        entry = registry.lookup(model_id)
-        if entry and entry.type == "chat":
-            nai_model = entry.name
+    # Chat 只能使用 models.toml 中显式配置的模型，避免未知 model 静默回退。
+    entry = registry.lookup(model_id) if registry else None
+    if entry is None or entry.type != "chat":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown or disabled Chat model: {model_id}. Check GET /v1/models.",
+        )
+    nai_model = entry.name
 
     # 构建 input
     input_text = _build_chat_input(messages)
@@ -3172,6 +3171,92 @@ def _parse_tts_name(name: str) -> dict[str, Any]:
     return params
 
 
+def _resolve_tts_params(body: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
+    """合并并校验下游 TTS 参数，返回 NovelAI generate-voice payload 参数。"""
+    unsupported_playback_params = {"speed", "volume"}.intersection(body)
+    if unsupported_playback_params:
+        param_names = ", ".join(sorted(unsupported_playback_params))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{param_names} only control NovelAI web playback and do not affect "
+                "downloaded audio; they are not supported by this endpoint"
+            ),
+        )
+
+    params = dict(defaults)
+
+    if "version" in body:
+        version = body["version"]
+        if not isinstance(version, str) or version not in VALID_TTS_VERSIONS:
+            raise HTTPException(status_code=400, detail="version must be 'v1' or 'v2'")
+        params["version"] = version
+
+    if "opus" in body:
+        opus = body["opus"]
+        if not isinstance(opus, bool):
+            raise HTTPException(status_code=400, detail="opus must be a boolean")
+        params["opus"] = opus
+
+    if "response_format" in body:
+        response_format = body["response_format"]
+        if response_format not in TTS_RESPONSE_FORMAT_TO_OPUS:
+            raise HTTPException(
+                status_code=400,
+                detail="response_format must be 'mp3' or 'opus'",
+            )
+        response_opus = TTS_RESPONSE_FORMAT_TO_OPUS[response_format]
+        if "opus" in body and body["opus"] != response_opus:
+            raise HTTPException(
+                status_code=400,
+                detail="opus conflicts with response_format",
+            )
+        params["opus"] = response_opus
+
+    custom_seed: str | None = None
+    if "seed" in body:
+        seed = body["seed"]
+        if not isinstance(seed, str) or not seed.strip():
+            raise HTTPException(status_code=400, detail="seed must be a non-empty string")
+        custom_seed = seed
+
+    # OpenAI voice is a string; keep it as a backwards-compatible custom-seed alias.
+    if "voice" in body:
+        voice = body["voice"]
+        if not isinstance(voice, str) or not voice.strip():
+            raise HTTPException(status_code=400, detail="voice must be a non-empty string")
+        if custom_seed is not None and custom_seed != voice:
+            raise HTTPException(status_code=400, detail="voice conflicts with seed")
+        custom_seed = voice
+
+    voice_id: int | None = None
+    if "voice_id" in body:
+        candidate = body["voice_id"]
+        if isinstance(candidate, bool) or not isinstance(candidate, int):
+            raise HTTPException(status_code=400, detail="voice_id must be an integer")
+        if candidate not in VALID_TTS_VOICE_IDS:
+            raise HTTPException(
+                status_code=400,
+                detail="voice_id must be one of -1, 0, or 1",
+            )
+        voice_id = candidate
+
+    if custom_seed is not None:
+        if voice_id is not None and voice_id != -1:
+            raise HTTPException(
+                status_code=400,
+                detail="custom seed requires voice_id=-1 or omitting voice_id",
+            )
+        if params["version"] != "v2" and custom_seed.startswith("seedmix:"):
+            raise HTTPException(status_code=400, detail="seedmix is only supported by version='v2'")
+        params["seed"] = custom_seed
+        params["voice"] = -1
+    elif voice_id is not None:
+        params["voice"] = voice_id
+
+    return params
+
+
 async def handle_tts(request: Request) -> Response:
     """处理 OpenAI 兼容的 TTS 请求。"""
     body = await request.json()
@@ -3193,9 +3278,7 @@ async def handle_tts(request: Request) -> Response:
 
     model_id = body.get("model", "tts0-v2-mp3")
     input_text = body.get("input", "")
-    request_seed = body.get("seed", None)  # 可覆盖默认 seed
-
-    if not input_text:
+    if not isinstance(input_text, str) or not input_text:
         raise HTTPException(status_code=400, detail="input text is required")
 
     # 从 registry 查找 TTS 模型
@@ -3210,18 +3293,13 @@ async def handle_tts(request: Request) -> Response:
         entry = registry.lookup(model_id)
         if entry and entry.type == "tts":
             tts_params = _parse_tts_name(entry.name)
-        elif entry is None:
-            # 尝试直接解析 model_id 作为参数（向后兼容）
-            pass
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown or disabled TTS model: {model_id}. Check GET /v1/models.",
+            )
 
-    # 请求 body 中的 seed 覆盖默认值
-    if request_seed:
-        tts_params["seed"] = request_seed
-
-    # 也支持 voice 字段 (OpenAI 兼容 — 用 voice 映射到 seed)
-    if "voice" in body and isinstance(body["voice"], str):
-        tts_params["seed"] = body["voice"]
-        tts_params["voice"] = -1  # seed 模式需要 voice=-1
+    tts_params = _resolve_tts_params(body, tts_params)
 
     payload = {
         "text": input_text,
@@ -3238,7 +3316,8 @@ async def handle_tts(request: Request) -> Response:
         content = await _send_nai_binary_request(request, payload, target_url)
 
     # 返回音频
-    content_type = "audio/ogg" if tts_params.get("opus", False) else "audio/mpeg"
+    # NovelAI 的 opus=true 当前封装为 WebM/Opus，而非 Ogg/Opus。
+    content_type = "audio/webm" if tts_params.get("opus", False) else "audio/mpeg"
 
     return Response(
         content=content,

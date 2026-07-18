@@ -5,13 +5,12 @@
 """
 
 from urllib.parse import urlparse
-import json
 
 import httpx
 from fastapi import Request, Response
 from fastapi.responses import StreamingResponse
 
-from .config import settings
+from .config import get_request_auth_token, settings
 from .rewriter import rewrite_html, rewrite_js
 
 # ── 全局 HTTP 客户端 ────────────────────────────────────────
@@ -73,19 +72,8 @@ def _build_upstream_headers(request: Request, target_url: str) -> dict[str, str]
     if "novelai.net" in target_url:
         headers["origin"] = "https://novelai.net"
         headers["referer"] = "https://novelai.net/"
-        # 强制使用后端配置的共享凭据，防止前端 token 丢失或未正常传递
-        # 优先使用持久 API Key，其次 Session Token
-        if settings.shared_api_key:
-            auth_token = settings.shared_api_key.strip().strip("'\"")
-        elif settings.shared_token:
-            token_str = settings.shared_token.strip().strip("'\"")
-            try:
-                parsed = json.loads(token_str)
-                auth_token = parsed.get("auth_token", token_str)
-            except Exception:
-                auth_token = token_str
-        else:
-            auth_token = None
+        # 同一请求内复用已选择的凭据；多 API Key 时仅在请求开始轮询一次。
+        auth_token = get_request_auth_token(request)
 
         if auth_token:
             import logging
