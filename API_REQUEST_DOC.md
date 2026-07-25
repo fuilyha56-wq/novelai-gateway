@@ -402,6 +402,31 @@ curl -X POST http://<NEWAPI_HOST>/v1/images/generations \
 
 其中 `prompt_tokens = round(Anlas / 20 * 1000)`，最小为 1。JSON 端点的 `usage` 是供 NewAPI 等下游按 token 规则计价的映射，不是 NovelAI 原始 token 计数。
 
+#### 氛围编码复用 (`data[i].vibe`)
+
+当请求使用了 Vibe Transfer、Character Reference 或 `generations` 路径下的 `reference_image_multiple` 时，网关在调用 `/ai/encode-vibe` 编码参考图后，会在每个 `data[i]` 中附加 `vibe` 字段，包含可复用的编码氛围列表：
+
+```json
+{
+  "data": [
+    {
+      "b64_json": "...",
+      "revised_prompt": "...",
+      "vibe": [
+        {
+          "reference_image": "<base64-encoded-vibe-binary>",
+          "reference_strength": 0.6,
+          "reference_information_extracted": 1.0
+        }
+      ]
+    }
+  ],
+  "usage": {"prompt_tokens": 350, "completion_tokens": 0, "total_tokens": 350}
+}
+```
+
+下次请求时，将 `vibe[j].reference_image` 的值直接作为 `reference_image` / `reference_images` / `reference_image_multiple` 传入即可复用编码，网关会自动识别已编码氛围（非 PNG/JPEG/GIF/WEBP/BMP/ICO 文件头的 base64）并跳过 `/ai/encode-vibe` 调用，同时减免该参考图的 2 Anlas 编码费用。`reference_strength` 与 `reference_information_extracted` 仍需按正常参数传入，不会被自动复用。
+
 ## 6. 图像变换与参考图
 
 ### `POST /v1/images/img2img`
@@ -619,6 +644,7 @@ $$
 - Opus 免费额度适用于单张、`steps<=28`、像素面积不超过 $1024\times1024$ 且未使用 Character Reference 的 V4/V4.5 生成；批量请求仅减免第一张。
 - Vibe/Character Reference：每张加 2 Anlas；第 5 张及以后每张再额外加 2。
 - Precise Reference：每张参考图、每个请求样本加 5 Anlas。
+- **氛围编码复用**：当 `reference_image` / `reference_images` 传入的是先前响应中 `data[i].vibe[j].reference_image` 返回的已编码氛围（base64 二进制，非 PNG/JPEG 等图片格式）时，网关会跳过 `/ai/encode-vibe` 调用，且该参考图不再计入 2 Anlas 编码费用。仅对未复用的参考图收取编码费。
 
 示例：`512x512`、28 steps、单张文生图为 5 Anlas；同规格 `strength=0.7` 的图生图/重绘为 4 Anlas；单张 Vibe/Character Reference 为 7 Anlas；单张 Precise Reference 为 10 Anlas。
 
@@ -883,6 +909,8 @@ polyexponential
 | 优先级 | 不允许 `service_tier=priority` |
 
 Vibe、Character Reference、Precise Reference、upscale、Director Tools 等会产生额外 Anlas 费用的接口会拒绝 `-limit` 模型。图生图或重绘超出上表边界时同样会被拒绝；请改用去掉 `-limit` 后缀的原版模型。
+
+> 注：`-limit` 模型同样支持 `cfg_rescale`、`noise`、`uncond_scale` 等参数，与去后缀的原版模型行为一致；仅是免费额度边界保护不同。
 
 ### 12.3 Header 覆盖规则
 

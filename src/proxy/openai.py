@@ -504,6 +504,7 @@ def _calc_anlas_cost(
     is_opus: bool = False,
     reference_image_count: int = 0,
     reference_mode: str = "vibe",
+    reference_image_encoded_count: int = 0,
 ) -> int:
     """根据 NovelAI V4.5 计费规则计算 Anlas 消耗。
 
@@ -532,7 +533,11 @@ def _calc_anlas_cost(
         uncond_scale: uncond_scale 值 (默认 1.0)
         is_opus: 是否 Opus 会员 (免费额度折扣)
         reference_image_count: Vibe Transfer / Character Reference 参考图数量
+            （含已编码复用部分；编码费用只对未复用部分收取）
         reference_mode: 参考图模式 - "vibe" (默认) 或 "precise"
+        reference_image_encoded_count: Vibe 模式下复用上游已编码 vibe 的参考图数量。
+            这部分无需再次调用 encode-vibe，不计 2 Anlas 编码费。
+            Precise Reference 模式下此参数被忽略。
 
     Returns:
         Anlas 消耗量 (整数)
@@ -563,10 +568,12 @@ def _calc_anlas_cost(
             # Precise Reference: 每张参考图对每个请求样本收取 5 Anlas。
             total += 5 * reference_image_count * n_samples
         else:
-            # Vibe Transfer: 每张 2 Anlas，超过 4 张后每张额外 2 Anlas
-            ref_cost = 2 * reference_image_count
-            if reference_image_count > 4:
-                ref_cost += 2 * (reference_image_count - 4)
+            # Vibe Transfer: 仅对未复用编码的参考图收取 2 Anlas 编码费。
+            # 复用上游已编码 vibe 的参考图不调用 encode-vibe，不计编码费。
+            billable_count = max(0, reference_image_count - reference_image_encoded_count)
+            ref_cost = 2 * billable_count
+            if billable_count > 4:
+                ref_cost += 2 * (billable_count - 4)
             total += ref_cost
 
     return max(total, 0)
@@ -596,6 +603,9 @@ def _build_image_response_v2(
     nai_content_type: str = "application/zip",
     n_samples: int = 1,
     anlas_cost: int | None = None,
+    encoded_vibes: list[str] | None = None,
+    reference_strengths: list[float] | None = None,
+    reference_information_extracted: list[float] | None = None,
 ) -> Response:
     """
     统一图像响应构建，支持 4 种返回格式。
@@ -613,6 +623,12 @@ def _build_image_response_v2(
 
     Anlas 消耗由 gateway 根据 NovelAI V4.5 计费公式计算，
     NewAPI tiered_expr 应按 20 Anlas = 1000 prompt tokens 配置。
+
+    当 ``encoded_vibes`` 不为空时（Vibe Transfer / Character Reference 路径），
+    b64_json / url 响应会在每个 ``data[i]`` 中附带 ``vibe`` 字段，包含上游
+    NovelAI 返回的参考图编码（base64 字符串）以及对应的强度与信息提取量。
+    客户端可在后续请求中把该编码直接放入 ``reference_image_multiple`` 字段
+    复用，无需再次调用 encode-vibe，从而避免重复扣费。
     """
     # 规范化 response_format
     if not response_format or response_format == "auto":
@@ -625,6 +641,18 @@ def _build_image_response_v2(
         prompt_tokens = _BASE_TOKENS
 
     usage = {"prompt_tokens": prompt_tokens, "completion_tokens": 0, "total_tokens": prompt_tokens}
+
+    # 构造 vibe 复用信息（仅当存在已编码 vibe 时）
+    vibe_payload: list[dict[str, Any]] | None = None
+    if encoded_vibes:
+        vibe_payload = []
+        for i, vibe_b64 in enumerate(encoded_vibes):
+            entry: dict[str, Any] = {"reference_image": vibe_b64}
+            if reference_strengths is not None and i < len(reference_strengths):
+                entry["reference_strength"] = reference_strengths[i]
+            if reference_information_extracted is not None and i < len(reference_information_extracted):
+                entry["reference_information_extracted"] = reference_information_extracted[i]
+            vibe_payload.append(entry)
 
     if response_format == "raw":
         return Response(
@@ -653,7 +681,10 @@ def _build_image_response_v2(
             filename = f"{uuid.uuid4().hex}.png"
             filepath = settings.image_dir / filename
             filepath.write_bytes(png_data)
-            data.append({"url": _get_image_url(request, filename), "revised_prompt": prompt})
+            item: dict[str, Any] = {"url": _get_image_url(request, filename), "revised_prompt": prompt}
+            if vibe_payload is not None:
+                item["vibe"] = vibe_payload
+            data.append(item)
         result = {
             "created": int(time.time()),
             "data": data,
@@ -673,6 +704,7 @@ def _build_image_response_v2(
             {
                 "b64_json": base64.b64encode(png_data).decode("ascii"),
                 "revised_prompt": prompt,
+                **({"vibe": vibe_payload} if vibe_payload is not None else {}),
             }
             for png_data in png_images
         ],
@@ -886,6 +918,53 @@ def _build_multipart_form(
     return {}, files
 
 
+# NovelAI /ai/encode-vibe 返回的是 application/binary 二进制数据，
+# base64 编码后体积显著大于常见 PNG 参考图，且解码后字节以 NAI 内部
+# 私有格式开头（非 PNG/JPEG 文件头）。这里用一个保守的启发式判断：
+# 长度阈值 + 非常见图片文件头，用于识别"已经是编码后 vibe"的输入，
+# 避免对同一张参考图重复调用 encode-vibe 重复扣费。
+_ENCODED_VIBE_MIN_LENGTH = 1024
+
+
+def _is_encoded_vibe(image_b64: str) -> bool:
+    """启发式判断 base64 字符串是否为已编码的 NovelAI vibe 数据。
+
+    NovelAI encode-vibe 返回 application/binary，网关 base64 编码后回传给
+    客户端。客户端把该编码再次发回网关时，应跳过 encode-vibe 直接复用，
+    避免重复扣费。
+
+    判断依据：
+    1. 长度足够大（编码后 vibe 通常远大于 1KB）
+    2. 解码后不是常见图片格式（PNG/JPEG/GIF/WebP/RIFF）的开头
+
+    该启发式不完美，但足以覆盖典型场景：原始参考图通常是 PNG/JPEG，
+    体积较小且有明显文件头；编码后 vibe 是 NAI 私有二进制格式。
+    """
+    if not isinstance(image_b64, str) or len(image_b64) < _ENCODED_VIBE_MIN_LENGTH:
+        return False
+    # 剥离 data: 前缀
+    b64_data = _strip_data_prefix(image_b64)
+    try:
+        raw = base64.b64decode(b64_data[:64])
+    except Exception:
+        return False
+    if not raw:
+        return False
+    # 常见图片文件头
+    image_signatures = (
+        b"\x89PNG\r\n\x1a\n",   # PNG
+        b"\xff\xd8\xff",        # JPEG
+        b"GIF87a", b"GIF89a",   # GIF
+        b"RIFF",                # WebP/RIFF
+        b"BM",                  # BMP
+        b"\x00\x00\x01\x00",    # ICO
+    )
+    for sig in image_signatures:
+        if raw.startswith(sig):
+            return False
+    return True
+
+
 async def _encode_vibe(
     request: Request,
     image_b64: str,
@@ -956,27 +1035,44 @@ async def _encode_vibe_batch(
     images: list[str],
     model: str,
     information_extracted_list: list[float] | None = None,
-) -> list[str]:
-    """批量编码多张参考图。
+) -> tuple[list[str], int]:
+    """批量编码多张参考图，自动跳过已编码的 vibe。
+
+    若某张参考图已经是 NovelAI encode-vibe 返回的编码数据（由
+    ``_is_encoded_vibe`` 启发式判断），则直接复用，不再调用 encode-vibe，
+    避免对同一张参考图重复扣费。
 
     Args:
         request: 原始请求
-        images: 参考图 base64 列表
+        images: 参考图 base64 列表（原始图片或已编码 vibe）
         model: 模型名称
         information_extracted_list: 每张图的信息提取量列表
 
     Returns:
-        编码后的 vibe 数据 base64 列表
+        (encoded_vibes, encoded_reuse_count)
+        - encoded_vibes: 编码后的 vibe 数据 base64 列表（与输入等长）
+        - encoded_reuse_count: 复用上游已编码 vibe 的参考图数量
+          （用于 Anlas 计费时减免对应的 2 Anlas 编码费）
     """
     if information_extracted_list is None:
         information_extracted_list = [1.0] * len(images)
 
-    results = []
+    results: list[str] = []
+    reuse_count = 0
     for i, img_b64 in enumerate(images):
         ie = information_extracted_list[i] if i < len(information_extracted_list) else 1.0
+        if _is_encoded_vibe(img_b64):
+            # 已是编码后的 vibe，直接复用，跳过 encode-vibe 调用
+            logger.info(
+                f"♻️ encode-vibe 复用: 参考图 {i} 已是编码后 vibe "
+                f"(len={len(img_b64)})，跳过上游编码"
+            )
+            results.append(img_b64)
+            reuse_count += 1
+            continue
         vibe_b64 = await _encode_vibe(request, img_b64, model, ie)
         results.append(vibe_b64)
-    return results
+    return results, reuse_count
 
 
 async def _send_nai_request(
@@ -1280,6 +1376,11 @@ def _build_generation_payload(
         "qualityToggle": True,
         "noise_schedule": body.get("noise_schedule", "karras"),
         "params_version": 3,
+        # 引导词重缩放（CFG rescale）：默认 0.0，必须显式透传，
+        # 否则客户端调整该值不会到达 NAI，生成的图片仍按 0 处理。
+        "cfg_rescale": body.get("cfg_rescale", 0.0),
+        # 噪声注入（img2img/重绘常用），默认 0.0
+        "noise": body.get("noise", 0.0),
     }
 
     # v4/v4.5 模型不支持 SMEA（sm/sm_dyn），传 True 会导致 NAI 500
@@ -1589,12 +1690,21 @@ async def handle_openai_generations(request: Request) -> Response:
     # V4/V4.5 模型带参考图时，需要先通过 encode-vibe 编码
     nai_model = str(nai_payload.get("model", ""))
     params = nai_payload.get("parameters", {})
+    encoded_vibes_for_response: list[str] | None = None
+    ref_strengths_for_response: list[float] | None = None
+    ref_infos_for_response: list[float] | None = None
+    encoded_reuse_count = 0
     if "diffusion-4" in nai_model and isinstance(params, dict):
         ref_multiple = params.get("reference_image_multiple", [])
         if isinstance(ref_multiple, list) and ref_multiple:
             ref_infos = params.get("reference_information_extracted_multiple", [1.0] * len(ref_multiple))
-            encoded_vibes = await _encode_vibe_batch(request, ref_multiple, nai_model, ref_infos)
+            ref_strengths_for_response = params.get("reference_strength_multiple", [0.6] * len(ref_multiple))
+            ref_infos_for_response = ref_infos
+            encoded_vibes, encoded_reuse_count = await _encode_vibe_batch(
+                request, ref_multiple, nai_model, ref_infos
+            )
             params["reference_image_multiple"] = encoded_vibes
+            encoded_vibes_for_response = encoded_vibes
 
     # 确定 accept_format
     accept_format = "json" if response_format == "nai_json" else "zip"
@@ -1622,9 +1732,16 @@ async def handle_openai_generations(request: Request) -> Response:
         is_opus=is_limit_model(body.get("model", "")),
         reference_image_count=precise_ref_count or ref_count,
         reference_mode="precise" if precise_ref_count else "vibe",
+        reference_image_encoded_count=encoded_reuse_count if not precise_ref_count else 0,
     )
 
-    return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
+    return _build_image_response_v2(
+        request, content, prompt, response_format,
+        anlas_cost=anlas_cost,
+        encoded_vibes=encoded_vibes_for_response,
+        reference_strengths=ref_strengths_for_response,
+        reference_information_extracted=ref_infos_for_response,
+    )
 
 
 # ── /v1/images/inpainting (NAI SDK 格式) ──────────────────────
@@ -2079,9 +2196,14 @@ async def handle_vibe_transfer(request: Request) -> Response:
 
     # V4/V4.5 模型需要先通过 encode-vibe 编码参考图
     is_v4_model = "diffusion-4" in nai_model
+    encoded_reuse_count = 0
+    encoded_vibes_for_response: list[str] | None = None
     if is_v4_model:
-        encoded_vibes = await _encode_vibe_batch(request, ref_images, nai_model, ref_infos)
+        encoded_vibes, encoded_reuse_count = await _encode_vibe_batch(
+            request, ref_images, nai_model, ref_infos
+        )
         ref_images = encoded_vibes
+        encoded_vibes_for_response = encoded_vibes
 
     params = {
         "width": width,
@@ -2165,9 +2287,16 @@ async def handle_vibe_transfer(request: Request) -> Response:
         n_samples=1,
         uncond_scale=params.get("uncond_scale", 1.0),
         reference_image_count=ref_count,
+        reference_image_encoded_count=encoded_reuse_count,
     )
 
-    return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
+    return _build_image_response_v2(
+        request, content, prompt, response_format,
+        anlas_cost=anlas_cost,
+        encoded_vibes=encoded_vibes_for_response,
+        reference_strengths=ref_strengths,
+        reference_information_extracted=ref_infos,
+    )
 
 
 # ── /v1/images/character-reference ───────────────────────────
@@ -2270,9 +2399,14 @@ async def handle_character_reference(request: Request) -> Response:
 
     # V4/V4.5 模型需要先通过 encode-vibe 编码参考图
     is_v4_model = "diffusion-4" in nai_model
+    encoded_reuse_count = 0
+    encoded_vibes_for_response: list[str] | None = None
     if is_v4_model:
-        encoded_vibes = await _encode_vibe_batch(request, ref_images, nai_model, ref_infos)
+        encoded_vibes, encoded_reuse_count = await _encode_vibe_batch(
+            request, ref_images, nai_model, ref_infos
+        )
         ref_images = encoded_vibes
+        encoded_vibes_for_response = encoded_vibes
 
     params: dict[str, Any] = {
         "width": width,
@@ -2373,9 +2507,16 @@ async def handle_character_reference(request: Request) -> Response:
         n_samples=1,
         uncond_scale=params.get("uncond_scale", 1.0),
         reference_image_count=ref_count,
+        reference_image_encoded_count=encoded_reuse_count,
     )
 
-    return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
+    return _build_image_response_v2(
+        request, content, prompt, response_format,
+        anlas_cost=anlas_cost,
+        encoded_vibes=encoded_vibes_for_response,
+        reference_strengths=ref_strengths,
+        reference_information_extracted=ref_infos,
+    )
 
 
 # ── /v1/images/precise-reference ──────────────────────────────

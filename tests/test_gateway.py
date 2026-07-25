@@ -14,7 +14,9 @@ from src.proxy.config import settings
 from src.proxy.openai import (
     _build_generation_payload,
     _build_image_response_v2,
+    _calc_anlas_cost,
     _extract_pngs_from_response,
+    _is_encoded_vibe,
 )
 
 
@@ -131,6 +133,149 @@ class GatewayRegressionTests(unittest.TestCase):
             settings.get_upstream_url("/ai/generate-image"),
             "https://image.novelai.net/ai/generate-image",
         )
+
+    def test_cfg_rescale_passed_through_generation_payload(self) -> None:
+        """回归测试：`-limit` 模型主生成路径必须把 cfg_rescale/noise 传到参数字典。"""
+        nai_payload, _prompt, _fmt = _build_generation_payload(
+            {
+                "model": "nai-v4.5-full-limit",
+                "prompt": "test",
+                "cfg_rescale": 0.4,
+                "noise": 0.1,
+            }
+        )
+        params = nai_payload["parameters"]
+        self.assertAlmostEqual(params["cfg_rescale"], 0.4)
+        self.assertAlmostEqual(params["noise"], 0.1)
+
+    def test_cfg_rescale_defaults_to_zero_when_missing(self) -> None:
+        nai_payload, _prompt, _fmt = _build_generation_payload(
+            {"model": "nai-v4.5-full", "prompt": "test"}
+        )
+        self.assertEqual(nai_payload["parameters"]["cfg_rescale"], 0.0)
+        self.assertEqual(nai_payload["parameters"]["noise"], 0.0)
+
+    def test_calc_anlas_cost_vibe_reuse_reduces_encoding_fee(self) -> None:
+        """复用已编码氛围不应再收 2 Anlas 编码费。"""
+        # 512x512, 28 steps, 单张, 无参考图: 5 Anlas
+        base = _calc_anlas_cost(width=512, height=512, steps=28, n_samples=1)
+        self.assertEqual(base, 5)
+
+        # 单张全新 Vibe 参考图: 5 + 2 = 7
+        single_new = _calc_anlas_cost(
+            width=512, height=512, steps=28, n_samples=1,
+            reference_image_count=1, reference_mode="vibe",
+        )
+        self.assertEqual(single_new, 7)
+
+        # 单张已编码复用 Vibe 参考图: 5 + 0 = 5 (不收编码费)
+        single_reuse = _calc_anlas_cost(
+            width=512, height=512, steps=28, n_samples=1,
+            reference_image_count=1, reference_mode="vibe",
+            reference_image_encoded_count=1,
+        )
+        self.assertEqual(single_reuse, 5)
+
+        # 3 张全新 + 2 张复用 = 5 张参考图, 但只对 3 张收编码费: 5 + 2*3 = 11
+        mixed = _calc_anlas_cost(
+            width=512, height=512, steps=28, n_samples=1,
+            reference_image_count=5, reference_mode="vibe",
+            reference_image_encoded_count=2,
+        )
+        self.assertEqual(mixed, 5 + 2 * 3)
+
+        # 全部 5 张复用: 编码费为 0
+        all_reuse = _calc_anlas_cost(
+            width=512, height=512, steps=28, n_samples=1,
+            reference_image_count=5, reference_mode="vibe",
+            reference_image_encoded_count=5,
+        )
+        self.assertEqual(all_reuse, 5)
+
+    def test_calc_anlas_cost_precise_mode_ignores_encoded_count(self) -> None:
+        """Precise Reference 模式下 reference_image_encoded_count 应被忽略。"""
+        precise = _calc_anlas_cost(
+            width=512, height=512, steps=28, n_samples=1,
+            reference_image_count=1, reference_mode="precise",
+            reference_image_encoded_count=1,
+        )
+        # 5 (base) + 5 * 1 * 1 (precise) = 10
+        self.assertEqual(precise, 10)
+
+    def test_is_encoded_vibe_detects_binary_not_image(self) -> None:
+        """已编码氛围 (NAI 私有二进制) 应被识别为 True，PNG/JPEG 为 False。"""
+        # NAI 私有二进制 (非图片文件头)
+        fake_vibe = base64.b64encode(b"\x00\x01\x02\x03" + b"\x42" * 2048).decode()
+        self.assertTrue(_is_encoded_vibe(fake_vibe))
+
+        # PNG 图片应为 False
+        png_b64 = base64.b64encode(_png_bytes("red")).decode()
+        self.assertFalse(_is_encoded_vibe(png_b64))
+
+        # JPEG 文件头应为 False
+        jpeg_b64 = base64.b64encode(b"\xff\xd8\xff\xe0" + b"\x00" * 2048).decode()
+        self.assertFalse(_is_encoded_vibe(jpeg_b64))
+
+        # 过短字符串应为 False
+        self.assertFalse(_is_encoded_vibe("short"))
+        self.assertFalse(_is_encoded_vibe(""))
+
+    def test_build_image_response_v2_includes_vibe_field(self) -> None:
+        """带 encoded_vibes 时响应 data[i] 应包含 vibe 字段。"""
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("0.png", _png_bytes("red"))
+        request = Request({
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "path": "/v1/images/generations",
+            "headers": [],
+        })
+        fake_vibe = base64.b64encode(b"\x00\x01\x02\x03" + b"\x42" * 2048).decode()
+        response = _build_image_response_v2(
+            request,
+            archive.getvalue(),
+            "test prompt",
+            "b64_json",
+            anlas_cost=7,
+            encoded_vibes=[fake_vibe],
+            reference_strengths=[0.6],
+            reference_information_extracted=[1.0],
+        )
+        body = json.loads(response.body)
+        self.assertEqual(len(body["data"]), 1)
+        item = body["data"][0]
+        self.assertIn("vibe", item)
+        self.assertEqual(len(item["vibe"]), 1)
+        self.assertEqual(item["vibe"][0]["reference_image"], fake_vibe)
+        self.assertAlmostEqual(item["vibe"][0]["reference_strength"], 0.6)
+        self.assertAlmostEqual(item["vibe"][0]["reference_information_extracted"], 1.0)
+
+    def test_build_image_response_v2_omits_vibe_field_when_none(self) -> None:
+        """无 encoded_vibes 时响应不应包含 vibe 字段。"""
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("0.png", _png_bytes("red"))
+        request = Request({
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "path": "/v1/images/generations",
+            "headers": [],
+        })
+        response = _build_image_response_v2(
+            request,
+            archive.getvalue(),
+            "test prompt",
+            "b64_json",
+            anlas_cost=5,
+        )
+        body = json.loads(response.body)
+        self.assertEqual(len(body["data"]), 1)
+        self.assertNotIn("vibe", body["data"][0])
 
 
 if __name__ == "__main__":
