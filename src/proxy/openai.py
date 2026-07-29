@@ -267,6 +267,17 @@ def _safe_int(value, default: int) -> int:
         return default
 
 
+def _safe_float(value, default: float) -> float:
+    """安全地将值转换为 float，转换失败时返回默认值。
+
+    兼容 multipart/form-data 传入的字符串（如 "0.7"）与 JSON 传入的数值。
+    """
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
 def _normalize_token(raw_token: str) -> str:
     """清理共享凭据字符串，移除空白字符与外层引号。"""
     return raw_token.strip().strip("'\"")
@@ -1945,24 +1956,40 @@ async def handle_openai_image_edits(request: Request) -> Response:
     quality_tags = QUALITY_TAGS
     full_prompt = prompt + quality_tags if quality_tags else prompt
 
+    # 统一参数来源：multipart 分支从 form 读取（值为字符串），JSON 分支从 body 读取。
+    # 两个分支都把可选参数收集到 edit_params，供下方 params 构造使用，
+    # 类型转换统一在 params 构造处完成，与 handle_nai_inpainting / handle_img2img 对齐。
+    edit_params: dict[str, Any] = {}
+    if "multipart/form-data" in content_type:
+        for key in ("steps", "scale", "sampler", "noise_schedule",
+                    "cfg_rescale", "noise", "strength", "seed"):
+            val = form.get(key)
+            if val is not None:
+                edit_params[key] = val
+    else:
+        for key in ("steps", "scale", "sampler", "noise_schedule",
+                    "cfg_rescale", "noise", "strength", "seed"):
+            if key in body:
+                edit_params[key] = body[key]
+
     params = {
         "width": width,
         "height": height,
         "n_samples": 1,
-        "seed": int(time.time()) % 2**32,
-        "steps": 28,
-        "scale": 5.0,
-        "sampler": "k_euler_ancestral",
+        "seed": _safe_int(edit_params.get("seed"), int(time.time()) % 2**32),
+        "steps": _safe_int(edit_params.get("steps"), 28),
+        "scale": _safe_float(edit_params.get("scale"), 5.0),
+        "sampler": str(edit_params.get("sampler") or "k_euler_ancestral"),
         "negative_prompt": negative_prompt,
         "sm": True,
         "sm_dyn": False,
-        "noise_schedule": "karras",
+        "noise_schedule": str(edit_params.get("noise_schedule") or "karras"),
         "image": image_b64,
         "mask": mask_b64,
         "add_original_image": True,
-        "cfg_rescale": 0.0,
-        "noise": 0.0,
-        "strength": 0.7,
+        "cfg_rescale": _safe_float(edit_params.get("cfg_rescale"), 0.0),
+        "noise": _safe_float(edit_params.get("noise"), 0.0),
+        "strength": _safe_float(edit_params.get("strength"), 0.7),
     }
 
     nai_payload = {

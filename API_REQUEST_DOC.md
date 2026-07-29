@@ -467,7 +467,7 @@ NAI SDK 风格局部重绘。必填 `image` 与 `mask`；动作固定为 `infill
 OpenAI 兼容局部重绘。支持 JSON 和 `multipart/form-data`：
 
 - JSON：`image` 为 Base64；可显式传 `mask`。
-- multipart：`image` 为文件；`mask` 为可选文件；`prompt`、`model`、`size`、`response_format` 为表单字段。
+- multipart：`image` 为文件；`mask` 为可选文件；`prompt`、`model`、`size`、`response_format`、`steps`、`scale`、`sampler`、`noise_schedule`、`cfg_rescale`、`noise`、`strength`、`seed` 为表单字段。
 - 未传 mask 时，网关从 image alpha 生成蒙版：透明区域为重绘区域。
 
 JSON 示例：
