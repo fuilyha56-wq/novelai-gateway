@@ -113,9 +113,24 @@ def _gateway_auth_error(request: Request) -> Response | None:
         authorization = request.headers.get("authorization", "")
         bearer = authorization[7:] if authorization.lower().startswith("bearer ") else ""
         cookie = unquote(request.cookies.get("gw_pass", ""))
+
+        def _safe_eq(a: str, b: str) -> bool:
+            """secrets.compare_digest 的非 ASCII 安全包装。
+
+            compare_digest 要求 str 参数仅含 ASCII 字符，否则抛 TypeError。
+            NewAPI 等中转站可能把自身 API Key 放进 Authorization 头，其中
+            可能包含非 ASCII 字符，因此先编码为 UTF-8 bytes 再比较。
+            """
+            try:
+                return secrets.compare_digest(a, b)
+            except TypeError:
+                return secrets.compare_digest(
+                    a.encode("utf-8"), b.encode("utf-8")
+                )
+
         if not (
-            (bearer and secrets.compare_digest(bearer, password))
-            or (cookie and secrets.compare_digest(cookie, password))
+            (bearer and _safe_eq(bearer, password))
+            or (cookie and _safe_eq(cookie, password))
         ):
             return Response(
                 content='{"detail":"Unauthorized"}',
