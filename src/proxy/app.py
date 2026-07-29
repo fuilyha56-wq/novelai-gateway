@@ -120,14 +120,25 @@ def _safe_compare(a: str, b: str) -> bool:
 
 
 def _gateway_auth_error(request: Request) -> Response | None:
-    """校验下游访问权限；返回 None 表示允许访问。"""
+    """校验下游访问权限；返回 None 表示允许访问。
+
+    支持三种方式传递网关密码：
+    1. ``Authorization: Bearer <password>`` — 标准方式（会覆盖上游 Authorization）
+    2. ``X-Gateway-Password: <password>`` — 自定义头，不干扰 NewAPI 的 Authorization
+    3. Cookie ``gw_pass=<password>`` — 网页端方式
+
+    NewAPI 等中转站转发请求时，Authorization 头里放的是用户 Key 而非网关
+    密码。用 X-Gateway-Password 可避免覆盖 NewAPI 自身的 Authorization。
+    """
     password = settings.gateway_password
     if password:
         authorization = request.headers.get("authorization", "")
         bearer = authorization[7:] if authorization.lower().startswith("bearer ") else ""
+        x_gateway_pw = request.headers.get("x-gateway-password", "")
         cookie = unquote(request.cookies.get("gw_pass", ""))
         if not (
             (bearer and _safe_compare(bearer, password))
+            or (x_gateway_pw and _safe_compare(x_gateway_pw, password))
             or (cookie and _safe_compare(cookie, password))
         ):
             return Response(
