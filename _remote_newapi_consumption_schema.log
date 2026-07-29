@@ -1,0 +1,34 @@
+id|bigint
+user_id|bigint
+created_at|bigint
+type|bigint
+content|text
+username|text
+token_name|text
+model_name|text
+quota|bigint
+prompt_tokens|bigint
+completion_tokens|bigint
+use_time|bigint
+is_stream|boolean
+channel_id|bigint
+channel_name|text
+token_id|bigint
+group|text
+ip|text
+request_id|character varying
+other|text
+upstream_request_id|character varying
+id|bigint
+user_id|bigint
+username|character varying
+model_name|character varying
+created_at|bigint
+token_used|bigint
+count|bigint
+quota|bigint
+use_group|character varying
+token_id|bigint
+channel_id|bigint
+node_name|character varying
+===EXIT:0===
