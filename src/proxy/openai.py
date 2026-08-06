@@ -61,6 +61,9 @@ MAX_N_SAMPLES = 6
 OPUS_FREE_MAX_STEPS = 28
 OPUS_FREE_MAX_PIXELS = 1024 * 1024  # 1024×1024
 
+# Vibe Transfer 参考图上限（NovelAI 最多叠加 16 个 vibe）
+MAX_VIBE_REFERENCE_IMAGES = 16
+
 # -limit 后缀模型：限制版，只允许走 Opus 免费额度的文生图路径
 LIMIT_MODEL_SUFFIX = "-limit"
 VALID_SAMPLERS = {
@@ -140,19 +143,44 @@ def _enforce_limit_model(model: str, body: dict[str, Any]) -> None:
     if not is_limit_model(model):
         return
 
-    # 1. 不允许参考图；文生图也不允许携带输入图片。
-    # img2img/infill 的输入图片不额外收费，符合其余边界时仍可使用免费额度。
+    # 1. 参考图处理。
+    # vibe 类参考图字段（reference_image / reference_images）：
+    #   - 已是编码后 vibe（_is_encoded_vibe 为真）→ 复用不调 encode-vibe，0 Anlas，放行；
+    #   - 原始图片 → 会触发 encode-vibe 扣 2 Anlas，超出免费额度，拦截。
+    # references（precise-reference）每张样本必扣 5 Anlas，必然超额度，始终拦截。
+    # 注意：_is_encoded_vibe 定义在本函数之后，Python 模块加载后运行期查找，无顺序问题。
     action = body.get("action", "generate")
-    forbidden_image_keys = ["reference_image", "reference_images"]
-    if action == "generate":
-        forbidden_image_keys.append("image")
-    forbidden_image_keys.append("references")
-    for key in forbidden_image_keys:
-        if body.get(key):
+    for key in ("reference_image", "reference_images"):
+        value = body.get(key)
+        if not value:
+            continue
+        items = value if isinstance(value, list) else [value]
+        if not all(_is_encoded_vibe(item) for item in items if isinstance(item, str)):
             raise HTTPException(
                 status_code=400,
-                detail=f"-limit 模型 '{model}' 不允许消耗 Anlas，请移除 {key} 参数或改用原版模型（去掉 -limit 后缀）",
+                detail=(
+                    f"-limit 模型 '{model}' 的 {key} 仅支持已编码的 vibe 数据"
+                    "（原始图片编码需消耗 2 Anlas/张，超出免费额度），"
+                    "请先用完整模型获取 vibe 编码，或改用原版模型（去掉 -limit 后缀）"
+                ),
             )
+        # 上限 16 张
+        if len(items) > MAX_VIBE_REFERENCE_IMAGES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"vibe 参考图最多 {MAX_VIBE_REFERENCE_IMAGES} 张，当前 {len(items)} 张",
+            )
+    if body.get("references"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"-limit 模型 '{model}' 不支持 Precise Reference（每张参考图每样本消耗 5 Anlas），请改用原版模型（去掉 -limit 后缀）",
+        )
+    # 文生图不允许携带输入图片（img2img/infill 的输入图片不额外收费，放行）。
+    if action == "generate" and body.get("image"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"-limit 模型 '{model}' 的文生图路径不允许携带 image，请改用 img2img 或原版模型（去掉 -limit 后缀）",
+        )
 
     # 2. action 必须是可使用免费额度的生成模式。
     if action not in {"generate", "img2img", "infill"}:
@@ -201,13 +229,60 @@ def _reject_limit_model_for_paid_endpoint(model: str) -> None:
 
     单张、28 steps 以内且不超过 1024x1024 的图生图或重绘也可使用 Opus
     免费额度，因此由各端点转换为通用生成参数后调用 ``_enforce_limit_model``。
-    Vibe、参考图、放大和 Director 工具仍必然产生额外 Anlas 费用。
+    放大和 Director 工具仍必然产生额外 Anlas 费用。
     """
     if is_limit_model(model):
         raise HTTPException(
             status_code=400,
             detail=f"-limit 模型 '{model}' 不允许此端点（该操作必然消耗 Anlas），请改用原版模型（去掉 -limit 后缀）",
         )
+
+
+def _enforce_limit_model_for_encoded_vibe(
+    model: str,
+    body: dict[str, Any],
+    ref_images: list[str],
+) -> None:
+    """-limit 模型的 Vibe Transfer / Character Reference 入口校验。
+
+    复用已编码 vibe 时不调 encode-vibe、不计 2 Anlas 编码费，
+    生图本体在 Opus 免费额度内（n=1 / steps≤28 / ≤1024²）时 total=0，
+    因此 -limit 模型可以安全使用——**前提是参考图全部已编码**。
+
+    任一参考图为原始图片（会触发 encode-vibe 扣 2 Anlas）即拒绝；
+    其余 Opus 免费额度边界与 ``_enforce_limit_model`` 一致。
+
+    Args:
+        model: 请求模型名
+        body: 请求体（用于校验 steps/尺寸/service_tier 等）
+        ref_images: 参考图 base64 列表（原始图或已编码 vibe）
+
+    Raises:
+        HTTPException: 非 -limit 模型直接返回；-limit 模型违反任一约束时 400
+    """
+    if not is_limit_model(model):
+        return
+
+    # 参考图数量上限
+    if len(ref_images) > MAX_VIBE_REFERENCE_IMAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"vibe 参考图最多 {MAX_VIBE_REFERENCE_IMAGES} 张，当前 {len(ref_images)} 张",
+        )
+
+    # 必须全部已编码，否则 encode-vibe 会扣 2 Anlas/张
+    if not all(_is_encoded_vibe(img) for img in ref_images):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"-limit 模型 '{model}' 的 Vibe 参考图必须全部使用已编码的 vibe 数据"
+                "（原始图片编码需消耗 2 Anlas/张，超出免费额度），"
+                "请先用完整模型获取 vibe 编码，或改用原版模型（去掉 -limit 后缀）"
+            ),
+        )
+
+    # 复用 Opus 免费额度边界校验（n=1 / steps≤28 / ≤1024² / 非 priority）
+    _enforce_limit_model(model, body)
 
 # NAI 请求头模板
 _NAI_HEADERS_TEMPLATE = {
@@ -2193,7 +2268,6 @@ async def handle_vibe_transfer(request: Request) -> Response:
 
     prompt = body.get("prompt", "")
     model = body.get("model", "nai-diffusion-4-5-full")
-    _reject_limit_model_for_paid_endpoint(model)
     negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
     response_format = body.get("response_format", "b64_json")
 
@@ -2203,6 +2277,8 @@ async def handle_vibe_transfer(request: Request) -> Response:
         ref_images = [ref_images]
     if not ref_images:
         raise HTTPException(status_code=400, detail="At least one reference_image is required")
+    # -limit 模型：参考图全为已编码 vibe 时放行（复用不计编码费）
+    _enforce_limit_model_for_encoded_vibe(model, body, ref_images)
 
     ref_strength = body.get("reference_strength", 0.6)
     ref_info_extracted = body.get("reference_information_extracted", 1.0)
@@ -2371,7 +2447,6 @@ async def handle_character_reference(request: Request) -> Response:
 
     prompt = body.get("prompt", "")
     model = body.get("model", "nai-diffusion-4-5-full")
-    _reject_limit_model_for_paid_endpoint(model)
     negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
     response_format = body.get("response_format", "b64_json")
 
@@ -2413,6 +2488,8 @@ async def handle_character_reference(request: Request) -> Response:
 
     if not ref_images:
         raise HTTPException(status_code=400, detail="No valid character reference images found")
+    # -limit 模型：参考图全为已编码 vibe 时放行（复用不计编码费）
+    _enforce_limit_model_for_encoded_vibe(model, body, ref_images)
 
     registry = get_registry()
     nai_model = registry.resolve_image_model(model) if registry else model
