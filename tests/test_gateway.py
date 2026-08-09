@@ -155,6 +155,59 @@ class GatewayRegressionTests(unittest.TestCase):
         self.assertEqual(nai_payload["parameters"]["cfg_rescale"], 0.0)
         self.assertEqual(nai_payload["parameters"]["noise"], 0.0)
 
+    def test_generation_payload_accepts_up_to_four_vibe_references(self) -> None:
+        """通用生图入口应把 reference_images 映射为上游多图 Vibe 字段。"""
+        reference_images = [f"image-{index}" for index in range(4)]
+        nai_payload, _prompt, _fmt = _build_generation_payload(
+            {
+                "model": "nai-v4.5-full",
+                "prompt": "test",
+                "reference_images": reference_images,
+                "reference_strength_multiple": [0.2, 0.4, 0.6, 0.8],
+                "reference_information_extracted_multiple": [0.1, 0.3, 0.5, 0.7],
+            }
+        )
+        params = nai_payload["parameters"]
+        self.assertEqual(params["reference_image_multiple"], reference_images)
+        self.assertEqual(params["reference_strength_multiple"], [0.2, 0.4, 0.6, 0.8])
+        self.assertEqual(
+            params["reference_information_extracted_multiple"],
+            [0.1, 0.3, 0.5, 0.7],
+        )
+
+    def test_generation_payload_rejects_more_than_four_vibe_references(self) -> None:
+        """Vibe 参考图数量不能超过 4 张。"""
+        with self.assertRaises(HTTPException) as raised:
+            _build_generation_payload(
+                {
+                    "model": "nai-v4.5-full",
+                    "prompt": "test",
+                    "reference_images": [f"image-{index}" for index in range(5)],
+                }
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("最多 4 张", str(raised.exception.detail))
+
+    def test_precise_reference_cannot_combine_multiple_vibe_references(self) -> None:
+        """Precise Reference 与 Vibe 多图必须互斥。"""
+        with self.assertRaises(HTTPException) as raised:
+            _build_generation_payload(
+                {
+                    "model": "nai-v4.5-full",
+                    "prompt": "test",
+                    "reference_images": ["vibe-image"],
+                    "references": [
+                        {
+                            "reference_image": "precise-image",
+                            "reference_type": "character",
+                        }
+                    ],
+                },
+                operation="precise-reference",
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("cannot be combined", str(raised.exception.detail))
+
     def test_calc_anlas_cost_vibe_reuse_reduces_encoding_fee(self) -> None:
         """复用已编码氛围不应再收 2 Anlas 编码费。"""
         # 512x512, 28 steps, 单张, 无参考图: 5 Anlas

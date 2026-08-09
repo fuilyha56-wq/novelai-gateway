@@ -208,9 +208,12 @@ OpenAI 兼容文生图端点。支持 NAI 扩展字段。
 | `seed` | integer | 自动生成 | 随机种子 |
 | `quality_tags` | string | 内置质量标签 | 空字符串可禁用自动质量标签 |
 | `response_format` | string | `b64_json` | 见 [响应格式](#5-图像响应格式) |
-| `reference_image` | string | - | 单张 Vibe 参考图 |
-| `reference_strength` | number | `0.6` | 单张 Vibe 强度 |
-| `reference_information_extracted` | number | `1.0` | Vibe 信息提取量 |
+| `reference_image` | string | - | 单张 Vibe 参考图；不能与 `reference_images` 同时传入 |
+| `reference_images` | string[] | - | 多张 Vibe 参考图，1 至 4 张；不能与 `reference_image` 同时传入 |
+| `reference_strength` | number | `0.6` | 未提供逐图强度时使用的默认 Vibe 强度 |
+| `reference_strength_multiple` | number[] | - | 可选的逐图 Vibe 强度数组，顺序与 `reference_images` 一致 |
+| `reference_information_extracted` | number | `1.0` | 未提供逐图参数时使用的默认 Vibe 信息提取量 |
+| `reference_information_extracted_multiple` | number[] | - | 可选的逐图信息提取量数组，顺序与 `reference_images` 一致 |
 | `controlnet_condition` | string | - | ControlNet 条件图 |
 | `controlnet_model` | string | `hed` | ControlNet 模型 |
 | `controlnet_strength` | number | `1.0` | ControlNet 强度 |
@@ -498,7 +501,7 @@ multipart 请求中 `mask` 也可省略；此时 source 图片必须有 alpha �
 
 ### `POST /v1/images/vibe-transfer`
 
-Vibe Transfer。必填 `reference_image`（单个字符串）或 `reference_images`（数组）。V4/V4.5 会自动调用 `/ai/encode-vibe` 后再生成。
+Vibe Transfer。必填 `reference_image`（单个字符串）或 `reference_images`（1 至 4 张数组），两者不能同时传入。V4/V4.5 会自动调用 `/ai/encode-vibe` 后再生成。
 
 ```json
 {

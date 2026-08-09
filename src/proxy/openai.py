@@ -61,8 +61,8 @@ MAX_N_SAMPLES = 6
 OPUS_FREE_MAX_STEPS = 28
 OPUS_FREE_MAX_PIXELS = 1024 * 1024  # 1024×1024
 
-# Vibe Transfer 参考图上限（NovelAI 最多叠加 16 个 vibe）
-MAX_VIBE_REFERENCE_IMAGES = 16
+# 网关公开的 Vibe Transfer 参考图上限。
+MAX_VIBE_REFERENCE_IMAGES = 4
 
 # -limit 后缀模型：限制版，只允许走 Opus 免费额度的文生图路径
 LIMIT_MODEL_SUFFIX = "-limit"
@@ -121,6 +121,38 @@ def _validate_image_params(
         raise HTTPException(status_code=400, detail=f"response_format 非法，当前 {response_format}，合法值: {VALID_RESPONSE_FORMATS}")
 
 
+def _normalize_vibe_reference_images(body: dict[str, Any]) -> list[str]:
+    """读取并校验请求中的单张或多张 Vibe 参考图。"""
+    has_single = "reference_image" in body
+    has_multiple = "reference_images" in body
+    if has_single and has_multiple:
+        raise HTTPException(
+            status_code=400,
+            detail="reference_image and reference_images cannot be combined",
+        )
+
+    value = body.get("reference_images") if has_multiple else body.get("reference_image")
+    if value is None:
+        return []
+    images = [value] if isinstance(value, str) else value
+    if not isinstance(images, list) or not images:
+        raise HTTPException(
+            status_code=400,
+            detail="reference_images must be a non-empty list of image strings",
+        )
+    if len(images) > MAX_VIBE_REFERENCE_IMAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"vibe 参考图最多 {MAX_VIBE_REFERENCE_IMAGES} 张，当前 {len(images)} 张",
+        )
+    if any(not isinstance(image, str) or not image for image in images):
+        raise HTTPException(
+            status_code=400,
+            detail="reference_images must contain only non-empty image strings",
+        )
+    return images
+
+
 # ── -limit 模型校验 ─────────────────────────────────────────────
 
 def is_limit_model(model_identifier: str | None) -> bool:
@@ -155,7 +187,7 @@ def _enforce_limit_model(model: str, body: dict[str, Any]) -> None:
         if not value:
             continue
         items = value if isinstance(value, list) else [value]
-        if not all(_is_encoded_vibe(item) for item in items if isinstance(item, str)):
+        if not all(isinstance(item, str) and _is_encoded_vibe(item) for item in items):
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -1480,11 +1512,18 @@ def _build_generation_payload(
     if "skip_cfg_above_sigma" in body:
         params["skip_cfg_above_sigma"] = body["skip_cfg_above_sigma"]
 
-    # 可选: reference_image (vibe transfer in generations)
-    if "reference_image" in body:
-        params["reference_image_multiple"] = [body["reference_image"]]
-        params["reference_strength_multiple"] = [body.get("reference_strength", 0.6)]
-        params["reference_information_extracted_multiple"] = [body.get("reference_information_extracted", 1.0)]
+    # 可选: 单张或多张 Vibe 参考图。
+    vibe_images = _normalize_vibe_reference_images(body)
+    if vibe_images:
+        params["reference_image_multiple"] = vibe_images
+        params["reference_strength_multiple"] = body.get(
+            "reference_strength_multiple",
+            [body.get("reference_strength", 0.6)] * len(vibe_images),
+        )
+        params["reference_information_extracted_multiple"] = body.get(
+            "reference_information_extracted_multiple",
+            [body.get("reference_information_extracted", 1.0)] * len(vibe_images),
+        )
 
     # NewAPI 等中转通常只放行 /v1/images/generations。通过透传请求头显式
     # 选择 Precise Reference，避免把普通扩展字段误解为精密参考请求。
@@ -1492,10 +1531,10 @@ def _build_generation_payload(
     if operation == "precise-reference":
         if not isinstance(references, list) or not references:
             raise HTTPException(status_code=400, detail="references must be a non-empty list")
-        if "reference_image" in body:
+        if vibe_images:
             raise HTTPException(
                 status_code=400,
-                detail="references cannot be combined with reference_image",
+                detail="references cannot be combined with Vibe reference images",
             )
         if "diffusion-4" not in nai_model:
             raise HTTPException(
@@ -2271,10 +2310,7 @@ async def handle_vibe_transfer(request: Request) -> Response:
     negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
     response_format = body.get("response_format", "b64_json")
 
-    # reference_image 可以是单个字符串或列表
-    ref_images = body.get("reference_image", body.get("reference_images", []))
-    if isinstance(ref_images, str):
-        ref_images = [ref_images]
+    ref_images = _normalize_vibe_reference_images(body)
     if not ref_images:
         raise HTTPException(status_code=400, detail="At least one reference_image is required")
     # -limit 模型：参考图全为已编码 vibe 时放行（复用不计编码费）
