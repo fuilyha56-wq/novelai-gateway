@@ -186,6 +186,22 @@ class V5QuotaTests(unittest.TestCase):
             v5_quota.check_v5_quota("nai-diffusion-5-full", 1)
         self.assertIn("今日免费额度已用完", str(raised.exception))
 
+    def test_multiple_models_sum_for_quota(self) -> None:
+        """多模型分别计数，但限额按 V5 合计判断。"""
+        v5_quota.record_v5_generation("nai-diffusion-5-full", 100)
+        v5_quota.record_v5_generation("nai-diffusion-5-curated", 89)
+        self.assertEqual(v5_quota.get_usage()["used_today"], 189)
+        self.assertEqual(
+            v5_quota.get_usage()["per_model"]["nai-diffusion-5-full"]["used_today"], 100
+        )
+        self.assertEqual(
+            v5_quota.get_usage()["per_model"]["nai-diffusion-5-curated"]["used_today"], 89
+        )
+        # 合计 189，还剩 1 张 → 单张放行，2 张拒绝
+        v5_quota.check_v5_quota("nai-diffusion-5-curated", 1)
+        with self.assertRaises(ValueError):
+            v5_quota.check_v5_quota("nai-diffusion-5-full", 2)
+
     def test_partial_remaining_rejects_batch(self) -> None:
         v5_quota.record_v5_generation("nai-diffusion-5-full", 189)
         with self.assertRaises(ValueError):
@@ -197,11 +213,13 @@ class V5QuotaTests(unittest.TestCase):
         """单日不足 190 但滚动 7 天达 1730 时，仍应拒绝。"""
         today = v5_quota._today()
         day = datetime.strptime(today, "%Y-%m-%d").date()
-        usage: dict[str, int] = {}
+        usage: dict[str, dict[str, int]] = {}
         # 近 6 天每天 288 张（1728），今天再生成 2 张即达周顶 1730
         for i in range(1, 7):
-            usage[(day - timedelta(days=i)).isoformat()] = 288
-        usage[today] = 0
+            usage.setdefault("nai-diffusion-5-full", {})[
+                (day - timedelta(days=i)).isoformat()
+            ] = 288
+        usage.setdefault("nai-diffusion-5-full", {})[today] = 0
         with open(v5_quota.V5_USAGE_JSON, "w", encoding="utf-8") as f:
             json.dump(usage, f)
         v5_quota.record_v5_generation("nai-diffusion-5-full", 2)
@@ -236,14 +254,27 @@ class V5QuotaTests(unittest.TestCase):
         self.assertEqual(v5_quota._fmt_params(None), "")
         self.assertEqual(v5_quota._fmt_params({}), "")
 
-    def test_log_generation_v45_no_count(self) -> None:
-        """V4.5 走 log_generation 只打日志，不计数。"""
+    def test_log_generation_v45_counts_per_model(self) -> None:
+        """V4.5 按模型分别计数，但不计入 V5 限额。"""
         v5_quota.log_generation(
             "nai-diffusion-4-5-full",
             2,
             params={"width": 1024, "height": 1024, "steps": 28},
         )
+        v5_quota.log_generation(
+            "nai-diffusion-4-5-curated",
+            1,
+            params={"width": 1024, "height": 1024, "steps": 28},
+        )
+        # V5 合计不受 V4.5 影响
         self.assertEqual(v5_quota.get_usage()["used_today"], 0)
+        # 但按模型统计里有 V4.5 各自计数
+        self.assertEqual(
+            v5_quota.get_usage()["per_model"]["nai-diffusion-4-5-full"]["used_today"], 2
+        )
+        self.assertEqual(
+            v5_quota.get_usage()["per_model"]["nai-diffusion-4-5-curated"]["used_today"], 1
+        )
 
     def test_log_generation_v5_counts(self) -> None:
         """V5 走 log_generation 正常计数（复用 record_v5_generation）。"""
