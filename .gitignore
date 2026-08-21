@@ -48,6 +48,10 @@ start_v2raya.py
 fix_v2raya.sh
 
 # Dart 文件（与本项目无关）
+
+# 本地参考源码副本（不入库）
+new-api/
+_ref_nai_launcher/
 _*.dart
 _dart_files.txt
 
