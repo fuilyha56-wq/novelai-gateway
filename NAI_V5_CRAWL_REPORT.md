@@ -164,12 +164,19 @@ V5 per_sample = ceil( ceil(raw) * 1.5 )
 
 **V5 -limit（免费额度路径）：固定 0.07 元/张**（NewAPI 渠道 116 固定 `model_price`，不走 tiered_expr）
 
-### 4.3 每周 1730 张限额（按天拆分）
+### 4.3 V5 免费额度双限额（每日 190 + 每周 1730）
 
-- 总量：**1730 张/周**（按 7 天均分 ≈ 247 张/天）
-- 建议配置：**每日 247 张**（周一至周日各 247，总计 1729，余 1 张机动）；或直接 `1730/7` 向下取整
+官方 Opus V5 免费额度（UI 实测 2026-08-21）：
+- 每周总量 **1730 张**（"99% remaining (~1713 images)"）
+- 每日自动补充 **~190 张**（"Currently refills at 11% per day (~190 images)"）
+
+本站限制策略（**双限额，任一触达即拒绝**）：
+1. **每日上限 190 张** —— 对齐官方每日补充速率，避免净消耗存量额度；
+2. **滚动 7 天窗口上限 1730 张** —— 对齐官方每周总量硬顶。
+
 - 限制对象：所有 V5 系模型（`nai-diffusion-5-*`，含 `-limit` 变体）的生成张数（`n_samples` 累计，含 img2img/inpaint/vibe/character/precise 各端点）
 - 实现：网关侧按日计数（UTC+8 自然日，持久化 `logs/v5_daily_usage.json`），请求前预检超限返回 **429**；不依赖 NewAPI 配额
+- 日志：每次生成输出 `🎨 V5 生成 +N 张 | 模型 | 今日 x/190 ████░░░░░░ (x%) | 本周 y/1730 ██░░░░░░░░ (y%)` 进度条
 - 状态：✅ 已实现（`src/proxy/v5_quota.py` + 7 个端点预检/计数）
 
 ## 5. 实施状态（已完成）
@@ -178,7 +185,7 @@ V5 per_sample = ceil( ceil(raw) * 1.5 )
 2. ✅ `src/proxy/openai.py`：
    - `_calc_anlas_cost` 增加 `price_multiplier`（V5 非 limit = 2.0，作用于最终 total）
    - V5 请求注入 `params_version: 4`（V4/V4.5 保持 3）；`_is_v4_family()` 统一 V4/V4.5/V5 的 v4_prompt / SMEA 关闭 / Accept 逻辑
-   - 新增每周 1730 / 每日 247 张 V5 限流（`src/proxy/v5_quota.py`，7 个端点预检 + 计数）
+   - 新增每日 190 / 滚动周 1730 张 V5 双限流（`src/proxy/v5_quota.py`，7 个端点预检 + 计数）
    - Precise Reference / Vibe / Character 端点全部放行 V5
 3. ✅ 单测 `tests/test_v5.py`（34 个用例全部通过，含回归）
 4. ⏳ 部署到服务器（`git push` + `docker cp src/` + `docker cp config/models.toml` + restart，见 `SERVER_CONNECTION_GUIDE.md`）

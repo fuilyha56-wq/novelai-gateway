@@ -1,10 +1,12 @@
-"""V5 模型支持的单测：params_version、计费倍率、每周/每日限额。"""
+"""V5 模型支持的单测：params_version、计费倍率、每日/每周双限额。"""
 
 import base64
 import io
+import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 
 from fastapi import HTTPException
 from PIL import Image
@@ -148,7 +150,7 @@ class V5AnlasCostTests(unittest.TestCase):
 
 
 class V5QuotaTests(unittest.TestCase):
-    """V5 每周 1730 / 每日 247 张限额。"""
+    """V5 双限额：每日 190 张（官方补充速率）+ 每周 1730 张硬顶。"""
 
     def setUp(self) -> None:
         self._fd, self._tmp_path = tempfile.mkstemp(suffix=".json")
@@ -164,7 +166,7 @@ class V5QuotaTests(unittest.TestCase):
 
     def test_quota_constants(self) -> None:
         self.assertEqual(v5_quota.V5_WEEKLY_LIMIT, 1730)
-        self.assertEqual(v5_quota.V5_DAILY_LIMIT, 247)
+        self.assertEqual(v5_quota.V5_DAILY_LIMIT, 190)
 
     def test_non_v5_models_always_pass(self) -> None:
         v5_quota.check_v5_quota("nai-diffusion-4-5-full", 100)
@@ -176,20 +178,39 @@ class V5QuotaTests(unittest.TestCase):
         v5_quota.record_v5_generation("nai-diffusion-5-full", 1)
         v5_quota.record_v5_generation("nai-diffusion-5-full", 2)
         self.assertEqual(v5_quota.get_usage()["used_today"], 3)
-        self.assertEqual(v5_quota.get_usage()["remaining_today"], 247 - 3)
+        self.assertEqual(v5_quota.get_usage()["remaining_today"], 190 - 3)
 
-    def test_check_rejects_when_over_limit(self) -> None:
-        v5_quota.record_v5_generation("nai-diffusion-5-full", 247)
+    def test_check_rejects_when_over_daily_limit(self) -> None:
+        v5_quota.record_v5_generation("nai-diffusion-5-full", 190)
         with self.assertRaises(ValueError) as raised:
             v5_quota.check_v5_quota("nai-diffusion-5-full", 1)
-        self.assertIn("今日生成额度已用完", str(raised.exception))
+        self.assertIn("今日免费额度已用完", str(raised.exception))
 
     def test_partial_remaining_rejects_batch(self) -> None:
-        v5_quota.record_v5_generation("nai-diffusion-5-full", 246)
+        v5_quota.record_v5_generation("nai-diffusion-5-full", 189)
         with self.assertRaises(ValueError):
             v5_quota.check_v5_quota("nai-diffusion-5-full", 2)
         # 剩 1 张时，单张请求仍可放行
         v5_quota.check_v5_quota("nai-diffusion-5-full", 1)
+
+    def test_weekly_limit_blocks_when_daily_under(self) -> None:
+        """单日不足 190 但滚动 7 天达 1730 时，仍应拒绝。"""
+        today = v5_quota._today()
+        day = datetime.strptime(today, "%Y-%m-%d").date()
+        usage: dict[str, int] = {}
+        # 近 6 天每天 288 张（1728），今天再生成 2 张即达周顶 1730
+        for i in range(1, 7):
+            usage[(day - timedelta(days=i)).isoformat()] = 288
+        usage[today] = 0
+        with open(v5_quota.V5_USAGE_JSON, "w", encoding="utf-8") as f:
+            json.dump(usage, f)
+        v5_quota.record_v5_generation("nai-diffusion-5-full", 2)
+        # 今日 2/190，但周窗口 1730/1730 → 拒绝
+        self.assertEqual(v5_quota.get_usage()["used_today"], 2)
+        self.assertEqual(v5_quota.get_usage()["used_this_week"], 1730)
+        with self.assertRaises(ValueError) as raised:
+            v5_quota.check_v5_quota("nai-diffusion-5-full", 1)
+        self.assertIn("本周免费额度已用完", str(raised.exception))
 
     def test_limit_variant_also_counted(self) -> None:
         """-limit 变体同样计入 V5 限额。"""

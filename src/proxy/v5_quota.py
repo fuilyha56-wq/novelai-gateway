@@ -1,8 +1,13 @@
 """
 V5 图像生成限额模块。
 
-NovelAI Diffusion V5 每周限额 1730 张，按自然日（UTC+8）均摊：
-    1730 / 7 ≈ 247 张/天（余 1 张机动，累计一周最多 1729 张）。
+NovelAI Opus V5 免费额度（官方 UI 实测 2026-08-21）：
+- 每周总量 1730 张（UI 显示 "99% remaining (~1713 images)"）
+- 每日自动补充 ~190 张（"Currently refills at 11% per day (~190 images)"）
+
+本站限制策略（双限额，任一触达即拒绝）：
+1. 每日上限 190 张 —— 对齐官方每日补充速率，避免净消耗存量额度；
+2. 滚动 7 天窗口上限 1730 张 —— 对齐官方每周总量硬顶。
 
 限制对象：所有 V5 系模型（`nai-diffusion-5-*`，含 -limit 免费额度变体），
 按请求成功的生成张数（n_samples）累计，img2img / infill / vibe /
@@ -24,9 +29,12 @@ from typing import Any
 
 # ── 常量 ─────────────────────────────────────────────────────
 
-# 每周限额 1730 张 → 每日 247 张（1730 = 247 * 7 + 1）
+# 官方免费额度：每周 1730 张、每日补充 ~190 张（11%）
 V5_WEEKLY_LIMIT = 1730
-V5_DAILY_LIMIT = V5_WEEKLY_LIMIT // 7
+V5_DAILY_LIMIT = 190
+
+# 滚动周窗口天数（对齐官方"随时间自动补充"）
+_WEEK_WINDOW_DAYS = 7
 
 # 计数文件（与 stats 模块同目录）
 V5_USAGE_JSON = "logs/v5_daily_usage.json"
@@ -36,6 +44,22 @@ _CST = timezone(timedelta(hours=8))
 
 _lock = threading.Lock()
 _logger = logging.getLogger("v5_quota")
+# 独立设置级别：main.py 只把 gateway 设为 INFO，不设的话本模块 INFO 日志不会显示
+_logger.setLevel(logging.INFO)
+
+
+# ── 日志美化 ──────────────────────────────────────────────────
+
+def _bar(used: int, limit: int, width: int = 10) -> str:
+    """渲染进度条：``██████░░░░``（默认 10 格）。"""
+    ratio = min(used / limit, 1.0) if limit else 0.0
+    filled = int(round(ratio * width))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _pct(used: int, limit: int) -> str:
+    """渲染百分比字符串（0-100%，无小数）。"""
+    return f"{used / limit * 100:.0f}%" if limit else "0%"
 
 
 def is_v5_model(nai_model: str | None) -> bool:
@@ -67,25 +91,44 @@ def _today() -> str:
     return datetime.now(_CST).strftime("%Y-%m-%d")
 
 
+def _week_total(usage: dict[str, int], today: str) -> int:
+    """滚动 7 天窗口（含今天）的 V5 生成总量。"""
+    day = datetime.strptime(today, "%Y-%m-%d").date()
+    total = 0
+    for i in range(_WEEK_WINDOW_DAYS):
+        key = (day - timedelta(days=i)).isoformat()
+        total += usage.get(key, 0)
+    return total
+
+
 def check_v5_quota(nai_model: str | None, n_samples: int = 1) -> None:
-    """请求发送前预检：V5 模型当日用量达到上限时抛 ValueError。
+    """请求发送前预检：V5 模型当日/滚动周用量达到上限时抛 ValueError。
 
     仅对 V5 系模型生效；非 V5 模型直接放行。
 
     Raises:
-        ValueError: 当日 V5 生成张数已达上限（剩余 < n_samples）
+        ValueError: 当日或滚动 7 天 V5 生成张数已达上限（剩余 < n_samples）
     """
     if not is_v5_model(nai_model) or n_samples <= 0:
         return
     today = _today()
     with _lock:
-        used = _load_usage().get(today, 0)
-    remaining = V5_DAILY_LIMIT - used
-    if remaining < n_samples:
+        usage = _load_usage()
+        used_today = usage.get(today, 0)
+        used_week = _week_total(usage, today)
+    remaining_today = V5_DAILY_LIMIT - used_today
+    remaining_week = V5_WEEKLY_LIMIT - used_week
+    if remaining_today < n_samples:
         raise ValueError(
-            f"V5 模型今日生成额度已用完：今日已生成 {used}/{V5_DAILY_LIMIT} 张，"
-            f"本次请求需要 {n_samples} 张（剩余 {max(remaining, 0)} 张），"
+            f"V5 今日免费额度已用完：今日已生成 {used_today}/{V5_DAILY_LIMIT} 张，"
+            f"本次请求需要 {n_samples} 张（剩余 {max(remaining_today, 0)} 张），"
             f"请明天再试或改用 V4.5 模型"
+        )
+    if remaining_week < n_samples:
+        raise ValueError(
+            f"V5 本周免费额度已用完：近 7 天已生成 {used_week}/{V5_WEEKLY_LIMIT} 张，"
+            f"本次请求需要 {n_samples} 张（剩余 {max(remaining_week, 0)} 张），"
+            f"请下周再试或改用 V4.5 模型"
         )
 
 
@@ -101,19 +144,30 @@ def record_v5_generation(nai_model: str | None, n_samples: int = 1) -> None:
         usage = _load_usage()
         usage[today] = usage.get(today, 0) + n_samples
         _save_usage(usage)
-        total = usage[today]
-    _logger.info(f"V5 生成计数 +{n_samples}，今日 {total}/{V5_DAILY_LIMIT} 张（{nai_model}）")
+        used_today = usage[today]
+        used_week = _week_total(usage, today)
+    _logger.info(
+        f"🎨 V5 生成 +{n_samples} 张 | {nai_model} | "
+        f"今日 {used_today}/{V5_DAILY_LIMIT} {_bar(used_today, V5_DAILY_LIMIT)} "
+        f"({_pct(used_today, V5_DAILY_LIMIT)}) | "
+        f"本周 {used_week}/{V5_WEEKLY_LIMIT} {_bar(used_week, V5_WEEKLY_LIMIT)} "
+        f"({_pct(used_week, V5_WEEKLY_LIMIT)})"
+    )
 
 
 def get_usage() -> dict[str, Any]:
     """查询当前限额状态（供调试/文档用）。"""
     usage = _load_usage()
     today = _today()
+    used_today = usage.get(today, 0)
+    used_week = _week_total(usage, today)
     return {
         "daily_limit": V5_DAILY_LIMIT,
         "weekly_limit": V5_WEEKLY_LIMIT,
         "today": today,
-        "used_today": usage.get(today, 0),
-        "remaining_today": max(V5_DAILY_LIMIT - usage.get(today, 0), 0),
+        "used_today": used_today,
+        "remaining_today": max(V5_DAILY_LIMIT - used_today, 0),
+        "used_this_week": used_week,
+        "remaining_week": max(V5_WEEKLY_LIMIT - used_week, 0),
         "history": usage,
     }

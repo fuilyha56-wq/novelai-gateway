@@ -169,7 +169,7 @@ Authorization: Bearer <GATEWAY_PASSWORD>
 | `nai-v3-inpaint` | `nai-diffusion-3-inpainting` |
 | `nai-v3-furry-inpaint` | `nai-diffusion-furry-3-inpainting` |
 
-> **V5 说明**：V5 系模型使用 `params_version=4`，保留 `v4_prompt`/`v4_negative_prompt` 结构（网关自动补齐），销售定价为 V4.5 × 2（见第 13 节）。所有 V5 模型（含 `-limit`）共享网关侧每日 247 / 每周 1730 张限额，超出返回 `429`。
+> **V5 说明**：V5 系模型使用 `params_version=4`，保留 `v4_prompt`/`v4_negative_prompt` 结构（网关自动补齐），销售定价为 V4.5 × 2（见第 13 节）。所有 V5 模型（含 `-limit`）共享网关侧每日 190 / 滚动周 1730 张双限额，超出返回 `429`。
 
 `-limit` 模型是禁止超出 Opus 免费额度的保护性别名，不是“仅文生图”模型。它支持单张、28 steps 以内、面积不超过 `1024x1024` 的文生图、图生图、局部重绘和 ControlNet 条件图生成；完整端点与模型对应关系见下表。会产生额外 Anlas 的参考图、放大或 Director 操作会被拒绝。
 
