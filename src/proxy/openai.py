@@ -1177,7 +1177,7 @@ async def _encode_vibe(
 
     # NAI 返回 application/binary，需要 base64 编码后使用
     vibe_b64 = base64.b64encode(resp.content).decode("ascii")
-    logger.info(f"✅ encode-vibe 成功: 原图 {len(image_b64)} chars → vibe {len(vibe_b64)} chars")
+    logger.debug(f"✅ encode-vibe 成功: 原图 {len(image_b64)} chars → vibe {len(vibe_b64)} chars")
     return vibe_b64
 
 
@@ -1214,7 +1214,7 @@ async def _encode_vibe_batch(
         ie = information_extracted_list[i] if i < len(information_extracted_list) else 1.0
         if _is_encoded_vibe(img_b64):
             # 已是编码后的 vibe，直接复用，跳过 encode-vibe 调用
-            logger.info(
+            logger.debug(
                 f"♻️ encode-vibe 复用: 参考图 {i} 已是编码后 vibe "
                 f"(len={len(img_b64)})，跳过上游编码"
             )
@@ -1685,7 +1685,7 @@ def _build_generation_payload(
     }
 
     # debug: 打印客户端传来的采样参数和最终 NAI payload 的 sampler/noise_schedule
-    logger.info(
+    logger.debug(
         f"[generations] client body sampler={body.get('sampler')!r} "
         f"noise_schedule={body.get('noise_schedule')!r} | "
         f"final NAI sampler={params.get('sampler')!r} "
@@ -1903,7 +1903,7 @@ async def handle_openai_generations(request: Request) -> Response:
     )
 
     # V5 生成成功计数（当日累计）
-    record_v5_generation(nai_model, n_samples)
+    record_v5_generation(nai_model, n_samples, params)
 
     return _build_image_response_v2(
         request, content, prompt, response_format,
@@ -2044,7 +2044,7 @@ async def handle_nai_inpainting(request: Request) -> Response:
     )
 
     # V5 生成成功计数
-    record_v5_generation(nai_model, 1)
+    record_v5_generation(nai_model, 1, params)
 
     return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
 
@@ -2240,7 +2240,7 @@ async def handle_openai_image_edits(request: Request) -> Response:
     )
 
     # V5 生成成功计数
-    record_v5_generation(nai_model, 1)
+    record_v5_generation(nai_model, 1, params)
 
     return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
 
@@ -2369,7 +2369,7 @@ async def handle_img2img(request: Request) -> Response:
     )
 
     # V5 生成成功计数
-    record_v5_generation(nai_model, 1)
+    record_v5_generation(nai_model, 1, params)
 
     return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
 
@@ -2512,7 +2512,7 @@ async def handle_vibe_transfer(request: Request) -> Response:
     )
 
     # V5 生成成功计数
-    record_v5_generation(nai_model, 1)
+    record_v5_generation(nai_model, 1, params)
 
     return _build_image_response_v2(
         request, content, prompt, response_format,
@@ -2743,7 +2743,7 @@ async def handle_character_reference(request: Request) -> Response:
     )
 
     # V5 生成成功计数
-    record_v5_generation(nai_model, 1)
+    record_v5_generation(nai_model, 1, params)
 
     return _build_image_response_v2(
         request, content, prompt, response_format,
@@ -2950,7 +2950,7 @@ async def handle_precise_reference(request: Request) -> Response:
     )
 
     # V5 生成成功计数
-    record_v5_generation(nai_model, 1)
+    record_v5_generation(nai_model, 1, params)
 
     return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
 

@@ -218,6 +218,24 @@ class V5QuotaTests(unittest.TestCase):
         v5_quota.record_v5_generation("nai-diffusion-5-full-inpainting", 1)
         self.assertEqual(v5_quota.get_usage()["used_today"], 1)
 
+    def test_record_with_params_logs_and_counts(self) -> None:
+        """带请求参数计数：不影响计数，日志含尺寸/步数/sampler。"""
+        v5_quota.record_v5_generation(
+            "nai-diffusion-5-full",
+            1,
+            params={"width": 1024, "height": 1024, "steps": 28, "sampler": "k_euler"},
+        )
+        self.assertEqual(v5_quota.get_usage()["used_today"], 1)
+
+    def test_fmt_params_skips_missing_fields(self) -> None:
+        self.assertEqual(
+            v5_quota._fmt_params({"width": 832, "height": 1216, "steps": 28}),
+            "832×1216 · 28步",
+        )
+        self.assertEqual(v5_quota._fmt_params({"sampler": "k_euler_ancestral"}), "k_euler_ancestral")
+        self.assertEqual(v5_quota._fmt_params(None), "")
+        self.assertEqual(v5_quota._fmt_params({}), "")
+
 
 if __name__ == "__main__":
     unittest.main()

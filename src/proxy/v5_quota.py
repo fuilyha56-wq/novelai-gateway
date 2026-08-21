@@ -62,6 +62,23 @@ def _pct(used: int, limit: int) -> str:
     return f"{used / limit * 100:.0f}%" if limit else "0%"
 
 
+def _fmt_params(params: dict[str, Any] | None) -> str:
+    """渲染请求参数摘要：``1024×1024·28步·k_euler``（缺失字段自动跳过）。"""
+    if not params:
+        return ""
+    parts: list[str] = []
+    w, h = params.get("width"), params.get("height")
+    if w and h:
+        parts.append(f"{w}×{h}")
+    steps = params.get("steps")
+    if steps:
+        parts.append(f"{steps}步")
+    sampler = params.get("sampler")
+    if sampler:
+        parts.append(str(sampler))
+    return " · ".join(parts)
+
+
 def is_v5_model(nai_model: str | None) -> bool:
     """判断内部模型名是否为 V5 系模型。"""
     return isinstance(nai_model, str) and "diffusion-5" in nai_model
@@ -119,12 +136,22 @@ def check_v5_quota(nai_model: str | None, n_samples: int = 1) -> None:
     remaining_today = V5_DAILY_LIMIT - used_today
     remaining_week = V5_WEEKLY_LIMIT - used_week
     if remaining_today < n_samples:
+        _logger.warning(
+            f"⚠️ V5 限额拒绝 | {nai_model} 请求 {n_samples} 张 | "
+            f"今日 {used_today}/{V5_DAILY_LIMIT} ({_pct(used_today, V5_DAILY_LIMIT)}) | "
+            f"本周 {used_week}/{V5_WEEKLY_LIMIT} ({_pct(used_week, V5_WEEKLY_LIMIT)})"
+        )
         raise ValueError(
             f"V5 今日免费额度已用完：今日已生成 {used_today}/{V5_DAILY_LIMIT} 张，"
             f"本次请求需要 {n_samples} 张（剩余 {max(remaining_today, 0)} 张），"
             f"请明天再试或改用 V4.5 模型"
         )
     if remaining_week < n_samples:
+        _logger.warning(
+            f"⚠️ V5 限额拒绝 | {nai_model} 请求 {n_samples} 张 | "
+            f"今日 {used_today}/{V5_DAILY_LIMIT} ({_pct(used_today, V5_DAILY_LIMIT)}) | "
+            f"本周 {used_week}/{V5_WEEKLY_LIMIT} ({_pct(used_week, V5_WEEKLY_LIMIT)})"
+        )
         raise ValueError(
             f"V5 本周免费额度已用完：近 7 天已生成 {used_week}/{V5_WEEKLY_LIMIT} 张，"
             f"本次请求需要 {n_samples} 张（剩余 {max(remaining_week, 0)} 张），"
@@ -132,10 +159,19 @@ def check_v5_quota(nai_model: str | None, n_samples: int = 1) -> None:
         )
 
 
-def record_v5_generation(nai_model: str | None, n_samples: int = 1) -> None:
+def record_v5_generation(
+    nai_model: str | None,
+    n_samples: int = 1,
+    params: dict[str, Any] | None = None,
+) -> None:
     """生成成功后计数：当日 V5 生成张数累加 n_samples。
 
     仅对 V5 系模型生效；非 V5 模型直接放行。
+
+    Args:
+        nai_model: NAI 内部模型名（如 ``nai-diffusion-5-full``）。
+        n_samples: 本次成功生成的张数。
+        params: 请求参数（width/height/steps/sampler 等），仅用于日志展示。
     """
     if not is_v5_model(nai_model) or n_samples <= 0:
         return
@@ -146,8 +182,10 @@ def record_v5_generation(nai_model: str | None, n_samples: int = 1) -> None:
         _save_usage(usage)
         used_today = usage[today]
         used_week = _week_total(usage, today)
+    param_str = _fmt_params(params)
+    extra = f" | {param_str}" if param_str else ""
     _logger.info(
-        f"🎨 V5 生成 +{n_samples} 张 | {nai_model} | "
+        f"🎨 V5 +{n_samples} 张 | {nai_model}{extra} | "
         f"今日 {used_today}/{V5_DAILY_LIMIT} {_bar(used_today, V5_DAILY_LIMIT)} "
         f"({_pct(used_today, V5_DAILY_LIMIT)}) | "
         f"本周 {used_week}/{V5_WEEKLY_LIMIT} {_bar(used_week, V5_WEEKLY_LIMIT)} "
