@@ -37,6 +37,16 @@ _check_*.sh
 _fix_*.sh
 _test_*.sh
 
+# 远程运维/调试产物（不入库）
+_*.log
+_make_*.py
+_test_*.json
+_remote_*.py
+remote_*.py
+test_ref.png
+start_v2raya.py
+fix_v2raya.sh
+
 # Dart 文件（与本项目无关）
 _*.dart
 _dart_files.txt
