@@ -28,7 +28,7 @@ except ImportError:
 from .config import get_request_auth_token, settings
 from .queue import gate
 from .stats import record_generation
-from .v5_quota import check_v5_quota, record_v5_generation
+from .v5_quota import check_v5_quota, log_generation
 
 logger = logging.getLogger("gateway")
 
@@ -1903,7 +1903,7 @@ async def handle_openai_generations(request: Request) -> Response:
     )
 
     # V5 生成成功计数（当日累计）
-    record_v5_generation(nai_model, n_samples, params)
+    log_generation(nai_model, n_samples, params)
 
     return _build_image_response_v2(
         request, content, prompt, response_format,
@@ -2044,7 +2044,7 @@ async def handle_nai_inpainting(request: Request) -> Response:
     )
 
     # V5 生成成功计数
-    record_v5_generation(nai_model, 1, params)
+    log_generation(nai_model, 1, params)
 
     return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
 
@@ -2240,7 +2240,7 @@ async def handle_openai_image_edits(request: Request) -> Response:
     )
 
     # V5 生成成功计数
-    record_v5_generation(nai_model, 1, params)
+    log_generation(nai_model, 1, params)
 
     return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
 
@@ -2369,7 +2369,7 @@ async def handle_img2img(request: Request) -> Response:
     )
 
     # V5 生成成功计数
-    record_v5_generation(nai_model, 1, params)
+    log_generation(nai_model, 1, params)
 
     return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
 
@@ -2512,7 +2512,7 @@ async def handle_vibe_transfer(request: Request) -> Response:
     )
 
     # V5 生成成功计数
-    record_v5_generation(nai_model, 1, params)
+    log_generation(nai_model, 1, params)
 
     return _build_image_response_v2(
         request, content, prompt, response_format,
@@ -2743,7 +2743,7 @@ async def handle_character_reference(request: Request) -> Response:
     )
 
     # V5 生成成功计数
-    record_v5_generation(nai_model, 1, params)
+    log_generation(nai_model, 1, params)
 
     return _build_image_response_v2(
         request, content, prompt, response_format,
@@ -2950,7 +2950,7 @@ async def handle_precise_reference(request: Request) -> Response:
     )
 
     # V5 生成成功计数
-    record_v5_generation(nai_model, 1, params)
+    log_generation(nai_model, 1, params)
 
     return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
 

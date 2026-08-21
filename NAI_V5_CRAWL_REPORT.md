@@ -177,7 +177,8 @@ V5 per_sample = ceil( ceil(raw) * 1.5 )
 - 限制对象：所有 V5 系模型（`nai-diffusion-5-*`，含 `-limit` 变体）的生成张数（`n_samples` 累计，含 img2img/inpaint/vibe/character/precise 各端点）
 - 实现：网关侧按日计数（UTC+8 自然日，持久化 `logs/v5_daily_usage.json`），请求前预检超限返回 **429**；不依赖 NewAPI 配额
 - 日志（INFO，每次生成一行）：
-  - 成功：`🎨 V5 +N 张 | nai-diffusion-5-full | 1024×1024 · 28步 · k_euler | 今日 x/190 ████░░░░░░ (x%) | 本周 y/1730 ██░░░░░░░░ (y%)`（含模型名与请求参数：尺寸/步数/sampler）
+  - V5 成功：`🎨 V5 +N 张 | nai-diffusion-5-full | 1024×1024 · 28步 · k_euler | 今日 x/190 ████░░░░░░ (x%) | 本周 y/1730 ██░░░░░░░░ (y%)`（含模型名与请求参数：尺寸/步数/sampler）
+  - V4/V4.5 成功：`🎨 生成 +N 张 | nai-diffusion-4-5-full | 1024×1024 · 28步 · k_euler`（统一走 `log_generation`，不计入 V5 限额）
   - 拒绝：`⚠️ V5 限额拒绝 | 模型 请求 N 张 | 今日 x/190 (x%) | 本周 y/1730 (y%)`（WARNING）
 - 噪音控制：`[generations] sampler` 调试日志、encode-vibe 成功/复用日志均已降为 DEBUG，默认不输出
 - 状态：✅ 已实现（`src/proxy/v5_quota.py` + 7 个端点预检/计数）

@@ -193,6 +193,31 @@ def record_v5_generation(
     )
 
 
+def log_generation(
+    nai_model: str | None,
+    n_samples: int = 1,
+    params: dict[str, Any] | None = None,
+) -> None:
+    """生成成功日志：统一输出模型名与请求参数。
+
+    - V5 系模型：计数 + 进度条日志（调用 ``record_v5_generation``）；
+    - 非 V5（V4 / V4.5 / 其他）：仅输出一条含模型名与参数的 INFO 日志，不计数。
+
+    Args:
+        nai_model: NAI 内部模型名（如 ``nai-diffusion-5-full`` / ``nai-diffusion-4-5-full``）。
+        n_samples: 本次成功生成的张数。
+        params: 请求参数（width/height/steps/sampler 等），仅用于日志展示。
+    """
+    if not nai_model or n_samples <= 0:
+        return
+    if is_v5_model(nai_model):
+        record_v5_generation(nai_model, n_samples, params)
+        return
+    param_str = _fmt_params(params)
+    extra = f" | {param_str}" if param_str else ""
+    _logger.info(f"🎨 生成 +{n_samples} 张 | {nai_model}{extra}")
+
+
 def get_usage() -> dict[str, Any]:
     """查询当前限额状态（供调试/文档用）。"""
     usage = _load_usage()

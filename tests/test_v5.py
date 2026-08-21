@@ -236,6 +236,29 @@ class V5QuotaTests(unittest.TestCase):
         self.assertEqual(v5_quota._fmt_params(None), "")
         self.assertEqual(v5_quota._fmt_params({}), "")
 
+    def test_log_generation_v45_no_count(self) -> None:
+        """V4.5 走 log_generation 只打日志，不计数。"""
+        v5_quota.log_generation(
+            "nai-diffusion-4-5-full",
+            2,
+            params={"width": 1024, "height": 1024, "steps": 28},
+        )
+        self.assertEqual(v5_quota.get_usage()["used_today"], 0)
+
+    def test_log_generation_v5_counts(self) -> None:
+        """V5 走 log_generation 正常计数（复用 record_v5_generation）。"""
+        v5_quota.log_generation(
+            "nai-diffusion-5-full",
+            3,
+            params={"width": 832, "height": 1216, "steps": 28, "sampler": "k_euler"},
+        )
+        self.assertEqual(v5_quota.get_usage()["used_today"], 3)
+
+    def test_log_generation_invalid_skipped(self) -> None:
+        v5_quota.log_generation(None, 1)
+        v5_quota.log_generation("nai-diffusion-5-full", 0)
+        self.assertEqual(v5_quota.get_usage()["used_today"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
