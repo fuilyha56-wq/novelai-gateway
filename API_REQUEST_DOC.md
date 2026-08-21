@@ -151,6 +151,12 @@ Authorization: Bearer <GATEWAY_PASSWORD>
 
 | 模型 ID | 上游模型 |
 |---|---|
+| `nai-v5-full` | `nai-diffusion-5-full` |
+| `nai-v5-curated` | `nai-diffusion-5-curated` |
+| `nai-v5-inpaint` | `nai-diffusion-5-full-inpainting` |
+| `nai-v5-full-limit` | `nai-diffusion-5-full` |
+| `nai-v5-curated-limit` | `nai-diffusion-5-curated` |
+| `nai-v5-inpaint-limit` | `nai-diffusion-5-full-inpainting` |
 | `nai-v4.5-full` | `nai-diffusion-4-5-full` |
 | `nai-v4.5-curated` | `nai-diffusion-4-5-curated` |
 | `nai-v4.5-inpaint` | `nai-diffusion-4-5-full-inpainting` |
@@ -163,10 +169,15 @@ Authorization: Bearer <GATEWAY_PASSWORD>
 | `nai-v3-inpaint` | `nai-diffusion-3-inpainting` |
 | `nai-v3-furry-inpaint` | `nai-diffusion-furry-3-inpainting` |
 
+> **V5 说明**：V5 系模型使用 `params_version=4`，保留 `v4_prompt`/`v4_negative_prompt` 结构（网关自动补齐），销售定价为 V4.5 × 2（见第 13 节）。所有 V5 模型（含 `-limit`）共享网关侧每日 247 / 每周 1730 张限额，超出返回 `429`。
+
 `-limit` 模型是禁止超出 Opus 免费额度的保护性别名，不是“仅文生图”模型。它支持单张、28 steps 以内、面积不超过 `1024x1024` 的文生图、图生图、局部重绘和 ControlNet 条件图生成；完整端点与模型对应关系见下表。会产生额外 Anlas 的参考图、放大或 Director 操作会被拒绝。
 
 | Gateway `-limit` 模型 | 支持的功能 | 可调用端点 | 不支持 |
 |---|---|---|---|
+| `nai-v5-full-limit` | 文生图、图生图、OpenAI/NAI 重绘、ControlNet 条件图生成 | `/v1/images/generations`、`/v1/images/img2img`、`/v1/images/inpainting`、`/v1/images/edits` | Vibe、Character/Precise Reference、upscale、Director Tools |
+| `nai-v5-curated-limit` | 文生图、图生图、OpenAI/NAI 重绘、ControlNet 条件图生成 | `/v1/images/generations`、`/v1/images/img2img`、`/v1/images/inpainting`、`/v1/images/edits` | Vibe、Character/Precise Reference、upscale、Director Tools |
+| `nai-v5-inpaint-limit` | 文生图、图生图、OpenAI/NAI 重绘、ControlNet 条件图生成 | `/v1/images/generations`、`/v1/images/img2img`、`/v1/images/inpainting`、`/v1/images/edits` | Vibe、Character/Precise Reference、upscale、Director Tools |
 | `nai-v4.5-full-limit` | 文生图、图生图、OpenAI/NAI 重绘、ControlNet 条件图生成 | `/v1/images/generations`、`/v1/images/img2img`、`/v1/images/inpainting`、`/v1/images/edits` | Vibe、Character/Precise Reference、upscale、Director Tools |
 | `nai-v4.5-curated-limit` | 文生图、图生图、OpenAI/NAI 重绘、ControlNet 条件图生成 | `/v1/images/generations`、`/v1/images/img2img`、`/v1/images/inpainting`、`/v1/images/edits` | Vibe、Character/Precise Reference、upscale、Director Tools |
 | `nai-v4.5-inpaint-limit` | 文生图、图生图、OpenAI/NAI 重绘、ControlNet 条件图生成 | `/v1/images/generations`、`/v1/images/img2img`、`/v1/images/inpainting`、`/v1/images/edits` | Vibe、Character/Precise Reference、upscale、Director Tools |
@@ -942,7 +953,7 @@ $$
 \text{prompt\_tokens}=\max(1,\operatorname{round}(\frac{\text{Anlas}}{20}\times1000))
 $$
 
-常用示例：
+**V5 非 limit 模型**的 Anlas 已是销售定价（V4.5 × 2），即先对最终 Anlas 整体乘 2 再代入上式：
 
 | 请求 | 网关 Anlas | `prompt_tokens` |
 |---|---:|---:|
@@ -951,6 +962,10 @@ $$
 | 512x512、28 steps、`strength=0.7` 图生图 | 4 | 200 |
 | 512x512、28 steps、单张 Vibe/Character Reference | 7 | 350 |
 | 512x512、28 steps、单张 Precise Reference | 10 | 500 |
+| **V5** 1024x1024、28 steps、单张文生图 | 40（销售价） | 2000 |
+| **V5** 1024x1024、50 steps、单张文生图 | 68（销售价） | 3400 |
+
+V5 `-limit` 模型走固定价（NewAPI `model_price = 0.07` 元/张），不返回动态 `usage`。
 
 直连 Director Tools 返回 `X-Anlas-Cost` 与 `X-Prompt-Tokens` 响应头；经统一图片入口调用时，Gateway 会把相同成本写入标准 `usage`：
 

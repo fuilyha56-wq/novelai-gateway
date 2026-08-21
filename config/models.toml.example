@@ -58,6 +58,42 @@ type = "image"
 model_identifier = "nai-v4.5-inpaint-limit"
 name = "nai-diffusion-4-5-full-inpainting"
 
+# ── V5 系列（nai-diffusion-5-*，params_version=4）──
+# 上游定价 = V4.5 × 1.5；本站销售定价 = V4.5 × 2（见 TIERED_PRICING.md）。
+# V5 每周限额 1730 张（每日 247 张），由网关统一计数限制。
+[[image.models]]
+type = "image"
+model_identifier = "nai-v5-full"
+name = "nai-diffusion-5-full"
+
+[[image.models]]
+type = "image"
+model_identifier = "nai-v5-curated"
+name = "nai-diffusion-5-curated"
+
+[[image.models]]
+type = "image"
+model_identifier = "nai-v5-inpaint"
+name = "nai-diffusion-5-full-inpainting"
+
+# ── V5 限制版（-limit 后缀，不允许消耗 Anlas）──
+# 与 V4.5 -limit 规则一致：仅允许 Opus 免费额度文生图路径。
+# NewAPI 渠道固定价 0.07 元/张（见 newapi-pricing.md）。
+[[image.models]]
+type = "image"
+model_identifier = "nai-v5-full-limit"
+name = "nai-diffusion-5-full"
+
+[[image.models]]
+type = "image"
+model_identifier = "nai-v5-curated-limit"
+name = "nai-diffusion-5-curated"
+
+[[image.models]]
+type = "image"
+model_identifier = "nai-v5-inpaint-limit"
+name = "nai-diffusion-5-full-inpainting"
+
 [[image.models]]
 type = "image"
 model_identifier = "nai-v4-curated"

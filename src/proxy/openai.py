@@ -28,6 +28,7 @@ except ImportError:
 from .config import get_request_auth_token, settings
 from .queue import gate
 from .stats import record_generation
+from .v5_quota import check_v5_quota, record_v5_generation
 
 logger = logging.getLogger("gateway")
 
@@ -158,6 +159,29 @@ def _normalize_vibe_reference_images(body: dict[str, Any]) -> list[str]:
 def is_limit_model(model_identifier: str | None) -> bool:
     """判断 model_identifier 是否为 -limit 限制版模型。"""
     return isinstance(model_identifier, str) and model_identifier.endswith(LIMIT_MODEL_SUFFIX)
+
+
+def _is_v5_model(nai_model: str) -> bool:
+    """判断内部模型名是否为 V5 系模型（nai-diffusion-5-*）。"""
+    return "diffusion-5" in nai_model
+
+
+def _is_v4_family(nai_model: str) -> bool:
+    """判断是否为需要 v4_prompt 结构的模型家族（V4 / V4.5 / V5）。
+
+    V5 与 V4.5 一样沿用 v4_prompt / v4_negative_prompt / characterPrompts
+    结构，仅 params_version 不同（V5=4，V4.5=3）。
+    """
+    return "diffusion-4" in nai_model or _is_v5_model(nai_model)
+
+
+def _v5_price_multiplier(nai_model: str) -> float:
+    """V5 非 limit 模型销售倍率。
+
+    用户定价：非 limit 使用积分按 V4.5 × 2（上游实际为 ×1.5，销售按 ×2 收取）。
+    -limit 模型走 Opus 免费额度（is_opus=True 折扣后 total=0），倍率不产生作用。
+    """
+    return 2.0 if _is_v5_model(nai_model) else 1.0
 
 
 def _enforce_limit_model(model: str, body: dict[str, Any]) -> None:
@@ -623,6 +647,7 @@ def _calc_anlas_cost(
     reference_image_count: int = 0,
     reference_mode: str = "vibe",
     reference_image_encoded_count: int = 0,
+    price_multiplier: float = 1.0,
 ) -> int:
     """根据 NovelAI V4.5 计费规则计算 Anlas 消耗。
 
@@ -632,6 +657,9 @@ def _calc_anlas_cost(
         per_sample = ceil(per_sample * uncond_scale)       # uncond_scale != 1.0 时
         opus_discount = is_opus && steps <= 28 && r <= 1024*1024
         total = per_sample * (n_samples - int(opus_discount))
+
+    V5 (version=4) 销售定价 = V4.5 × price_multiplier（默认 2.0，见 _v5_price_multiplier）。
+    倍率作用于最终 total（含参考图附加费），-limit 模型免费时 total=0 不受影响。
 
     Vibe Transfer 额外计费 (V4+):
         - 每张参考图首次编码: 2 Anlas
@@ -656,6 +684,7 @@ def _calc_anlas_cost(
         reference_image_encoded_count: Vibe 模式下复用上游已编码 vibe 的参考图数量。
             这部分无需再次调用 encode-vibe，不计 2 Anlas 编码费。
             Precise Reference 模式下此参数被忽略。
+        price_multiplier: 销售倍率（V5 非 limit = 2.0，其余 = 1.0）
 
     Returns:
         Anlas 消耗量 (整数)
@@ -693,6 +722,10 @@ def _calc_anlas_cost(
             if billable_count > 4:
                 ref_cost += 2 * (billable_count - 4)
             total += ref_cost
+
+    # V5 销售倍率（V4.5 × 2）
+    if price_multiplier != 1.0:
+        total = int(total * price_multiplier)
 
     return max(total, 0)
 
@@ -1217,9 +1250,9 @@ async def _send_nai_request(
     headers = dict(_NAI_HEADERS_TEMPLATE)
     headers["Authorization"] = f"Bearer {token}"
 
-    # v4/v4.5 模型只支持 application/json 响应，强制覆盖 Accept
+    # v4/v4.5/v5 模型只支持 application/json 响应，强制覆盖 Accept
     nai_model = str(payload.get("model", ""))
-    if "diffusion-4" in nai_model:
+    if _is_v4_family(nai_model):
         headers["Accept"] = "application/json"
     elif accept_format == "json":
         headers["Accept"] = "application/json"
@@ -1493,7 +1526,8 @@ def _build_generation_payload(
         "ucPreset": 0,
         "qualityToggle": True,
         "noise_schedule": body.get("noise_schedule", "karras"),
-        "params_version": 3,
+        # V4.5 用 params_version=3，V5 用 params_version=4
+        "params_version": 4 if _is_v5_model(nai_model) else 3,
         # 引导词重缩放（CFG rescale）：默认 0.0，必须显式透传，
         # 否则客户端调整该值不会到达 NAI，生成的图片仍按 0 处理。
         "cfg_rescale": body.get("cfg_rescale", 0.0),
@@ -1501,8 +1535,8 @@ def _build_generation_payload(
         "noise": body.get("noise", 0.0),
     }
 
-    # v4/v4.5 模型不支持 SMEA（sm/sm_dyn），传 True 会导致 NAI 500
-    if "diffusion-4" in nai_model:
+    # v4/v4.5/v5 模型不支持 SMEA（sm/sm_dyn），传 True 会导致 NAI 500
+    if _is_v4_family(nai_model):
         params["sm"] = False
         params["sm_dyn"] = False
 
@@ -1536,10 +1570,10 @@ def _build_generation_payload(
                 status_code=400,
                 detail="references cannot be combined with Vibe reference images",
             )
-        if "diffusion-4" not in nai_model:
+        if not _is_v4_family(nai_model):
             raise HTTPException(
                 status_code=400,
-                detail="Precise Reference is only available on V4/V4.5 models",
+                detail="Precise Reference is only available on V4/V4.5/V5 models",
             )
 
         reference_images: list[str] = []
@@ -1662,11 +1696,11 @@ def _build_generation_payload(
     if "service_tier" in body:
         nai_payload["service_tier"] = body["service_tier"]
 
-    # v4/v4.5 模型必须带 v4_prompt 结构，否则 NAI 返回 500
+    # v4/v4.5/v5 模型必须带 v4_prompt 结构，否则 NAI 返回 500
     # 如果用户没传，自动用 prompt/negative_prompt 构造一个空的 base_caption
-    is_v4_model = "diffusion-4" in nai_model
+    is_v4_model = _is_v4_family(nai_model)
     if is_v4_model and action == "generate":
-        # v4/v4.5 不支持 SMEA，强制关闭
+        # v4/v4.5/v5 不支持 SMEA，强制关闭
         params["sm"] = False
         params["sm_dyn"] = False
         if "v4_prompt" not in params:
@@ -1812,14 +1846,15 @@ async def handle_openai_generations(request: Request) -> Response:
         body["response_format"] = "b64_json"
     nai_payload, prompt, response_format = _build_generation_payload(body, operation)
 
-    # V4/V4.5 模型带参考图时，需要先通过 encode-vibe 编码
+    # V4/V4.5/V5 模型带参考图时，需要先通过 encode-vibe 编码
     nai_model = str(nai_payload.get("model", ""))
     params = nai_payload.get("parameters", {})
+    n_samples = int(params.get("n_samples", 1)) if isinstance(params, dict) else 1
     encoded_vibes_for_response: list[str] | None = None
     ref_strengths_for_response: list[float] | None = None
     ref_infos_for_response: list[float] | None = None
     encoded_reuse_count = 0
-    if "diffusion-4" in nai_model and isinstance(params, dict):
+    if _is_v4_family(nai_model) and isinstance(params, dict):
         ref_multiple = params.get("reference_image_multiple", [])
         if isinstance(ref_multiple, list) and ref_multiple:
             ref_infos = params.get("reference_information_extracted_multiple", [1.0] * len(ref_multiple))
@@ -1833,6 +1868,12 @@ async def handle_openai_generations(request: Request) -> Response:
 
     # 确定 accept_format
     accept_format = "json" if response_format == "nai_json" else "zip"
+
+    # V5 每日限额预检（超限直接拒绝，不消耗上游额度）
+    try:
+        check_v5_quota(nai_model, n_samples)
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
 
     # 走排队门控
     async with gate:
@@ -1858,7 +1899,11 @@ async def handle_openai_generations(request: Request) -> Response:
         reference_image_count=precise_ref_count or ref_count,
         reference_mode="precise" if precise_ref_count else "vibe",
         reference_image_encoded_count=encoded_reuse_count if not precise_ref_count else 0,
+        price_multiplier=_v5_price_multiplier(nai_model),
     )
+
+    # V5 生成成功计数（当日累计）
+    record_v5_generation(nai_model, n_samples)
 
     return _build_image_response_v2(
         request, content, prompt, response_format,
@@ -1927,10 +1972,10 @@ async def handle_nai_inpainting(request: Request) -> Response:
         "parameters": params,
     }
 
-    # v4/v4.5 inpaint 模型也需要 v4_prompt 结构
-    is_v4_model = "diffusion-4" in nai_model
+    # v4/v4.5/v5 inpaint 模型也需要 v4_prompt 结构
+    is_v4_model = _is_v4_family(nai_model)
     if is_v4_model:
-        # v4/v4.5 不支持 SMEA，强制关闭
+        # v4/v4.5/v5 不支持 SMEA，强制关闭
         params["sm"] = False
         params["sm_dyn"] = False
         if "v4_prompt" not in params:
@@ -1955,7 +2000,7 @@ async def handle_nai_inpainting(request: Request) -> Response:
                 "caption": {"base_caption": negative_prompt, "char_captions": neg_char_captions},
                 "legacy_uc": False,
             }
-        params.setdefault("params_version", 3)
+        params.setdefault("params_version", 4 if _is_v5_model(nai_model) else 3)
         params.setdefault("legacy", False)
         params.setdefault("legacy_v3_extend", False)
         params.setdefault("legacy_uc", False)
@@ -1971,6 +2016,12 @@ async def handle_nai_inpainting(request: Request) -> Response:
         params.setdefault("characterPrompts", [])
 
     accept_format = "json" if response_format == "nai_json" else "zip"
+
+    # V5 每日限额预检
+    try:
+        check_v5_quota(nai_model, 1)
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
 
     async with gate:
         content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
@@ -1989,7 +2040,11 @@ async def handle_nai_inpainting(request: Request) -> Response:
         uncond_scale=params.get("uncond_scale", 1.0),
         is_opus=is_limit_model(model),
         reference_image_count=ref_count,
+        price_multiplier=_v5_price_multiplier(nai_model),
     )
+
+    # V5 生成成功计数
+    record_v5_generation(nai_model, 1)
 
     return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
 
@@ -2113,10 +2168,10 @@ async def handle_openai_image_edits(request: Request) -> Response:
         "parameters": params,
     }
 
-    # v4/v4.5 inpaint 模型也需要 v4_prompt 结构
-    is_v4_model = "diffusion-4" in nai_model
+    # v4/v4.5/v5 inpaint 模型也需要 v4_prompt 结构
+    is_v4_model = _is_v4_family(nai_model)
     if is_v4_model:
-        # v4/v4.5 不支持 SMEA，强制关闭
+        # v4/v4.5/v5 不支持 SMEA，强制关闭
         params["sm"] = False
         params["sm_dyn"] = False
         if "v4_prompt" not in params:
@@ -2141,7 +2196,7 @@ async def handle_openai_image_edits(request: Request) -> Response:
                 "caption": {"base_caption": negative_prompt, "char_captions": neg_char_captions},
                 "legacy_uc": False,
             }
-        params.setdefault("params_version", 3)
+        params.setdefault("params_version", 4 if _is_v5_model(nai_model) else 3)
         params.setdefault("legacy", False)
         params.setdefault("legacy_v3_extend", False)
         params.setdefault("legacy_uc", False)
@@ -2157,6 +2212,12 @@ async def handle_openai_image_edits(request: Request) -> Response:
         params.setdefault("characterPrompts", [])
 
     accept_format = "json" if response_format == "nai_json" else "zip"
+
+    # V5 每日限额预检
+    try:
+        check_v5_quota(nai_model, 1)
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
 
     async with gate:
         content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
@@ -2175,7 +2236,11 @@ async def handle_openai_image_edits(request: Request) -> Response:
         uncond_scale=params.get("uncond_scale", 1.0),
         is_opus=is_limit_model(model),
         reference_image_count=ref_count,
+        price_multiplier=_v5_price_multiplier(nai_model),
     )
+
+    # V5 生成成功计数
+    record_v5_generation(nai_model, 1)
 
     return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
 
@@ -2232,10 +2297,10 @@ async def handle_img2img(request: Request) -> Response:
         "parameters": params,
     }
 
-    # v4/v4.5 模型 img2img 也需要 v4_prompt 结构
-    is_v4_model = "diffusion-4" in nai_model
+    # v4/v4.5/v5 模型 img2img 也需要 v4_prompt 结构
+    is_v4_model = _is_v4_family(nai_model)
     if is_v4_model:
-        # v4/v4.5 不支持 SMEA，强制关闭
+        # v4/v4.5/v5 不支持 SMEA，强制关闭
         params["sm"] = False
         params["sm_dyn"] = False
         if "v4_prompt" not in params:
@@ -2260,7 +2325,7 @@ async def handle_img2img(request: Request) -> Response:
                 "caption": {"base_caption": negative_prompt, "char_captions": neg_char_captions},
                 "legacy_uc": False,
             }
-        params.setdefault("params_version", 3)
+        params.setdefault("params_version", 4 if _is_v5_model(nai_model) else 3)
         params.setdefault("legacy", False)
         params.setdefault("legacy_v3_extend", False)
         params.setdefault("legacy_uc", False)
@@ -2276,6 +2341,12 @@ async def handle_img2img(request: Request) -> Response:
         params.setdefault("characterPrompts", [])
 
     accept_format = "json" if response_format == "nai_json" else "zip"
+
+    # V5 每日限额预检
+    try:
+        check_v5_quota(nai_model, 1)
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
 
     async with gate:
         content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
@@ -2294,7 +2365,11 @@ async def handle_img2img(request: Request) -> Response:
         uncond_scale=params.get("uncond_scale", 1.0),
         is_opus=is_limit_model(model),
         reference_image_count=ref_count,
+        price_multiplier=_v5_price_multiplier(nai_model),
     )
+
+    # V5 生成成功计数
+    record_v5_generation(nai_model, 1)
 
     return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
 
@@ -2333,8 +2408,8 @@ async def handle_vibe_transfer(request: Request) -> Response:
     quality_tags = body.get("quality_tags", QUALITY_TAGS)
     full_prompt = prompt + quality_tags if quality_tags else prompt
 
-    # V4/V4.5 模型需要先通过 encode-vibe 编码参考图
-    is_v4_model = "diffusion-4" in nai_model
+    # V4/V4.5/V5 模型需要先通过 encode-vibe 编码参考图
+    is_v4_model = _is_v4_family(nai_model)
     encoded_reuse_count = 0
     encoded_vibes_for_response: list[str] | None = None
     if is_v4_model:
@@ -2369,7 +2444,7 @@ async def handle_vibe_transfer(request: Request) -> Response:
         "parameters": params,
     }
 
-    # v4/v4.5 模型 vibe-transfer 也需要 v4_prompt 结构
+    # v4/v4.5/v5 模型 vibe-transfer 也需要 v4_prompt 结构
     if is_v4_model:
         params["sm"] = False
         params["sm_dyn"] = False
@@ -2395,7 +2470,7 @@ async def handle_vibe_transfer(request: Request) -> Response:
                 "caption": {"base_caption": negative_prompt, "char_captions": neg_char_captions},
                 "legacy_uc": False,
             }
-        params.setdefault("params_version", 3)
+        params.setdefault("params_version", 4 if _is_v5_model(nai_model) else 3)
         params.setdefault("legacy", False)
         params.setdefault("legacy_v3_extend", False)
         params.setdefault("legacy_uc", False)
@@ -2412,6 +2487,12 @@ async def handle_vibe_transfer(request: Request) -> Response:
 
     accept_format = "json" if response_format == "nai_json" else "zip"
 
+    # V5 每日限额预检
+    try:
+        check_v5_quota(nai_model, 1)
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+
     async with gate:
         content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
 
@@ -2427,7 +2508,11 @@ async def handle_vibe_transfer(request: Request) -> Response:
         uncond_scale=params.get("uncond_scale", 1.0),
         reference_image_count=ref_count,
         reference_image_encoded_count=encoded_reuse_count,
+        price_multiplier=_v5_price_multiplier(nai_model),
     )
+
+    # V5 生成成功计数
+    record_v5_generation(nai_model, 1)
 
     return _build_image_response_v2(
         request, content, prompt, response_format,
@@ -2537,8 +2622,8 @@ async def handle_character_reference(request: Request) -> Response:
     quality_tags = body.get("quality_tags", QUALITY_TAGS)
     full_prompt = prompt + quality_tags if quality_tags else prompt
 
-    # V4/V4.5 模型需要先通过 encode-vibe 编码参考图
-    is_v4_model = "diffusion-4" in nai_model
+    # V4/V4.5/V5 模型需要先通过 encode-vibe 编码参考图
+    is_v4_model = _is_v4_family(nai_model)
     encoded_reuse_count = 0
     encoded_vibes_for_response: list[str] | None = None
     if is_v4_model:
@@ -2573,7 +2658,7 @@ async def handle_character_reference(request: Request) -> Response:
         "parameters": params,
     }
 
-    # v4/v4.5 模型必须带 v4_prompt 结构
+    # v4/v4.5/v5 模型必须带 v4_prompt 结构
     if is_v4_model:
         params["sm"] = False
         params["sm_dyn"] = False
@@ -2616,7 +2701,7 @@ async def handle_character_reference(request: Request) -> Response:
                 "legacy_uc": False,
             }
 
-        params.setdefault("params_version", 3)
+        params.setdefault("params_version", 4 if _is_v5_model(nai_model) else 3)
         params.setdefault("legacy", False)
         params.setdefault("legacy_v3_extend", False)
         params.setdefault("legacy_uc", False)
@@ -2633,6 +2718,12 @@ async def handle_character_reference(request: Request) -> Response:
 
     accept_format = "json" if response_format == "nai_json" else "zip"
 
+    # V5 每日限额预检
+    try:
+        check_v5_quota(nai_model, 1)
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+
     async with gate:
         content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
 
@@ -2648,7 +2739,11 @@ async def handle_character_reference(request: Request) -> Response:
         uncond_scale=params.get("uncond_scale", 1.0),
         reference_image_count=ref_count,
         reference_image_encoded_count=encoded_reuse_count,
+        price_multiplier=_v5_price_multiplier(nai_model),
     )
+
+    # V5 生成成功计数
+    record_v5_generation(nai_model, 1)
 
     return _build_image_response_v2(
         request, content, prompt, response_format,
@@ -2755,11 +2850,11 @@ async def handle_precise_reference(request: Request) -> Response:
     registry = get_registry()
     nai_model = registry.resolve_image_model(model) if registry else model
 
-    # Precise Reference 仅支持 V4.5
-    if "diffusion-4-5" not in nai_model and "diffusion-4" not in nai_model:
+    # Precise Reference 仅支持 V4.5 / V5
+    if not _is_v4_family(nai_model):
         raise HTTPException(
             status_code=400,
-            detail="Precise Reference is only available on V4.5 models",
+            detail="Precise Reference is only available on V4.5/V5 models",
         )
 
     width = _safe_int(body.get("width", 1024), 1024)
@@ -2788,8 +2883,8 @@ async def handle_precise_reference(request: Request) -> Response:
         "director_reference_strength_values": ref_strengths,
         "director_reference_secondary_strength_values": [1.0 - ri for ri in ref_infos],
         "director_reference_images": ref_images,
-        # V4.5 必需字段
-        "params_version": 3,
+        # V4.5/V5 必需字段
+        "params_version": 4 if _is_v5_model(nai_model) else 3,
         "legacy": False,
         "legacy_v3_extend": False,
         "legacy_uc": False,
@@ -2830,6 +2925,12 @@ async def handle_precise_reference(request: Request) -> Response:
 
     accept_format = "json" if response_format == "nai_json" else "zip"
 
+    # V5 每日限额预检
+    try:
+        check_v5_quota(nai_model, 1)
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+
     async with gate:
         content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
 
@@ -2845,7 +2946,11 @@ async def handle_precise_reference(request: Request) -> Response:
         uncond_scale=params.get("uncond_scale", 1.0),
         reference_image_count=ref_count,
         reference_mode="precise",
+        price_multiplier=_v5_price_multiplier(nai_model),
     )
+
+    # V5 生成成功计数
+    record_v5_generation(nai_model, 1)
 
     return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
 
