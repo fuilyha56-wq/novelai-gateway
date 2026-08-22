@@ -158,15 +158,35 @@ class V5QuotaTests(unittest.TestCase):
         os.unlink(self._tmp_path)
         self._orig = v5_quota.V5_USAGE_JSON
         v5_quota.V5_USAGE_JSON = self._tmp_path
+        self._orig_quota_enabled = v5_quota.settings.v5_quota_enabled
+        self._orig_daily_limit = v5_quota.V5_DAILY_LIMIT
+        self._orig_weekly_limit = v5_quota.V5_WEEKLY_LIMIT
+        v5_quota.settings.v5_quota_enabled = True
 
     def tearDown(self) -> None:
         v5_quota.V5_USAGE_JSON = self._orig
+        v5_quota.settings.v5_quota_enabled = self._orig_quota_enabled
+        v5_quota.V5_DAILY_LIMIT = self._orig_daily_limit
+        v5_quota.V5_WEEKLY_LIMIT = self._orig_weekly_limit
         if os.path.exists(self._tmp_path):
             os.unlink(self._tmp_path)
 
     def test_quota_constants(self) -> None:
         self.assertEqual(v5_quota.V5_WEEKLY_LIMIT, 1730)
         self.assertEqual(v5_quota.V5_DAILY_LIMIT, 190)
+
+    def test_quota_can_be_disabled(self) -> None:
+        v5_quota.record_v5_generation("nai-diffusion-5-full", 190)
+        v5_quota.settings.v5_quota_enabled = False
+        v5_quota.check_v5_quota("nai-diffusion-5-full", 1)
+        self.assertEqual(v5_quota.get_usage()["used_today"], 190)
+
+    def test_quota_limits_are_configurable(self) -> None:
+        v5_quota.V5_DAILY_LIMIT = 2
+        v5_quota.V5_WEEKLY_LIMIT = 3
+        v5_quota.record_v5_generation("nai-diffusion-5-full", 2)
+        with self.assertRaises(ValueError):
+            v5_quota.check_v5_quota("nai-diffusion-5-full", 1)
 
     def test_non_v5_models_always_pass(self) -> None:
         v5_quota.check_v5_quota("nai-diffusion-4-5-full", 100)

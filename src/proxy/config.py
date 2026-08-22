@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     cooldown_max: float = 1.0
     upstream_timeout: float = 120.0
 
+    # V5 图片生成限额
+    v5_quota_enabled: bool = True
+    v5_daily_limit: int = 190
+    v5_weekly_limit: int = 1730
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     def model_post_init(self, __context: Any) -> None:

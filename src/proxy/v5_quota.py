@@ -31,11 +31,13 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .config import settings
+
 # ── 常量 ─────────────────────────────────────────────────────
 
-# 官方免费额度：每周 1730 张、每日补充 ~190 张（11%）
-V5_WEEKLY_LIMIT = 1730
-V5_DAILY_LIMIT = 190
+# 默认限额；实际值可通过 .env 中的 V5_DAILY_LIMIT / V5_WEEKLY_LIMIT 覆盖。
+V5_WEEKLY_LIMIT = settings.v5_weekly_limit
+V5_DAILY_LIMIT = settings.v5_daily_limit
 
 # 滚动周窗口天数（对齐官方"随时间自动补充"）
 _WEEK_WINDOW_DAYS = 7
@@ -160,7 +162,7 @@ def check_v5_quota(nai_model: str | None, n_samples: int = 1) -> None:
     Raises:
         ValueError: 当日或滚动 7 天 V5 生成张数已达上限（剩余 < n_samples）
     """
-    if not is_v5_model(nai_model) or n_samples <= 0:
+    if not settings.v5_quota_enabled or not is_v5_model(nai_model) or n_samples <= 0:
         return
     today = _today()
     with _lock:
