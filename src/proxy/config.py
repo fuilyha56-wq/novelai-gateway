@@ -6,6 +6,7 @@
 """
 
 import json
+import random
 from pathlib import Path
 from threading import Lock
 from typing import Any, Set
@@ -41,6 +42,35 @@ def _parse_api_keys(value: str) -> list[str]:
         for item in normalized.replace(";", ",").replace("\n", ",").split(",")
         if _normalize_credential(item)
     ]
+
+
+def _parse_weighted_api_keys(value: str) -> list[tuple[str, int]]:
+    """解析带权重的 API Key 配置，兼容字符串数组和对象数组。"""
+    normalized = value.strip()
+    if not normalized:
+        return []
+    try:
+        parsed = json.loads(normalized)
+    except json.JSONDecodeError:
+        parsed = None
+    if not isinstance(parsed, list):
+        return [(key, 1) for key in _parse_api_keys(value)]
+    result: list[tuple[str, int]] = []
+    for item in parsed:
+        if isinstance(item, str):
+            key = _normalize_credential(item)
+            if key:
+                result.append((key, 1))
+        elif isinstance(item, dict):
+            key = item.get("key", item.get("token", ""))
+            if isinstance(key, str) and (key := _normalize_credential(key)):
+                try:
+                    weight = max(1, int(item.get("weight", 1)))
+                except (TypeError, ValueError):
+                    weight = 1
+                if item.get("enabled", True):
+                    result.append((key, weight))
+    return result
 
 
 class Settings(BaseSettings):
@@ -110,10 +140,11 @@ class Settings(BaseSettings):
 
     def get_shared_auth_token(self) -> str:
         """返回下一把共享凭据，多 API Key 时按请求进行线程安全轮询。"""
-        api_keys = _parse_api_keys(self.shared_api_keys)
+        api_keys = _parse_weighted_api_keys(self.shared_api_keys)
         if api_keys:
             with self._api_key_lock:
-                api_key = api_keys[self._api_key_index % len(api_keys)]
+                weighted = [key for key, weight in api_keys for _ in range(weight)]
+                api_key = weighted[self._api_key_index % len(weighted)]
                 self._api_key_index += 1
             return api_key
 
@@ -136,7 +167,7 @@ class Settings(BaseSettings):
     def has_shared_credentials(self) -> bool:
         """是否配置了会被所有下游请求共用的 NovelAI 凭据。"""
         return bool(
-            _parse_api_keys(self.shared_api_keys)
+            _parse_weighted_api_keys(self.shared_api_keys)
             or _normalize_credential(self.shared_api_key)
             or _normalize_credential(self.shared_token)
         )

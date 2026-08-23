@@ -42,6 +42,7 @@ from .openai import (
 )
 from .model_registry import ModelRegistry
 from .model_fetcher import handle_refresh_upstream_models
+from .admin import router as admin_router, admin_ui
 
 logger = logging.getLogger("gateway")
 
@@ -104,6 +105,13 @@ def _start_cloudflare_tunnel():
 
 
 app = FastAPI(title="NovelAI Gateway", lifespan=lifespan)
+app.include_router(admin_router)
+
+
+@app.get("/admin")
+async def admin_console():
+    """返回网关管理控制台。"""
+    return await admin_ui()
 
 
 def _safe_compare(a: str, b: str) -> bool:
