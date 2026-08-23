@@ -22,6 +22,7 @@ router = APIRouter(prefix="/admin/api")
 _logger = logging.getLogger("gateway")
 _ENV_PATH = Path(".env")
 _LOG_BUFFER: list[str] = []
+_LOG_PATH = Path("logs/gateway.log")
 
 
 class _AdminLogHandler(logging.Handler):
@@ -39,6 +40,10 @@ class _AdminLogHandler(logging.Handler):
 _log_handler = _AdminLogHandler()
 _log_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(message)s", "%H:%M:%S"))
 _logger.addHandler(_log_handler)
+_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+_file_handler = logging.FileHandler(_LOG_PATH, encoding="utf-8")
+_file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(message)s", "%Y-%m-%d %H:%M:%S"))
+logging.getLogger().addHandler(_file_handler)
 
 
 def _authorized(request: Request) -> bool:
@@ -254,7 +259,10 @@ async def restart(request: Request) -> dict[str, str]:
 async def logs(request: Request, lines: int = 100) -> dict[str, list[str]]:
     """读取最近网关日志。"""
     await _require_auth(request)
-    return {"lines": _LOG_BUFFER[-max(1, min(lines, 500)): ]}
+    limit = max(1, min(lines, 500))
+    if _LOG_PATH.exists():
+        return {"lines": _LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]}
+    return {"lines": _LOG_BUFFER[-limit:]}
 
 
 @router.get("/models/config")
