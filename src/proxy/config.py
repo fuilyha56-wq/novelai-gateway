@@ -6,12 +6,13 @@
 """
 
 import json
-import random
 from pathlib import Path
 from threading import Lock
 from typing import Any, Set
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .account_pool import account_pool
 
 
 def _normalize_credential(value: str) -> str:
@@ -137,16 +138,13 @@ class Settings(BaseSettings):
         """初始化不参与配置序列化的 Key 轮询状态。"""
         self._api_key_lock = Lock()
         self._api_key_index = 0
+        account_pool.configure(self.shared_api_keys)
 
     def get_shared_auth_token(self) -> str:
         """返回下一把共享凭据，多 API Key 时按请求进行线程安全轮询。"""
-        api_keys = _parse_weighted_api_keys(self.shared_api_keys)
-        if api_keys:
-            with self._api_key_lock:
-                weighted = [key for key, weight in api_keys for _ in range(weight)]
-                api_key = weighted[self._api_key_index % len(weighted)]
-                self._api_key_index += 1
-            return api_key
+        if self.shared_api_keys.strip():
+            _account_id, token = account_pool.choose()
+            return token
 
         if self.shared_api_key:
             return _normalize_credential(self.shared_api_key)
@@ -202,7 +200,15 @@ def get_request_auth_token(request: Any) -> str:
     if isinstance(cached_token, str) and cached_token:
         return cached_token
 
-    token = settings.get_shared_auth_token()
+    if settings.shared_api_keys.strip():
+        account_id = getattr(request.state, "gateway_account_id", None)
+        if account_id:
+            token = account_pool.get_secret(account_id)
+        else:
+            account_id, token = account_pool.choose()
+            request.state.gateway_account_id = account_id
+    else:
+        token = settings.get_shared_auth_token()
     if not token:
         auth = request.headers.get("authorization", "")
         token = auth[7:] if auth.startswith("Bearer ") else auth

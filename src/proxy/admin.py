@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
+from .account_pool import account_pool, parse_accounts, serialize_accounts
 from .config import _parse_weighted_api_keys, settings
 from .model_registry import ModelRegistry
 from .model_fetcher import handle_refresh_upstream_models
@@ -119,7 +120,102 @@ async def overview(request: Request) -> dict[str, Any]:
     await _require_auth(request)
     env = _env_values()
     safe = {key: (_safe_env(value) if any(word in key for word in ("KEY", "TOKEN", "PASSWORD")) else value) for key, value in env.items()}
-    return {"env": safe, "models": _models(), "usage": get_usage(), "accounts": len(_parse_weighted_api_keys(settings.shared_api_keys))}
+    return {"env": safe, "models": _models(), "usage": get_usage(), "accounts": account_pool.public()}
+
+
+def _persist_accounts(accounts: list[dict[str, Any]]) -> None:
+    """持久化账号并让当前进程立即使用新账号池。"""
+    encoded = serialize_accounts(accounts)
+    _write_env({"SHARED_API_KEYS": encoded})
+    settings.shared_api_keys = encoded
+    account_pool.configure(encoded)
+
+
+@router.get("/accounts")
+async def list_accounts(request: Request) -> dict[str, Any]:
+    """返回脱敏账号状态。"""
+    await _require_auth(request)
+    return {"accounts": account_pool.public()}
+
+
+@router.post("/accounts")
+async def create_account(request: Request) -> dict[str, Any]:
+    """创建账号。"""
+    await _require_auth(request)
+    body = await request.json()
+    secret = body.get("key", body.get("token", ""))
+    if not isinstance(secret, str) or not secret.strip():
+        raise HTTPException(status_code=400, detail="账号密钥不能为空")
+    accounts = parse_accounts(settings.shared_api_keys)
+    account_id = str(body.get("id", f"account-{len(accounts) + 1}"))
+    if any(item.get("id") == account_id for item in accounts):
+        raise HTTPException(status_code=409, detail="账号 ID 已存在")
+    accounts.append({"id": account_id, "name": body.get("name", account_id), "key": secret, "weight": body.get("weight", 1), "enabled": body.get("enabled", True)})
+    _persist_accounts(accounts)
+    return {"account": next(item for item in account_pool.public() if item["id"] == account_id)}
+
+
+@router.put("/accounts/{account_id}")
+async def update_account(account_id: str, request: Request) -> dict[str, Any]:
+    """编辑账号元数据或密钥。"""
+    await _require_auth(request)
+    body = await request.json()
+    accounts = parse_accounts(settings.shared_api_keys)
+    target = next((item for item in accounts if item.get("id") == account_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    for key in ("name", "weight", "enabled"):
+        if key in body:
+            target[key] = body[key]
+    if isinstance(body.get("key"), str) and body["key"].strip() and not body["key"].startswith("••••"):
+        target["key"] = body["key"]
+    _persist_accounts(accounts)
+    return {"account": next(item for item in account_pool.public() if item["id"] == account_id)}
+
+
+@router.delete("/accounts/{account_id}")
+async def delete_account(account_id: str, request: Request) -> dict[str, str]:
+    """删除账号。"""
+    await _require_auth(request)
+    accounts = [item for item in parse_accounts(settings.shared_api_keys) if item.get("id") != account_id]
+    if len(accounts) == len(parse_accounts(settings.shared_api_keys)):
+        raise HTTPException(status_code=404, detail="账号不存在")
+    _persist_accounts(accounts)
+    return {"message": "账号已删除"}
+
+
+@router.post("/accounts/{account_id}/reset")
+async def reset_account(account_id: str, request: Request) -> dict[str, str]:
+    """清除账号失败和冷却状态。"""
+    await _require_auth(request)
+    if not account_pool.reset(account_id):
+        raise HTTPException(status_code=404, detail="账号不存在")
+    return {"message": "账号状态已重置"}
+
+
+@router.post("/accounts/{account_id}/test")
+async def test_account(account_id: str, request: Request) -> dict[str, Any]:
+    """调用轻量上游接口测试账号有效性。"""
+    await _require_auth(request)
+    secret = account_pool.get_secret(account_id)
+    if not secret:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    import httpx
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.novelai_image_url}/user/data",
+                headers={"Authorization": f"Bearer {secret}"},
+                timeout=15,
+            )
+        if response.status_code >= 400:
+            account_pool.failure(account_id, f"HTTP {response.status_code}: {response.text[:180]}")
+            return {"ok": False, "status_code": response.status_code, "message": "上游拒绝该账号"}
+        account_pool.success(account_id)
+        return {"ok": True, "status_code": response.status_code, "message": "账号可用"}
+    except Exception as exc:
+        account_pool.failure(account_id, str(exc))
+        return {"ok": False, "message": "账号测试失败"}
 
 
 @router.put("/env")
@@ -133,6 +229,9 @@ async def update_env(request: Request) -> dict[str, str]:
     }
     values = {key: str(value) for key, value in body.items() if key in allowed}
     _write_env(values)
+    if "SHARED_API_KEYS" in values:
+        settings.shared_api_keys = values["SHARED_API_KEYS"]
+        account_pool.configure(settings.shared_api_keys)
     return {"message": "配置已保存，重启网关后生效", "updated": ",".join(values)}
 
 

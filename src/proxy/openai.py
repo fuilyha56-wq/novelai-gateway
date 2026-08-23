@@ -1137,6 +1137,7 @@ async def _encode_vibe(
         编码后的 vibe 数据的 base64 字符串
     """
     from .forwarder import get_client
+    from .account_pool import account_pool
 
     token = _get_auth_token(request)
     headers = {
@@ -1242,6 +1243,7 @@ async def _send_nai_request(
         accept_format: "zip" 或 "json"
     """
     from .forwarder import get_client
+    from .account_pool import account_pool
 
     if target_url is None:
         target_url = settings.get_upstream_url("/ai/generate-image")
@@ -1300,17 +1302,26 @@ async def _send_nai_request(
                 timeout=settings.upstream_timeout,
             )
     except Exception as e:
+        account_id = getattr(request.state, "gateway_account_id", None)
+        if account_id:
+            account_pool.failure(account_id, str(e))
         logger.error(f"❌ NAI 请求失败 ({target_url}): {e}")
         raise HTTPException(status_code=502, detail=f"上游请求失败: {e}")
 
     if resp.status_code != 200:
         error_text = resp.content[:500].decode("utf-8", errors="replace")
+        account_id = getattr(request.state, "gateway_account_id", None)
+        if account_id:
+            account_pool.failure(account_id, error_text)
         logger.error(f"❌ NAI 返回错误 {resp.status_code}: {error_text}")
         raise HTTPException(
             status_code=resp.status_code,
             detail=f"NovelAI error {resp.status_code}: {error_text}",
         )
 
+    account_id = getattr(request.state, "gateway_account_id", None)
+    if account_id:
+        account_pool.success(account_id)
     return resp.content
 
 
@@ -1326,6 +1337,7 @@ async def _send_nai_binary_request(
         force_json: 强制使用 JSON 请求（不走 multipart），用于 annotate 等端点。
     """
     from .forwarder import get_client
+    from .account_pool import account_pool
 
     token = _get_auth_token(request)
     headers = {
@@ -1360,16 +1372,26 @@ async def _send_nai_binary_request(
                 timeout=settings.upstream_timeout,
             )
     except Exception as e:
+        account_id = getattr(request.state, "gateway_account_id", None)
+        if account_id:
+            account_pool.failure(account_id, str(e))
         logger.error(f"❌ NAI 请求失败 ({target_url}): {e}")
         raise HTTPException(status_code=502, detail=f"上游请求失败: {e}")
 
     if resp.status_code != 200:
         error_text = resp.content[:500].decode("utf-8", errors="replace")
+        account_id = getattr(request.state, "gateway_account_id", None)
+        if account_id:
+            account_pool.failure(account_id, error_text)
+        logger.error(f"❌ NAI 返回错误 {resp.status_code}: {error_text}")
         raise HTTPException(
             status_code=resp.status_code,
             detail=f"NovelAI error {resp.status_code}: {error_text}",
         )
 
+    account_id = getattr(request.state, "gateway_account_id", None)
+    if account_id:
+        account_pool.success(account_id)
     return resp.content
 
 
