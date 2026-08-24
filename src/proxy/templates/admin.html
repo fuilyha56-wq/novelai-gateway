@@ -2137,8 +2137,8 @@
       const weekly_limit = Number(document.getElementById('overviewWeeklyLimit').value) || 1730;
 
       try {
-        await api('/settings', {
-          method: 'POST',
+        await api('/env', {
+          method: 'PUT',
           body: JSON.stringify({
             V5_QUOTA_ENABLED: String(enabled),
             V5_DAILY_LIMIT: String(daily_limit),
@@ -2328,8 +2328,9 @@
     // --- Settings Management ---
     async function loadSettings() {
       try {
-        const data = await api('/settings');
-        for (const [k, v] of Object.entries(data)) {
+        const data = await api('/env');
+        const env = data.env || data;
+        for (const [k, v] of Object.entries(env)) {
           const el = document.getElementById(k);
           if (el) el.value = v;
         }
@@ -2347,7 +2348,7 @@
       });
 
       try {
-        await api('/settings', { method: 'POST', body: JSON.stringify(payload) });
+        await api('/env', { method: 'PUT', body: JSON.stringify(payload) });
         toast('环境配置已保存生效');
       } catch (err) {
         toast('保存配置失败: ' + err.message, true);
