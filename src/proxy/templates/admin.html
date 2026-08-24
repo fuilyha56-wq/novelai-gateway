@@ -1140,6 +1140,10 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
             添加账号
           </button>
+          <button class="btn btn-danger" title="重启网关服务" onclick="restartGateway()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+            重启网关
+          </button>
           <button class="btn btn-danger btn-icon" title="退出管理登录" onclick="logout()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
           </button>
@@ -1895,6 +1899,18 @@
     function logout() {
       localStorage.removeItem('gw_admin_token');
       location.reload();
+    }
+
+    async function restartGateway() {
+      const ok = await showConfirm('重启网关', '确认立即重启 NovelAI Gateway 服务？容器将自动重新启动，期间服务短暂不可用。', true);
+      if (!ok) return;
+      try {
+        const res = await api('/restart', { method: 'POST' });
+        toast(res.message || '网关正在重启');
+        setTimeout(() => location.reload(), 3500);
+      } catch (err) {
+        toast('重启请求失败: ' + err.message, true);
+      }
     }
 
     async function api(path, options = {}) {
