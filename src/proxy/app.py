@@ -399,7 +399,8 @@ async def proxy_site(request: Request, path: str):
         return _cors_preflight()
 
     # 网页访问安全校验（只在开启了密码且为 GET HTML 请求时做拦截保护）
-    if settings.gateway_password and request.method == "GET":
+    # 注意：/admin/api 前缀由独立管理路由处理，不应落入此兜底代理。
+    if settings.gateway_password and request.method == "GET" and not path.startswith("admin/api/"):
         gw_pass = request.cookies.get("gw_pass", "")
         if unquote(gw_pass) != settings.gateway_password:
             from pathlib import Path as _Path

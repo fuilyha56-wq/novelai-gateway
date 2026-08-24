@@ -1899,7 +1899,7 @@
 
     async function api(path, options = {}) {
       options.headers = options.headers || {};
-      if (token) options.headers['X-Admin-Token'] = token;
+      if (token) options.headers['Authorization'] = 'Bearer ' + token;
       if (options.body && typeof options.body === 'string') {
         options.headers['Content-Type'] = 'application/json';
       }
@@ -2084,7 +2084,7 @@
     async function loadOverview() {
       try {
         const [status, accountsData] = await Promise.all([
-          api('/status'),
+          api('/overview'),
           api('/accounts')
         ]);
 

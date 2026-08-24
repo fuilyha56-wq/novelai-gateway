@@ -128,6 +128,12 @@ async def overview(request: Request) -> dict[str, Any]:
     return {"env": safe, "models": _models(), "usage": get_usage(), "accounts": account_pool.public()}
 
 
+@router.get("/status")
+async def status(request: Request) -> dict[str, Any]:
+    """返回控制台概览数据（与 /overview 兼容的别名）。"""
+    return await overview(request)
+
+
 async def _choose_upstream_account(account_id: str | None) -> tuple[str, str]:
     """选择用于探测 NovelAI 上游的账号。
 
