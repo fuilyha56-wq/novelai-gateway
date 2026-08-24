@@ -11,19 +11,25 @@
     :root {
       color-scheme: dark;
       --primary: #00ffff;
+      --primary-rgb: 0, 255, 255;
       --primary-dim: rgba(0, 255, 255, 0.12);
-      --primary-glow: rgba(0, 255, 255, 0.4);
+      --primary-glow: rgba(0, 255, 255, 0.45);
       --primary-container: #003840;
       --on-primary: #001f24;
       
       --surface-bg: #060a12;
-      --surface-1: #0d1527;
-      --surface-2: #121e38;
-      --surface-3: #18284a;
-      --surface-elevated: rgba(18, 30, 56, 0.78);
+      --surface-1: rgba(13, 21, 39, var(--card-opacity, 0.88));
+      --surface-2: rgba(18, 30, 56, var(--card-opacity, 0.92));
+      --surface-3: rgba(24, 40, 74, 0.95);
+      --surface-elevated: rgba(18, 30, 56, var(--card-opacity, 0.85));
       --surface-outline: #22375f;
-      --surface-outline-dim: rgba(34, 55, 95, 0.5);
-      --surface-hover: rgba(0, 255, 255, 0.04);
+      --surface-outline-dim: rgba(34, 55, 95, 0.6);
+      --surface-hover: rgba(0, 255, 255, 0.06);
+      
+      --sidebar-bg: rgba(9, 15, 27, var(--sidebar-opacity, 0.92));
+      --card-blur: 16px;
+      --bg-dim-opacity: 0.75;
+      --wallpaper-blur: 0px;
       
       --text-main: #f0f6fc;
       --text-muted: #8fa5c9;
@@ -37,30 +43,56 @@
       --accent-purple: #c77dff;
       --accent-blue: #4cc9f0;
       
-      --radius-sm: 8px;
-      --radius-md: 14px;
-      --radius-lg: 20px;
+      --radius-xs: 6px;
+      --radius-sm: 10px;
+      --radius-md: 16px;
+      --radius-lg: 24px;
       --radius-full: 9999px;
       
       --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
       --font-mono: 'Fira Code', ui-monospace, monospace;
-      --shadow-subtle: 0 8px 32px rgba(0, 0, 0, 0.45);
-      --shadow-cyan: 0 0 24px -4px rgba(0, 255, 255, 0.28);
+      --shadow-subtle: 0 10px 36px rgba(0, 0, 0, 0.55);
+      --shadow-cyan: 0 0 24px -4px rgba(0, 255, 255, 0.35);
+      --shadow-dropdown: 0 16px 40px rgba(0, 0, 0, 0.7), 0 0 20px rgba(0, 255, 255, 0.15);
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    
     body {
       background-color: var(--surface-bg);
-      background-image: 
-        radial-gradient(circle at 8% 0%, rgba(0, 255, 255, 0.09) 0%, transparent 45%),
-        radial-gradient(circle at 92% 15%, rgba(199, 125, 255, 0.07) 0%, transparent 40%),
-        radial-gradient(circle at 50% 100%, rgba(6, 214, 160, 0.05) 0%, transparent 50%);
       color: var(--text-main);
       font-family: var(--font-sans);
       font-size: 14px;
       line-height: 1.5;
       min-height: 100vh;
       display: flex;
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    /* Custom Wallpaper & Backdrop System */
+    #wallpaperBackdrop {
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+      filter: blur(var(--wallpaper-blur));
+      transform: scale(1.04);
+      transition: background-image 0.4s ease, filter 0.3s ease;
+    }
+    #wallpaperOverlay {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background-color: rgba(6, 10, 18, var(--bg-dim-opacity));
+      background-image: 
+        radial-gradient(circle at 10% 0%, rgba(0, 255, 255, 0.12) 0%, transparent 45%),
+        radial-gradient(circle at 90% 15%, rgba(199, 125, 255, 0.08) 0%, transparent 40%),
+        radial-gradient(circle at 50% 100%, rgba(6, 214, 160, 0.06) 0%, transparent 50%);
+      pointer-events: none;
+      transition: background-color 0.3s ease;
     }
 
     /* Layout Shell */
@@ -69,80 +101,104 @@
       grid-template-columns: 260px 1fr;
       width: 100%;
       min-height: 100vh;
+      position: relative;
+      z-index: 1;
     }
 
     /* Sidebar Navigation Rail */
     aside {
-      background: rgba(9, 15, 27, 0.92);
-      backdrop-filter: blur(20px);
-      border-right: 1px solid var(--surface-outline);
+      background: var(--sidebar-bg);
+      backdrop-filter: blur(var(--card-blur));
+      -webkit-backdrop-filter: blur(var(--card-blur));
+      border-right: 1px solid var(--surface-outline-dim);
       padding: 24px 16px;
       display: flex;
       flex-direction: column;
-      gap: 24px;
+      justify-content: space-between;
       position: sticky;
       top: 0;
       height: 100vh;
-      z-index: 10;
+      user-select: none;
+      z-index: 20;
     }
 
     .brand {
       display: flex;
       align-items: center;
-      gap: 12px;
-      padding: 6px 10px;
+      gap: 14px;
+      padding: 6px 12px 24px;
+      border-bottom: 1px solid var(--surface-outline-dim);
     }
     .brand-icon {
-      width: 40px;
-      height: 40px;
+      width: 42px;
+      height: 42px;
       border-radius: var(--radius-md);
-      background: linear-gradient(135deg, var(--primary), #0077ff);
+      background: linear-gradient(135deg, rgba(0, 255, 255, 0.25), rgba(199, 125, 255, 0.25));
+      border: 1px solid var(--primary);
       display: flex;
       align-items: center;
       justify-content: center;
-      color: var(--on-primary);
       box-shadow: var(--shadow-cyan);
+      flex-shrink: 0;
     }
-    .brand-icon svg { width: 22px; height: 22px; }
+    .brand-icon svg { width: 22px; height: 22px; color: var(--primary); }
     .brand-text h1 {
       font-size: 16px;
       font-weight: 800;
-      letter-spacing: 0.4px;
-      background: linear-gradient(90deg, #ffffff, var(--primary));
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+      letter-spacing: -0.3px;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
-    .brand-text span {
+    .brand-text h1 span {
+      color: var(--primary);
       font-size: 11px;
+      padding: 1px 6px;
+      background: var(--primary-dim);
+      border-radius: var(--radius-full);
+      border: 1px solid rgba(0, 255, 255, 0.4);
+      font-family: var(--font-mono);
+      font-weight: 600;
+    }
+    .brand-text p {
+      font-size: 11.5px;
       color: var(--text-muted);
-      font-weight: 500;
-      display: block;
+      margin-top: 2px;
     }
 
+    /* Nav Item */
     nav {
+      margin-top: 20px;
       display: flex;
       flex-direction: column;
       gap: 6px;
-      flex: 1;
+      flex-grow: 1;
     }
     nav button {
       display: flex;
       align-items: center;
       gap: 12px;
-      width: 100%;
-      padding: 12px 16px;
-      border-radius: var(--radius-full);
+      padding: 12px 14px;
       background: transparent;
       border: 1px solid transparent;
+      border-radius: var(--radius-sm);
       color: var(--text-muted);
-      font-family: var(--font-sans);
+      font-family: inherit;
       font-size: 13.5px;
       font-weight: 600;
       cursor: pointer;
       transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
       text-align: left;
+      width: 100%;
     }
-    nav button svg { width: 19px; height: 19px; opacity: 0.75; transition: transform 0.2s; }
+    nav button svg {
+      width: 18px;
+      height: 18px;
+      opacity: 0.75;
+      transition: transform 0.2s, color 0.2s, opacity 0.2s;
+      flex-shrink: 0;
+    }
     nav button:hover {
       background: var(--surface-2);
       color: var(--text-main);
@@ -152,8 +208,8 @@
     nav button.active {
       background: var(--primary-dim);
       color: var(--primary);
-      border-color: rgba(0, 255, 255, 0.35);
-      box-shadow: 0 0 16px -4px var(--primary-dim);
+      border-color: rgba(0, 255, 255, 0.4);
+      box-shadow: 0 0 18px -4px var(--primary-dim);
     }
     nav button.active svg { opacity: 1; color: var(--primary); }
 
@@ -188,7 +244,7 @@
     /* Main Container */
     main {
       padding: 32px clamp(20px, 4vw, 56px);
-      max-width: 1520px;
+      max-width: 1560px;
       width: 100%;
     }
 
@@ -204,18 +260,23 @@
       font-weight: 800;
       letter-spacing: -0.5px;
       color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
     }
     .header-title p {
-      font-size: 13px;
       color: var(--text-muted);
+      font-size: 13.5px;
       margin-top: 4px;
     }
     .header-actions {
       display: flex;
+      align-items: center;
       gap: 10px;
+      flex-wrap: wrap;
     }
 
-    /* MD3 Buttons */
+    /* MD3 Cyber Buttons */
     .btn {
       display: inline-flex;
       align-items: center;
@@ -223,7 +284,7 @@
       gap: 8px;
       padding: 10px 18px;
       border-radius: var(--radius-full);
-      font-family: var(--font-sans);
+      font-family: inherit;
       font-size: 13px;
       font-weight: 600;
       cursor: pointer;
@@ -231,472 +292,328 @@
       border: 1px solid var(--surface-outline);
       background: var(--surface-2);
       color: var(--text-main);
+      backdrop-filter: blur(10px);
       text-decoration: none;
-      white-space: nowrap;
+      user-select: none;
     }
-    .btn svg { width: 16px; height: 16px; }
     .btn:hover {
       background: var(--surface-3);
-      border-color: var(--primary);
+      border-color: rgba(0, 255, 255, 0.4);
       color: #fff;
       transform: translateY(-1px);
     }
+    .btn:active { transform: translateY(0); }
+    .btn svg { width: 15px; height: 15px; }
+
     .btn-primary {
       background: var(--primary);
       color: var(--on-primary);
       border-color: var(--primary);
-      box-shadow: 0 2px 14px -2px var(--primary-glow);
+      font-weight: 700;
+      box-shadow: 0 0 16px -2px rgba(0, 255, 255, 0.4);
     }
     .btn-primary:hover {
       background: #33ffff;
       border-color: #33ffff;
       color: var(--on-primary);
-      box-shadow: 0 4px 22px 0 var(--primary-glow);
+      box-shadow: 0 0 24px 0 rgba(0, 255, 255, 0.6);
     }
+
+    .btn-outline-primary {
+      background: var(--primary-dim);
+      color: var(--primary);
+      border-color: rgba(0, 255, 255, 0.45);
+    }
+    .btn-outline-primary:hover {
+      background: rgba(0, 255, 255, 0.22);
+      border-color: var(--primary);
+      box-shadow: 0 0 16px -2px var(--primary-dim);
+    }
+
     .btn-danger {
       background: var(--accent-red-dim);
       color: var(--accent-red);
-      border-color: rgba(255, 77, 109, 0.3);
+      border-color: rgba(255, 77, 109, 0.4);
     }
     .btn-danger:hover {
       background: var(--accent-red);
       color: #fff;
       border-color: var(--accent-red);
+      box-shadow: 0 0 18px rgba(255, 77, 109, 0.4);
     }
+
     .btn-sm {
-      padding: 6px 12px;
+      padding: 7px 13px;
       font-size: 12px;
       border-radius: var(--radius-sm);
     }
     .btn-icon {
-      padding: 8px;
-      border-radius: 50%;
-      width: 34px;
-      height: 34px;
-    }
-
-    /* MD3 Cards & Panels */
-    .panel {
-      background: var(--surface-elevated);
-      backdrop-filter: blur(16px);
-      border: 1px solid var(--surface-outline);
-      border-radius: var(--radius-lg);
-      padding: 24px;
-      margin-bottom: 22px;
-      box-shadow: var(--shadow-subtle);
-      transition: border-color 0.2s;
-    }
-    .panel:hover {
-      border-color: rgba(0, 255, 255, 0.25);
-    }
-    .panel-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 20px;
-      gap: 16px;
-      flex-wrap: wrap;
-    }
-    .panel-title {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-    .panel-title-icon {
       width: 36px;
       height: 36px;
-      border-radius: var(--radius-sm);
-      background: var(--primary-dim);
-      color: var(--primary);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .panel-title-icon svg { width: 20px; height: 20px; }
-    .panel-title h3 {
-      font-size: 17.5px;
-      font-weight: 700;
-      color: #fff;
-    }
-    .panel-title span {
-      font-size: 12px;
-      color: var(--text-muted);
-      display: block;
-      font-weight: 400;
-      margin-top: 2px;
+      padding: 0;
+      border-radius: var(--radius-full);
     }
 
-    /* KPI Grid */
-    .kpi-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 16px;
-      margin-bottom: 22px;
-    }
-    .kpi-card {
+    /* Cards & Containers */
+    .card {
       background: var(--surface-elevated);
-      border: 1px solid var(--surface-outline);
-      border-radius: var(--radius-md);
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
+      backdrop-filter: blur(var(--card-blur));
+      -webkit-backdrop-filter: blur(var(--card-blur));
+      border: 1px solid var(--surface-outline-dim);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      box-shadow: var(--shadow-subtle);
+      margin-bottom: 24px;
       position: relative;
       overflow: hidden;
-      transition: transform 0.2s, border-color 0.2s;
+      transition: border-color 0.25s, box-shadow 0.25s;
     }
-    .kpi-card:hover {
-      transform: translateY(-2px);
-      border-color: rgba(0, 255, 255, 0.4);
+    .card:hover {
+      border-color: rgba(0, 255, 255, 0.25);
     }
-    .kpi-card::before {
+    .card::before {
       content: '';
       position: absolute;
       top: 0;
       left: 0;
-      width: 4px;
-      height: 100%;
-      background: var(--surface-outline);
-    }
-    .kpi-card.cyan::before { background: var(--primary); }
-    .kpi-card.purple::before { background: var(--accent-purple); }
-    .kpi-card.green::before { background: var(--accent-green); }
-    .kpi-card.amber::before { background: var(--accent-tier); }
-    
-    .kpi-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      color: var(--text-muted);
-      font-size: 12px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    .kpi-value {
-      font-size: 28px;
-      font-weight: 800;
-      color: #fff;
-      margin: 10px 0 4px;
-      letter-spacing: -0.5px;
-      font-family: var(--font-sans);
-    }
-    .kpi-footer {
-      font-size: 12px;
-      color: var(--text-muted);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .kpi-progress {
-      height: 6px;
-      background: var(--surface-3);
-      border-radius: var(--radius-full);
-      overflow: hidden;
-      margin-top: 12px;
-    }
-    .kpi-progress-bar {
-      height: 100%;
-      background: linear-gradient(90deg, #0088ff, var(--primary));
-      border-radius: var(--radius-full);
-      width: 0%;
-      transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+      right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(0, 255, 255, 0.35), transparent);
     }
 
-    /* NovelAI Upstream Dashboard Component */
-    .upstream-hero {
-      background: linear-gradient(135deg, rgba(0, 255, 255, 0.08) 0%, rgba(18, 30, 56, 0.65) 100%);
-      border: 1px solid rgba(0, 255, 255, 0.28);
-      border-radius: var(--radius-lg);
-      padding: 24px;
-      margin-bottom: 22px;
-      position: relative;
-      box-shadow: 0 8px 30px -4px rgba(0, 255, 255, 0.1);
-    }
-    .upstream-bar {
+    .card-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      flex-wrap: wrap;
-      gap: 16px;
-      padding-bottom: 18px;
-      border-bottom: 1px solid var(--surface-outline-dim);
       margin-bottom: 20px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--surface-outline-dim);
     }
-    .account-chips {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-    .account-chip {
-      padding: 7px 15px;
-      border-radius: var(--radius-full);
-      background: var(--surface-2);
-      border: 1px solid var(--surface-outline);
-      color: var(--text-muted);
-      font-size: 12.5px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .account-chip:hover {
-      border-color: var(--primary);
-      color: #fff;
-      background: var(--surface-3);
-    }
-    .account-chip.active {
-      background: var(--primary-dim);
-      border-color: var(--primary);
-      color: var(--primary);
-      box-shadow: 0 0 14px -2px var(--primary-glow);
-    }
-
-    .account-banner {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: var(--surface-2);
-      border: 1px solid var(--surface-outline);
-      border-radius: var(--radius-md);
-      padding: 18px 22px;
-      margin-bottom: 18px;
-      flex-wrap: wrap;
-      gap: 16px;
-    }
-    .account-meta {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-    }
-    .account-avatar {
-      width: 46px;
-      height: 46px;
-      border-radius: var(--radius-md);
-      background: linear-gradient(135deg, #00ffff, #7b2cbf);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #fff;
-      font-weight: 800;
-      font-size: 17px;
-      box-shadow: 0 4px 14px rgba(0, 255, 255, 0.25);
-    }
-    .account-title h4 {
+    .card-title {
       font-size: 16.5px;
       font-weight: 700;
       color: #fff;
       display: flex;
       align-items: center;
       gap: 10px;
-      flex-wrap: wrap;
     }
-    .account-title code {
-      font-family: var(--font-mono);
+    .card-title-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      background: var(--primary-dim);
+      border: 1px solid rgba(0, 255, 255, 0.3);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--primary);
+    }
+    .card-title-icon svg { width: 17px; height: 17px; }
+    .card-subtitle {
       font-size: 12px;
-      color: #b0c8ea;
-      background: var(--surface-3);
-      padding: 2px 7px;
-      border-radius: 4px;
+      color: var(--text-muted);
+      font-weight: normal;
     }
 
-    .tier-badge {
+    /* Metric Grid (MD3 Stat Cards) */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .metric-card {
+      background: var(--surface-elevated);
+      backdrop-filter: blur(var(--card-blur));
+      -webkit-backdrop-filter: blur(var(--card-blur));
+      border: 1px solid var(--surface-outline-dim);
+      border-radius: var(--radius-md);
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      position: relative;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .metric-card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(0, 255, 255, 0.4);
+      box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.6), var(--shadow-cyan);
+    }
+    .metric-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .metric-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+    .metric-icon-badge {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: var(--primary-dim);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--primary);
+    }
+    .metric-icon-badge svg { width: 15px; height: 15px; }
+    .metric-value {
+      font-size: 26px;
+      font-weight: 800;
+      font-family: var(--font-mono);
+      color: #fff;
+      letter-spacing: -0.5px;
+      margin: 4px 0 2px;
+    }
+    .metric-desc {
+      font-size: 11.5px;
+      color: var(--text-subtle);
+    }
+
+    /* Progress bar */
+    .progress-track {
+      width: 100%;
+      height: 6px;
+      background: var(--surface-3);
+      border-radius: var(--radius-full);
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--primary), #33ffff);
+      border-radius: var(--radius-full);
+      box-shadow: 0 0 10px var(--primary);
+      transition: width 0.4s ease;
+    }
+
+    /* Account Switcher Bar */
+    .account-picker-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: var(--surface-1);
+      border: 1px solid var(--surface-outline-dim);
+      border-radius: var(--radius-md);
+      padding: 12px 18px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .account-picker-chips {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .account-chip {
+      padding: 6px 14px;
+      border-radius: var(--radius-full);
+      background: var(--surface-2);
+      border: 1px solid var(--surface-outline);
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      padding: 5px 14px;
-      border-radius: var(--radius-full);
-      font-size: 12.5px;
-      font-weight: 700;
-      letter-spacing: 0.3px;
-      background: rgba(255, 209, 102, 0.15);
-      color: var(--accent-tier);
-      border: 1px solid rgba(255, 209, 102, 0.35);
     }
-    .tier-badge.opus {
-      background: linear-gradient(90deg, rgba(255, 209, 102, 0.22), rgba(0, 255, 255, 0.22));
+    .account-chip:hover {
+      background: var(--surface-3);
       color: #fff;
-      border-color: rgba(0, 255, 255, 0.5);
-      box-shadow: 0 0 16px rgba(0, 255, 255, 0.2);
+      border-color: rgba(0, 255, 255, 0.35);
     }
-    .tier-badge.scroll {
-      background: rgba(199, 125, 255, 0.15);
-      color: var(--accent-purple);
-      border-color: rgba(199, 125, 255, 0.4);
-    }
-    .tier-badge.tablet {
-      background: rgba(6, 214, 160, 0.15);
-      color: var(--accent-green);
-      border-color: rgba(6, 214, 160, 0.4);
+    .account-chip.active {
+      background: var(--primary);
+      color: var(--on-primary);
+      border-color: var(--primary);
+      font-weight: 700;
+      box-shadow: 0 0 14px rgba(0, 255, 255, 0.4);
     }
 
-    .upstream-metric-grid {
+    /* Upstream Data Cards Grid */
+    .upstream-grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 14px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 18px;
     }
     .upstream-card {
       background: var(--surface-2);
-      border: 1px solid var(--surface-outline);
-      border-radius: var(--radius-md);
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      transition: border-color 0.2s;
-    }
-    .upstream-card:hover { border-color: rgba(0, 255, 255, 0.35); }
-    .upstream-card-label {
-      font-size: 12px;
-      color: var(--text-muted);
-      font-weight: 600;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      margin-bottom: 8px;
-    }
-    .upstream-card-label svg { width: 16px; height: 16px; color: var(--primary); }
-    .upstream-card-val {
-      font-size: 21px;
-      font-weight: 800;
-      color: #fff;
-      font-family: var(--font-mono);
-    }
-    .upstream-card-sub {
-      font-size: 11.5px;
-      color: var(--text-subtle);
-      margin-top: 6px;
-    }
-
-    /* Structured Perks & Details Grid */
-    .structured-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 14px;
-      margin-top: 14px;
-    }
-    .structured-box {
-      background: var(--surface-1);
       border: 1px solid var(--surface-outline-dim);
       border-radius: var(--radius-md);
-      padding: 16px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      position: relative;
     }
-    .structured-box-title {
-      font-size: 13px;
+    .upstream-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .upstream-card-title {
+      font-size: 13.5px;
       font-weight: 700;
-      color: #fff;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
       display: flex;
       align-items: center;
       gap: 8px;
-      margin-bottom: 12px;
-      padding-bottom: 8px;
-      border-bottom: 1px solid var(--surface-outline-dim);
     }
-    .structured-box-title svg { width: 16px; height: 16px; color: var(--primary); }
-    .prop-row {
+    .upstream-row {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 6px 0;
-      font-size: 12.5px;
-    }
-    .prop-label { color: var(--text-muted); }
-    .prop-val { font-weight: 600; color: #fff; font-family: var(--font-mono); font-size: 12px; }
-
-    /* Raw JSON Drawer (Accordion) */
-    .raw-drawer {
-      margin-top: 18px;
-      border: 1px solid var(--surface-outline-dim);
-      border-radius: var(--radius-md);
-      overflow: hidden;
-      background: var(--surface-1);
-    }
-    .raw-drawer summary {
-      padding: 12px 18px;
-      cursor: pointer;
-      font-size: 12.5px;
-      font-weight: 600;
-      color: var(--text-muted);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      user-select: none;
-      background: var(--surface-2);
-      transition: background 0.2s;
-    }
-    .raw-drawer summary:hover { color: var(--primary); background: var(--surface-3); }
-    .raw-drawer-content {
-      padding: 16px;
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
-    }
-    .raw-pre {
-      background: #04070e;
-      border: 1px solid var(--surface-outline);
-      border-radius: var(--radius-sm);
-      padding: 12px;
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: #9ebddc;
-      max-height: 260px;
-      overflow: auto;
-      white-space: pre-wrap;
-    }
-
-    /* Data Tables */
-    .table-container {
-      overflow-x: auto;
-      border-radius: var(--radius-md);
-      border: 1px solid var(--surface-outline);
-      background: var(--surface-1);
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      text-align: left;
+      padding: 7px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
       font-size: 13px;
     }
-    th, td {
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--surface-outline-dim);
-      white-space: nowrap;
-    }
-    th {
-      background: var(--surface-2);
-      color: var(--text-muted);
+    .upstream-row:last-child { border-bottom: none; }
+    .upstream-label { color: var(--text-muted); }
+    .upstream-val {
       font-weight: 600;
-      font-size: 11.5px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    tr:last-child td { border-bottom: none; }
-    tr:hover td { background: var(--surface-hover); }
-    code {
       font-family: var(--font-mono);
-      color: #9cdcfe;
-      font-size: 12px;
+      color: #fff;
+      text-align: right;
+    }
+    .upstream-val.highlight {
+      color: var(--primary);
+      text-shadow: 0 0 10px rgba(0, 255, 255, 0.4);
     }
 
-    /* Badges & Pills */
+    /* Badges */
     .badge {
       display: inline-flex;
       align-items: center;
-      gap: 5px;
-      padding: 3px 10px;
+      gap: 4px;
+      padding: 3px 9px;
       border-radius: var(--radius-full);
-      font-size: 11.5px;
-      font-weight: 600;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
     }
-    .badge-ok {
+    .badge-tier {
+      background: rgba(255, 209, 102, 0.16);
+      color: var(--accent-tier);
+      border: 1px solid rgba(255, 209, 102, 0.35);
+    }
+    .badge-green {
       background: var(--accent-green-dim);
       color: var(--accent-green);
       border: 1px solid rgba(6, 214, 160, 0.3);
     }
-    .badge-off {
+    .badge-red {
       background: var(--accent-red-dim);
       color: var(--accent-red);
       border: 1px solid rgba(255, 77, 109, 0.3);
@@ -707,7 +624,147 @@
       border: 1px solid rgba(0, 255, 255, 0.3);
     }
 
-    /* Form Fields & Customized MD3 Select */
+    /* =========================================================
+       TRUE MD3 CUSTOM DROPDOWN SELECT & INTERACTIVE CONTROLS
+       ========================================================= */
+    .md3-select-wrapper {
+      position: relative;
+      display: inline-block;
+      min-width: 180px;
+      user-select: none;
+    }
+    .md3-select-wrapper.full {
+      width: 100%;
+    }
+    .md3-select-trigger {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: var(--surface-1);
+      border: 1px solid var(--surface-outline);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      color: var(--text-main);
+      font-family: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+    .md3-select-trigger:hover {
+      background: var(--surface-2);
+      border-color: rgba(0, 255, 255, 0.4);
+    }
+    .md3-select-wrapper.open .md3-select-trigger {
+      border-color: var(--primary);
+      box-shadow: 0 0 14px -2px var(--primary-glow);
+      background: var(--surface-2);
+    }
+    .md3-select-text {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-weight: 500;
+    }
+    .md3-select-arrow {
+      color: var(--primary);
+      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+    }
+    .md3-select-arrow svg { width: 16px; height: 16px; }
+    .md3-select-wrapper.open .md3-select-arrow {
+      transform: rotate(180deg);
+    }
+    .md3-select-dropdown {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      right: 0;
+      background: var(--surface-2);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(0, 255, 255, 0.3);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-dropdown);
+      padding: 6px;
+      z-index: 150;
+      max-height: 260px;
+      overflow-y: auto;
+      opacity: 0;
+      transform: translateY(-8px) scale(0.98);
+      pointer-events: none;
+      transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1), transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .md3-select-wrapper.open .md3-select-dropdown {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      pointer-events: auto;
+    }
+    .md3-option {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: var(--radius-xs);
+      color: var(--text-main);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .md3-option:hover {
+      background: rgba(0, 255, 255, 0.12);
+      color: var(--primary);
+    }
+    .md3-option.selected {
+      background: var(--primary-dim);
+      color: var(--primary);
+      font-weight: 700;
+      border-left: 3px solid var(--primary);
+    }
+    .md3-option code {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      opacity: 0.75;
+    }
+
+    /* Fallback and styled native select */
+    select {
+      appearance: none;
+      -webkit-appearance: none;
+      background: var(--surface-1);
+      border: 1px solid var(--surface-outline);
+      border-radius: var(--radius-sm);
+      padding: 11px 36px 11px 14px;
+      color: var(--text-main);
+      font-family: inherit;
+      font-size: 13px;
+      outline: none;
+      cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2300ffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 14px center;
+      background-size: 15px;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 12px -2px var(--primary-glow);
+      background-color: var(--surface-2);
+    }
+    select option {
+      background-color: #121e38;
+      color: #f0f6fc;
+      padding: 10px;
+    }
+
+    /* Form Fields & MD3 Floating-style Inputs */
     .form-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -723,9 +780,12 @@
       font-size: 12.5px;
       font-weight: 600;
       color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
     }
     
-    input[type="text"], input[type="number"], input[type="password"], textarea, select {
+    input[type="text"], input[type="number"], input[type="password"], textarea {
       width: 100%;
       background: var(--surface-1);
       border: 1px solid var(--surface-outline);
@@ -737,28 +797,9 @@
       outline: none;
       transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     }
-    
-    /* MD3 Customized Dropdown Select */
-    select {
-      appearance: none;
-      -webkit-appearance: none;
-      -moz-appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2300ffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 14px center;
-      background-size: 15px;
-      padding-right: 38px;
-      cursor: pointer;
-    }
-    select option {
-      background-color: var(--surface-2);
-      color: var(--text-main);
-      padding: 10px;
-    }
-
-    input:focus, select:focus, textarea:focus {
+    input:focus, textarea:focus {
       border-color: var(--primary);
-      box-shadow: 0 0 12px -2px var(--primary-glow);
+      box-shadow: 0 0 14px -2px var(--primary-glow);
       background: var(--surface-2);
     }
     textarea {
@@ -768,12 +809,39 @@
       line-height: 1.6;
     }
 
+    /* Range slider customized MD3 cyan */
+    input[type="range"] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 6px;
+      border-radius: var(--radius-full);
+      background: var(--surface-3);
+      outline: none;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--primary);
+      cursor: pointer;
+      box-shadow: 0 0 10px var(--primary);
+      transition: transform 0.15s;
+    }
+    input[type="range"]::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+    }
+
     /* Switch Component */
     .switch-container {
       display: flex;
       align-items: center;
       gap: 10px;
       cursor: pointer;
+      user-select: none;
     }
     .switch {
       position: relative;
@@ -809,11 +877,12 @@
       position: fixed;
       inset: 0;
       background: rgba(3, 6, 12, 0.82);
-      backdrop-filter: blur(10px);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
       display: flex;
       align-items: center;
       justify-content: center;
-      z-index: 100;
+      z-index: 200;
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
@@ -824,14 +893,18 @@
     }
     .modal-card {
       background: var(--surface-2);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
       border: 1px solid var(--primary);
-      box-shadow: var(--shadow-cyan), 0 24px 48px rgba(0, 0, 0, 0.7);
+      box-shadow: var(--shadow-cyan), 0 24px 48px rgba(0, 0, 0, 0.8);
       border-radius: var(--radius-lg);
       width: 90%;
       max-width: 540px;
       padding: 28px;
       transform: scale(0.92);
       transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      max-height: 90vh;
+      overflow-y: auto;
     }
     .modal-overlay.active .modal-card { transform: scale(1); }
     .modal-header {
@@ -865,94 +938,189 @@
     .log-line-warn { color: #ffd166; }
     .log-line-error { color: #ff4d6d; }
 
+    /* Tables */
+    .table-container {
+      border-radius: var(--radius-md);
+      border: 1px solid var(--surface-outline-dim);
+      background: var(--surface-1);
+      overflow: hidden;
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 13px;
+    }
+    th {
+      background: var(--surface-2);
+      padding: 14px 16px;
+      color: var(--text-muted);
+      font-weight: 700;
+      border-bottom: 1px solid var(--surface-outline-dim);
+      text-transform: uppercase;
+      font-size: 11.5px;
+      letter-spacing: 0.5px;
+    }
+    td {
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+      color: var(--text-main);
+    }
+    tr:hover td { background: var(--surface-hover); }
+
     /* Toast Notification */
     .toast {
       position: fixed;
-      right: 28px;
-      bottom: 28px;
-      background: var(--surface-3);
+      bottom: 24px;
+      right: 24px;
+      background: rgba(18, 30, 56, 0.95);
+      backdrop-filter: blur(16px);
       border: 1px solid var(--primary);
-      box-shadow: var(--shadow-cyan);
+      box-shadow: var(--shadow-cyan), 0 10px 30px rgba(0,0,0,0.5);
+      border-radius: var(--radius-sm);
+      padding: 12px 20px;
       color: #fff;
-      padding: 14px 22px;
-      border-radius: var(--radius-md);
-      font-size: 13px;
+      font-size: 13.5px;
       font-weight: 600;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      transform: translateY(100px);
+      z-index: 999;
       opacity: 0;
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-      z-index: 200;
+      transform: translateY(20px);
+      pointer-events: none;
+      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .toast.show {
-      transform: translateY(0);
       opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+
+    /* Details Drawer */
+    .raw-drawer {
+      margin-top: 14px;
+      border: 1px solid var(--surface-outline-dim);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      background: var(--surface-1);
+    }
+    .raw-drawer summary {
+      padding: 10px 16px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      cursor: pointer;
+      user-select: none;
+      background: var(--surface-2);
+      transition: all 0.2s;
+    }
+    .raw-drawer summary:hover { color: var(--primary); background: var(--surface-3); }
+    .raw-drawer pre {
+      padding: 14px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      max-height: 220px;
+      overflow-y: auto;
+      color: #79c0ff;
+    }
+
+    /* Wallpaper Thumbnails */
+    .wallpaper-preset-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-top: 8px;
+    }
+    .wallpaper-thumb {
+      height: 60px;
+      border-radius: var(--radius-sm);
+      background-size: cover;
+      background-position: center;
+      border: 2px solid var(--surface-outline);
+      cursor: pointer;
+      transition: all 0.2s;
+      position: relative;
+    }
+    .wallpaper-thumb:hover {
+      border-color: var(--primary);
+      transform: scale(1.04);
+    }
+    .wallpaper-thumb.active {
+      border-color: var(--primary);
+      box-shadow: 0 0 12px var(--primary);
     }
 
     .hidden { display: none !important; }
-
-    @media (max-width: 1024px) {
-      .kpi-grid, .upstream-metric-grid, .structured-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    
+    @media (max-width: 900px) {
       .app-shell { grid-template-columns: 1fr; }
-      aside { height: auto; position: static; flex-direction: row; align-items: center; flex-wrap: wrap; }
-      nav { flex-direction: row; overflow-x: auto; flex: 1; }
-      .raw-drawer-content { grid-template-columns: 1fr; }
-    }
-    @media (max-width: 640px) {
-      .kpi-grid, .upstream-metric-grid, .structured-grid, .form-grid { grid-template-columns: 1fr; }
-      main { padding: 16px; }
+      aside { height: auto; position: static; }
+      .wallpaper-preset-grid { grid-template-columns: repeat(2, 1fr); }
     }
   </style>
 </head>
 <body>
+
+  <!-- Dynamic Wallpaper Layer -->
+  <div id="wallpaperBackdrop"></div>
+  <div id="wallpaperOverlay"></div>
+
   <div class="app-shell">
-    <!-- Sidebar -->
+    <!-- Sidebar Navigation -->
     <aside>
-      <div class="brand">
-        <div class="brand-icon">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      <div>
+        <div class="brand">
+          <div class="brand-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+              <path d="M2 17l10 5 10-5"></path>
+              <path d="M2 12l10 5 10-5"></path>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <h1>NovelAI GW <span>MD3</span></h1>
+            <p>High-Perf Proxy & Cluster</p>
+          </div>
         </div>
-        <div class="brand-text">
-          <h1>NOVELAI GATEWAY</h1>
-          <span>MD3 Cyber Management</span>
-        </div>
+
+        <nav>
+          <button class="active" data-tab="overview">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+            控制台总览
+          </button>
+          <button data-tab="models">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            模型与映射
+          </button>
+          <button data-tab="accounts">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+            多账号矩阵
+          </button>
+          <button data-tab="settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
+            网关环境配置
+          </button>
+          <button data-tab="logs">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+            实时日志流
+          </button>
+        </nav>
       </div>
 
-      <nav>
-        <button class="active" data-tab="overview">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-          控制台总览
-        </button>
-        <button data-tab="models">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
-          模型与别名
-        </button>
-        <button data-tab="accounts">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
-          账号矩阵
-        </button>
-        <button data-tab="settings">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-          环境配置
-        </button>
-        <button data-tab="logs">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
-          实时日志
-        </button>
-      </nav>
-
       <div class="sidebar-footer">
+        <button class="btn btn-sm btn-outline-primary" style="width: 100%;" onclick="openAppearanceModal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 10 10 0 0 0 0-20"></path></svg>
+          个性化外观 / 壁纸
+        </button>
         <div class="status-pill">
-          <span>网关运行中</span>
-          <div class="dot-live"></div>
+          <span>Gateway Status</span>
+          <span style="display: flex; align-items: center; gap: 6px; color: var(--accent-green); font-weight: 700;">
+            <div class="dot-live"></div> ONLINE
+          </span>
         </div>
-        <button class="btn btn-danger btn-sm" onclick="logout()">退出登录</button>
       </div>
     </aside>
 
-    <!-- Main Content Area -->
+    <!-- Main Content View -->
     <main>
       <header>
         <div class="header-title">
@@ -960,398 +1128,356 @@
           <p id="pageSubtitle">网关运行状态、NovelAI 上游账号实时看板与配额管理</p>
         </div>
         <div class="header-actions">
+          <button class="btn btn-outline-primary" onclick="openAppearanceModal()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+            主题与壁纸
+          </button>
           <button class="btn" onclick="refreshAll()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
             刷新数据
           </button>
-          <button class="btn btn-primary" onclick="confirmRestart()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
-            重启网关
+          <button class="btn btn-primary" onclick="openAccountForm()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            添加账号
+          </button>
+          <button class="btn btn-danger btn-icon" title="退出管理登录" onclick="logout()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
           </button>
         </div>
       </header>
 
       <!-- TAB 1: OVERVIEW -->
       <section id="overview" class="tab-view">
-        <!-- 4 KPI Cards -->
-        <div class="kpi-grid">
-          <div class="kpi-card cyan">
-            <div class="kpi-header">
-              <span>V5 今日用量</span>
-              <span id="todayRemain" class="badge badge-cyan">剩余 -</span>
+        <!-- Upstream Account Picker Bar -->
+        <div class="account-picker-bar">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 13px; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 6px;">
+              <svg style="width: 16px; height: 16px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="10" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
+              上游监控目标:
+            </span>
+            <div id="upstreamChips" class="account-picker-chips">
+              <button class="account-chip active">⚡ 自动选择</button>
             </div>
-            <div class="kpi-value" id="todayCount">-</div>
-            <div class="kpi-footer">
-              <span id="todayLimitMeta">配额上限 -</span>
-              <span id="todayPercent">0%</span>
-            </div>
-            <div class="kpi-progress"><div id="todayProgress" class="kpi-progress-bar"></div></div>
           </div>
-
-          <div class="kpi-card purple">
-            <div class="kpi-header">
-              <span>V5 滚动周用量</span>
-              <span id="weekRemain" class="badge badge-cyan">剩余 -</span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <!-- MD3 Custom Select Container -->
+            <div id="upstreamDropdownContainer" class="md3-select-wrapper">
+              <!-- populated dynamically -->
             </div>
-            <div class="kpi-value" id="weekCount">-</div>
-            <div class="kpi-footer">
-              <span id="weekLimitMeta">配额上限 -</span>
-              <span id="weekPercent">0%</span>
-            </div>
-            <div class="kpi-progress"><div id="weekProgress" class="kpi-progress-bar" style="background: linear-gradient(90deg, #9d4edd, #c77dff);"></div></div>
-          </div>
-
-          <div class="kpi-card green">
-            <div class="kpi-header">
-              <span>活跃模型</span>
-              <span class="badge badge-ok">可调用</span>
-            </div>
-            <div class="kpi-value" id="modelCount">-</div>
-            <div class="kpi-footer">
-              <span>已注册别名映射</span>
-              <span>models.toml</span>
-            </div>
-            <div class="kpi-progress"><div class="kpi-progress-bar" style="width: 100%; background: var(--accent-green);"></div></div>
-          </div>
-
-          <div class="kpi-card amber">
-            <div class="kpi-header">
-              <span>轮询账号池</span>
-              <span class="badge badge-cyan" id="accountPoolBadge">动态负载</span>
-            </div>
-            <div class="kpi-value" id="accountCount">-</div>
-            <div class="kpi-footer">
-              <span>平滑加权轮询调度</span>
-              <span>失败 30s 冷却</span>
-            </div>
-            <div class="kpi-progress"><div class="kpi-progress-bar" style="width: 100%; background: var(--accent-tier);"></div></div>
+            <button class="btn btn-sm btn-outline-primary" onclick="loadUpstreamData()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+              拉取上游
+            </button>
           </div>
         </div>
 
-        <!-- UPSTREAM ACCOUNT DASHBOARD -->
-        <div class="upstream-hero">
-          <div class="upstream-bar">
-            <div class="panel-title">
-              <div class="panel-title-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-              </div>
-              <div>
-                <h3>NovelAI 上游实时状态看板</h3>
-                <span>查询 /user/data 与 /user/subscription 权威数据，展示订阅等级、算力额度与特权</span>
+        <!-- 4-Stat Core Metric Ribbon -->
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <div class="metric-top">
+              <span class="metric-label">订阅状态 / Tier</span>
+              <div class="metric-icon-badge">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
               </div>
             </div>
-            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-              <div class="account-chips" id="upstreamAccountChips"></div>
-              <select id="upstreamDropdown" style="width: auto; min-width: 160px;" onchange="selectUpstreamAccount(this.value)"></select>
-            </div>
+            <div id="statTier" class="metric-value" style="color: var(--accent-tier);">Opus Tier 3</div>
+            <div id="statTierSub" class="metric-desc">有效至: 加载中...</div>
           </div>
 
-          <div id="upstreamLoading" class="muted" style="padding: 24px 0; text-align: center;">正在同步 NovelAI 上游状态...</div>
-
-          <div id="upstreamContent" class="hidden">
-            <!-- Account Banner -->
-            <div class="account-banner">
-              <div class="account-meta">
-                <div class="account-avatar" id="upAvatar">NAI</div>
-                <div class="account-title">
-                  <h4>
-                    <span id="upAccountName">账号名称</span>
-                    <span id="upTierBadge" class="tier-badge opus">Tier 3 · Opus</span>
-                  </h4>
-                  <div style="margin-top: 4px;">
-                    <span class="muted" style="font-size: 12px;">ID: </span><code id="upAccountId">account-1</code>
-                    <span class="muted" style="font-size: 12px; margin-left: 8px;">Key: </span><code id="upMaskedKey">pst-••••••••</code>
-                  </div>
-                </div>
-              </div>
-              <div style="text-align: right;">
-                <div style="font-size: 11.5px; color: var(--text-muted);">订阅有效期至</div>
-                <div id="upExpiresAt" style="font-size: 14px; font-weight: 700; color: var(--text-main); font-family: var(--font-mono); margin-top: 2px;">-</div>
+          <div class="metric-card">
+            <div class="metric-top">
+              <span class="metric-label">Anlas 点数余额</span>
+              <div class="metric-icon-badge">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v8M8 12h8"></path></svg>
               </div>
             </div>
+            <div id="statAnlas" class="metric-value" style="color: var(--primary);">--</div>
+            <div id="statAnlasSub" class="metric-desc">包含赠送与购买余额</div>
+          </div>
 
-            <!-- Upstream 4-Col Metric Grid -->
-            <div class="upstream-metric-grid">
-              <div class="upstream-card">
-                <div class="upstream-card-label">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-                  任务优先级 (Priority)
-                </div>
-                <div class="upstream-card-val" id="upPriorityVal">10 / 1000</div>
-                <div class="upstream-card-sub" id="upNextRefill">下次补满: 实时充足</div>
-              </div>
-
-              <div class="upstream-card">
-                <div class="upstream-card-label">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-                  用量百分比 (Usage)
-                </div>
-                <div class="upstream-card-val" id="upUsagePercent">0%</div>
-                <div class="upstream-card-sub" id="upUsageNext">恢复计算周期: 正常</div>
-              </div>
-
-              <div class="upstream-card">
-                <div class="upstream-card-label">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
-                  训练步数 (Training Steps)
-                </div>
-                <div class="upstream-card-val" id="upTrainingSteps">10,000</div>
-                <div class="upstream-card-sub" id="upTrainingSub">固定 10000 / 购买 0</div>
-              </div>
-
-              <div class="upstream-card">
-                <div class="upstream-card-label">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
-                  账号安全与特权
-                </div>
-                <div class="upstream-card-val" id="upAccountSafe">正常 (8K Token)</div>
-                <div class="upstream-card-sub" id="upAccountType">登录方式: accessKey</div>
+          <div class="metric-card">
+            <div class="metric-top">
+              <span class="metric-label">V5 / 今日调用限额</span>
+              <div class="metric-icon-badge">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
               </div>
             </div>
+            <div id="statDailyQuota" class="metric-value">-- / --</div>
+            <div class="progress-track"><div id="statDailyProgress" class="progress-fill" style="width: 0%;"></div></div>
+            <div id="statDailySub" class="metric-desc">重置于: 08:00 (UTC+8)</div>
+          </div>
 
-            <!-- Structured Perks & Detailed Grid -->
-            <div class="structured-grid">
-              <div class="structured-box">
-                <div class="structured-box-title">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                  上游订阅特权矩阵 (Subscription Perks)
-                </div>
-                <div class="prop-row">
-                  <span class="prop-label">上下文令牌容量 (Context Tokens)</span>
-                  <span class="prop-val" id="perkContextTokens">8,192 Tokens</span>
-                </div>
-                <div class="prop-row">
-                  <span class="prop-label">无限最高优先级 (Unlimited Max Priority)</span>
-                  <span class="prop-val" id="perkUnlimitedPriority">已激活 (True)</span>
-                </div>
-                <div class="prop-row">
-                  <span class="prop-label">初始任务优先级 (Start Priority)</span>
-                  <span class="prop-val" id="perkStartPriority">10</span>
-                </div>
-                <div class="prop-row">
-                  <span class="prop-label">每月免费模块训练步数 (Module Training)</span>
-                  <span class="prop-val" id="perkModuleSteps">10,000 步</span>
-                </div>
-              </div>
-
-              <div class="structured-box">
-                <div class="structured-box-title">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
-                  账户安全与账单 (Account & Billing)
-                </div>
-                <div class="prop-row">
-                  <span class="prop-label">账号创建时间 (Created At)</span>
-                  <span class="prop-val" id="accCreatedAt">-</span>
-                </div>
-                <div class="prop-row">
-                  <span class="prop-label">邮箱验证状态 (Email Verified)</span>
-                  <span class="prop-val" id="accEmailStatus">已验证</span>
-                </div>
-                <div class="prop-row">
-                  <span class="prop-label">账号封禁状态 (Ban Status)</span>
-                  <span class="prop-val" id="accBanStatus" style="color: var(--accent-green);">正常 (not_banned)</span>
-                </div>
-                <div class="prop-row">
-                  <span class="prop-label">支付处理器 (Payment Processor)</span>
-                  <span class="prop-val" id="accPaymentProcessor">Chargebee</span>
-                </div>
+          <div class="metric-card">
+            <div class="metric-top">
+              <span class="metric-label">V5 / 本周累计调用</span>
+              <div class="metric-icon-badge">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
               </div>
             </div>
-
-            <!-- Accordion: Debug Raw JSON -->
-            <details class="raw-drawer">
-              <summary>
-                <span>🔍 查看 NovelAI 上游原始响应报文 (JSON Inspector)</span>
-                <span class="badge badge-cyan">调试视图</span>
-              </summary>
-              <div class="raw-drawer-content">
-                <div>
-                  <div class="muted" style="margin-bottom: 6px; font-size: 11.5px;">Endpoint: <code>/user/data</code></div>
-                  <pre id="rawUserData" class="raw-pre"></pre>
-                </div>
-                <div>
-                  <div class="muted" style="margin-bottom: 6px; font-size: 11.5px;">Endpoint: <code>/user/subscription</code></div>
-                  <pre id="rawSubscription" class="raw-pre"></pre>
-                </div>
-              </div>
-            </details>
+            <div id="statWeeklyQuota" class="metric-value">-- / --</div>
+            <div class="progress-track"><div id="statWeeklyProgress" class="progress-fill" style="width: 0%;"></div></div>
+            <div id="statWeeklySub" class="metric-desc">本周累计消耗</div>
           </div>
         </div>
 
-        <!-- V5 Quota Settings Panel -->
-        <div class="panel">
-          <div class="panel-header">
-            <div class="panel-title">
-              <div class="panel-title-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 14 10"></polyline></svg>
+        <!-- Structured NovelAI Upstream Profile Visualization Cards -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <div class="card-title-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
               </div>
               <div>
-                <h3>V5 速率限额配置</h3>
-                <span>全局 V5 生图熔断策略（超出限制后自动拦截生图请求保护额度）</span>
+                <span>NovelAI 上游账号专属特权与额度看板</span>
+                <span class="card-subtitle" style="display: block;">实时自 NovelAI 官方集群 <code>/user/data</code> & <code>/user/subscription</code> 解析</span>
               </div>
             </div>
-            <span id="quotaEnabledBadge" class="badge badge-ok">限制已开启</span>
+            <span id="upstreamLastSync" class="badge badge-cyan">实时同步</span>
           </div>
 
+          <div class="upstream-grid">
+            <!-- Card 1: Subscription Details -->
+            <div class="upstream-card">
+              <div class="upstream-card-header">
+                <span class="upstream-card-title">
+                  <svg style="width: 16px; height: 16px; color: var(--accent-tier);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                  订阅套餐与周期
+                </span>
+                <span id="uCardTierBadge" class="badge badge-tier">Opus</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">套餐级别 (Tier)</span>
+                <span id="uCardTierName" class="upstream-val highlight">Opus (Tier 3)</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">订阅状态</span>
+                <span id="uCardSubActive" class="upstream-val"><span class="badge badge-green">活跃有效</span></span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">到期时间</span>
+                <span id="uCardExpiresAt" class="upstream-val">--</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">支付通道 (Provider)</span>
+                <span id="uCardPaymentProcessor" class="upstream-val">Paddle</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">自动扣费 / 续订中</span>
+                <span id="uCardAutoRenew" class="upstream-val">是</span>
+              </div>
+            </div>
+
+            <!-- Card 2: Perks & Token Capacity -->
+            <div class="upstream-card">
+              <div class="upstream-card-header">
+                <span class="upstream-card-title">
+                  <svg style="width: 16px; height: 16px; color: var(--primary);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
+                  点数容量与上下文
+                </span>
+                <span class="badge badge-cyan">PERKS</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">Anlas 充值点数</span>
+                <span id="uCardAnlasPaid" class="upstream-val highlight">--</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">Context 最大上下文</span>
+                <span id="uCardContextTokens" class="upstream-val">8,192 Tokens</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">免费无限生成特权</span>
+                <span id="uCardUnlimitedGen" class="upstream-val"><span class="badge badge-green">无限畅享</span></span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">模块训练步数 (Steps)</span>
+                <span id="uCardTrainingSteps" class="upstream-val">--</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">点数刷新时间 (Refill)</span>
+                <span id="uCardRefillAt" class="upstream-val">实时可用 / 无需重置</span>
+              </div>
+            </div>
+
+            <!-- Card 3: Priority & Account Meta -->
+            <div class="upstream-card">
+              <div class="upstream-card-header">
+                <span class="upstream-card-title">
+                  <svg style="width: 16px; height: 16px; color: var(--accent-purple);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+                  任务优先级与账户元信息
+                </span>
+                <span class="badge badge-cyan">STATUS</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">任务执行优先级</span>
+                <span id="uCardTaskPriority" class="upstream-val highlight">--</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">最大优先并发动作</span>
+                <span id="uCardMaxActions" class="upstream-val">--</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">账号注册时间</span>
+                <span id="uCardCreatedAt" class="upstream-val">--</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">账号安全 / 封禁状态</span>
+                <span id="uCardAccountBanned" class="upstream-val"><span class="badge badge-green">正常运行</span></span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">优先消耗免费特权</span>
+                <span id="uCardPrioritySetting" class="upstream-val">开启</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Raw Upstream JSON Expandable Drawer -->
+          <details class="raw-drawer">
+            <summary>查看原始上游返回报文 (Raw JSON Inspect)</summary>
+            <pre id="upstreamRawJson">{"status": "waiting for fetch..."}</pre>
+          </details>
+        </div>
+
+        <!-- Quick Quota Configuration -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <div class="card-title-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+              </div>
+              <div>
+                <span>V5 / 全局配额与流控阈值</span>
+                <span class="card-subtitle" style="display: block;">控制网关每日与每周请求调用上限</span>
+              </div>
+            </div>
+          </div>
           <div class="form-grid">
             <div class="form-field">
-              <label class="form-label">限额保护开关</label>
-              <select id="overviewQuotaEnabled">
-                <option value="true">开启限额保护 (推荐)</option>
-                <option value="false">关闭限额保护 (仅统计)</option>
-              </select>
+              <label class="form-label">配额系统开关</label>
+              <!-- MD3 Custom Select Wrapper -->
+              <div id="overviewQuotaEnabledWrapper" class="md3-select-wrapper full"></div>
             </div>
             <div class="form-field">
-              <label class="form-label">每日生成上限 (Daily Limit)</label>
+              <label class="form-label">日限额 (Daily Limit)</label>
               <input id="overviewDailyLimit" type="number" min="1" placeholder="默认 190">
             </div>
             <div class="form-field">
-              <label class="form-label">滚动 7 天生成上限 (Weekly Limit)</label>
+              <label class="form-label">周限额 (Weekly Limit)</label>
               <input id="overviewWeeklyLimit" type="number" min="1" placeholder="默认 1730">
             </div>
             <div class="form-field" style="justify-content: flex-end;">
-              <button class="btn btn-primary" onclick="saveOverviewQuota()">保存限额策略</button>
+              <button class="btn btn-primary" style="height: 42px;" onclick="saveOverviewQuota()">保存配额设置</button>
             </div>
           </div>
-        </div>
-
-        <!-- Model Usage Table -->
-        <div class="panel">
-          <div class="panel-header">
-            <div class="panel-title">
-              <div class="panel-title-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
-              </div>
-              <div>
-                <h3>多模型调用统计</h3>
-                <span>各生图与文本模型的独立使用量分布及 V5 占比</span>
-              </div>
-            </div>
-          </div>
-          <div id="modelUsageTable" class="table-container"></div>
         </div>
       </section>
 
       <!-- TAB 2: MODELS -->
       <section id="models" class="tab-view hidden">
-        <div class="panel">
-          <div class="panel-header">
-            <div class="panel-title">
-              <div class="panel-title-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <div class="card-title-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
               </div>
               <div>
-                <h3>模型目录与别名映射</h3>
-                <span>管理对外暴露的模型标识 (model_identifier) 与内部映射</span>
+                <span>models.toml 模型与别名映射配置</span>
+                <span class="card-subtitle" style="display: block;">定义对上游 NovelAI 调用的 model 路由及默认生成参数</span>
               </div>
             </div>
             <div class="header-actions">
-              <button class="btn" onclick="loadModelConfig()">重新载入</button>
-              <button class="btn btn-primary" onclick="refreshModels()">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path><polyline points="12 12 19 5 19 12 12 12"></polyline></svg>
-                抓取上游新模型
-              </button>
+              <button class="btn btn-sm" onclick="loadModelConfig()">重载配置</button>
+              <button class="btn btn-sm btn-primary" onclick="saveModelConfig()">保存并生效</button>
             </div>
           </div>
-          <div id="modelsTable" class="table-container" style="margin-bottom: 24px;"></div>
-
           <div class="form-field full">
-            <label class="form-label" style="display: flex; justify-content: space-between;">
-              <span>模型配置文件 (config/models.toml)</span>
-              <span class="muted">保存后重启网关即可生效</span>
-            </label>
-            <textarea id="modelsConfig" spellcheck="false" style="min-height: 420px;"></textarea>
-          </div>
-          <div style="margin-top: 16px; text-align: right;">
-            <button class="btn btn-primary" onclick="saveModelConfig()">保存 models.toml</button>
+            <textarea id="modelsTomlEditor" spellcheck="false" placeholder="正在读取 models.toml..."></textarea>
           </div>
         </div>
       </section>
 
       <!-- TAB 3: ACCOUNTS -->
       <section id="accounts" class="tab-view hidden">
-        <div class="panel">
-          <div class="panel-header">
-            <div class="panel-title">
-              <div class="panel-title-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></svg>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <div class="card-title-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
               </div>
               <div>
-                <h3>多账号矩阵与平滑轮询</h3>
-                <span>管理共享 NovelAI 账号池，支持平滑加权轮询、故障自动隔离与探活</span>
+                <span>多账号轮询池矩阵</span>
+                <span class="card-subtitle" style="display: block;">加权轮询调度、自动故障隔离与探活探测</span>
               </div>
             </div>
-            <button class="btn btn-primary" onclick="openAccountForm()">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-              添加账号
-            </button>
+            <div class="header-actions">
+              <button class="btn btn-sm btn-primary" onclick="openAccountForm()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                添加账号
+              </button>
+            </div>
           </div>
-          <div id="accountsTable" class="table-container"></div>
+          <div id="accountsTableContainer" class="table-container">正在加载账号矩阵...</div>
         </div>
       </section>
 
       <!-- TAB 4: SETTINGS -->
       <section id="settings" class="tab-view hidden">
-        <div class="panel">
-          <div class="panel-header">
-            <div class="panel-title">
-              <div class="panel-title-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <div class="card-title-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
               </div>
               <div>
-                <h3>网关环境配置 (.env)</h3>
-                <span>调整运行端口、并发策略、冷却时间与外部图床配置</span>
+                <span>网关环境变量 (.env)</span>
+                <span class="card-subtitle" style="display: block;">调整并发限流、冷却延迟与反代基地址</span>
               </div>
             </div>
+            <button class="btn btn-sm btn-primary" onclick="saveSettings()">保存环境配置</button>
           </div>
-
           <div class="form-grid">
             <div class="form-field">
-              <label class="form-label">MAX_CONCURRENT (最大并发请求数)</label>
+              <label class="form-label">最大并发限制 (MAX_CONCURRENT)</label>
               <input id="MAX_CONCURRENT" type="number" placeholder="默认 1">
             </div>
             <div class="form-field">
-              <label class="form-label">COOLDOWN_MIN (请求间隔最小冷却秒数)</label>
+              <label class="form-label">最小请求冷却 (COOLDOWN_MIN 秒)</label>
               <input id="COOLDOWN_MIN" placeholder="默认 0.5">
             </div>
             <div class="form-field">
-              <label class="form-label">COOLDOWN_MAX (请求间隔最大冷却秒数)</label>
+              <label class="form-label">最大请求冷却 (COOLDOWN_MAX 秒)</label>
               <input id="COOLDOWN_MAX" placeholder="默认 1.0">
             </div>
             <div class="form-field">
-              <label class="form-label">V5_QUOTA_ENABLED</label>
+              <label class="form-label">V5 配额限制启用 (V5_QUOTA_ENABLED)</label>
               <input id="V5_QUOTA_ENABLED" placeholder="true / false">
             </div>
             <div class="form-field">
-              <label class="form-label">V5_DAILY_LIMIT</label>
+              <label class="form-label">V5 日额度 (V5_DAILY_LIMIT)</label>
               <input id="V5_DAILY_LIMIT" type="number" placeholder="190">
             </div>
             <div class="form-field">
-              <label class="form-label">V5_WEEKLY_LIMIT</label>
+              <label class="form-label">V5 周额度 (V5_WEEKLY_LIMIT)</label>
               <input id="V5_WEEKLY_LIMIT" type="number" placeholder="1730">
             </div>
             <div class="form-field full">
-              <label class="form-label">IMAGE_BASE_URL (外部图床访问前缀，留空则使用请求来源)</label>
+              <label class="form-label">图床公网基础 URL (IMAGE_BASE_URL)</label>
               <input id="IMAGE_BASE_URL" placeholder="https://your-domain.com">
             </div>
-          </div>
-          <div style="margin-top: 20px; text-align: right;">
-            <button class="btn btn-primary" onclick="saveSettings()">保存环境配置</button>
           </div>
         </div>
       </section>
 
       <!-- TAB 5: LOGS -->
       <section id="logs" class="tab-view hidden">
-        <div class="panel">
-          <div class="panel-header">
-            <div class="panel-title">
-              <div class="panel-title-icon">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <div class="card-title-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
               </div>
               <div>
-                <h3>实时网关日志流</h3>
-                <span id="logStatus">自动刷新已启动 (2s)</span>
+                <span>实时网关日志流</span>
+                <span id="logStatus" class="card-subtitle" style="display: block;">自动刷新已启动 (2s)</span>
               </div>
             </div>
             <div class="header-actions">
@@ -1404,109 +1530,360 @@
     </div>
   </div>
 
+  <!-- Custom MD3 Appearance & Wallpaper Modal Dialog -->
+  <div id="appearanceModal" class="modal-overlay">
+    <div class="modal-card" style="max-width: 520px;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <svg style="width: 20px; height: 20px; color: var(--primary);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 10 10 0 0 0 0-20"></path></svg>
+          <h3>个性化外观与壁纸设定</h3>
+        </div>
+        <button class="btn btn-sm btn-icon" onclick="closeAppearanceModal()">✕</button>
+      </div>
+      <div class="form-grid">
+        <div class="form-field full">
+          <label class="form-label">
+            <span>上传自定义背景壁纸</span>
+            <span style="font-size: 11px; color: var(--text-subtle);">支持 PNG, JPG, WebP</span>
+          </label>
+          <div style="display: flex; gap: 10px; align-items: center;">
+            <input type="file" id="wallpaperFileInput" accept="image/*" style="display: none;" onchange="handleWallpaperUpload(this)">
+            <button class="btn btn-outline-primary" style="flex: 1;" onclick="document.getElementById('wallpaperFileInput').click()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+              从本地选择图片上传
+            </button>
+            <button class="btn btn-danger btn-sm" onclick="clearWallpaper()">清除壁纸</button>
+          </div>
+        </div>
+
+        <div class="form-field full">
+          <label class="form-label">或者输入壁纸图片在线 URL</label>
+          <div style="display: flex; gap: 8px;">
+            <input id="wallpaperUrlInput" placeholder="https://example.com/wallpaper.jpg">
+            <button class="btn btn-sm btn-primary" onclick="setWallpaperFromUrl()">应用</button>
+          </div>
+        </div>
+
+        <div class="form-field full">
+          <label class="form-label">预设赛博精选壁纸</label>
+          <div class="wallpaper-preset-grid">
+            <div class="wallpaper-thumb" style="background-image: url('https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=600&auto=format&fit=crop&q=80');" onclick="applyPresetWallpaper('https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=1920&auto=format&fit=crop&q=85')"></div>
+            <div class="wallpaper-thumb" style="background-image: url('https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&auto=format&fit=crop&q=80');" onclick="applyPresetWallpaper('https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1920&auto=format&fit=crop&q=85')"></div>
+            <div class="wallpaper-thumb" style="background-image: url('https://images.unsplash.com/photo-1550684848-fac1c5b4e853?w=600&auto=format&fit=crop&q=80');" onclick="applyPresetWallpaper('https://images.unsplash.com/photo-1550684848-fac1c5b4e853?w=1920&auto=format&fit=crop&q=85')"></div>
+            <div class="wallpaper-thumb" style="background-image: url('https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=600&auto=format&fit=crop&q=80');" onclick="applyPresetWallpaper('https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=1920&auto=format&fit=crop&q=85')"></div>
+          </div>
+        </div>
+
+        <div class="form-field full">
+          <label class="form-label">
+            <span>背景遮罩暗度 (Overlay Darkness)</span>
+            <span id="labelBgDim" style="color: var(--primary); font-family: var(--font-mono);">75%</span>
+          </label>
+          <input type="range" id="sliderBgDim" min="0" max="95" value="75" oninput="updateAppearanceConfig()">
+        </div>
+
+        <div class="form-field">
+          <label class="form-label">
+            <span>卡片透明度 (Card Opacity)</span>
+            <span id="labelCardOpacity" style="color: var(--primary); font-family: var(--font-mono);">88%</span>
+          </label>
+          <input type="range" id="sliderCardOpacity" min="30" max="100" value="88" oninput="updateAppearanceConfig()">
+        </div>
+
+        <div class="form-field">
+          <label class="form-label">
+            <span>壁纸模糊度 (Blur)</span>
+            <span id="labelWallpaperBlur" style="color: var(--primary); font-family: var(--font-mono);">0px</span>
+          </label>
+          <input type="range" id="sliderWallpaperBlur" min="0" max="25" value="0" oninput="updateAppearanceConfig()">
+        </div>
+      </div>
+      <div style="margin-top: 24px; display: flex; justify-content: space-between; align-items: center;">
+        <button class="btn btn-sm" onclick="resetAppearance()">恢复默认</button>
+        <button class="btn btn-primary" onclick="closeAppearanceModal()">完成</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Custom MD3 Prompt / Auth Modal Dialog -->
   <div id="authModal" class="modal-overlay">
     <div class="modal-card" style="max-width: 440px;">
       <div class="modal-header">
-        <h3 id="authModalTitle">网关身份认证</h3>
+        <h3 id="authModalTitle">管理鉴权</h3>
       </div>
-      <p id="authModalDesc" class="muted" style="margin-bottom: 16px; font-size: 13px;">请输入管理控制台密码 (GATEWAY_PASSWORD):</p>
-      <div class="form-field">
-        <input id="authModalInput" type="password" placeholder="输入密码并按回车">
+      <p id="authModalMsg" style="color: var(--text-muted); font-size: 13.5px; margin-bottom: 16px;">请输入网关管理密钥 (X-Admin-Token)：</p>
+      <div class="form-field full">
+        <input id="authModalInput" type="password" placeholder="输入密码并按回车" onkeydown="if(event.key==='Enter') submitAuthModal()">
       </div>
       <div style="margin-top: 20px; display: flex; justify-content: flex-end; gap: 10px;">
-        <button class="btn btn-primary" onclick="submitAuthModal()">确认进入</button>
+        <button class="btn" onclick="closeAuthModal(false)">取消</button>
+        <button class="btn btn-primary" onclick="submitAuthModal()">确认</button>
       </div>
     </div>
   </div>
 
-  <!-- Custom MD3 Confirm Dialog -->
+  <!-- Custom MD3 Confirm Modal Dialog -->
   <div id="confirmModal" class="modal-overlay">
     <div class="modal-card" style="max-width: 440px;">
       <div class="modal-header">
         <h3 id="confirmModalTitle">操作确认</h3>
-        <button class="btn btn-sm btn-icon" onclick="closeConfirmModal(false)">✕</button>
       </div>
-      <p id="confirmModalDesc" class="muted" style="margin-bottom: 20px; font-size: 13px;"></p>
+      <p id="confirmModalMsg" style="color: var(--text-muted); font-size: 13.5px; line-height: 1.6; margin-bottom: 20px;"></p>
       <div style="display: flex; justify-content: flex-end; gap: 10px;">
-        <button class="btn" onclick="closeConfirmModal(false)">取消</button>
-        <button id="confirmModalBtn" class="btn btn-primary" onclick="closeConfirmModal(true)">确认</button>
+        <button class="btn" onclick="resolveConfirmModal(false)">取消</button>
+        <button id="confirmModalOkBtn" class="btn btn-danger" onclick="resolveConfirmModal(true)">确认</button>
       </div>
     </div>
   </div>
 
+  <!-- Toast Notification System -->
   <div id="toast" class="toast"></div>
 
   <script>
-    // --- Auth & API Request Helper ---
-    let authCallback = null;
+    // --- Custom MD3 Dropdown Component Helper ---
+    class MD3Select {
+      constructor(container, options = {}) {
+        this.container = typeof container === 'string' ? document.getElementById(container) : container;
+        this.options = options.options || [];
+        this.value = options.value || '';
+        this.onChange = options.onChange || (() => {});
+        this.render();
+      }
 
-    function openAuthModal(callback) {
-      authCallback = callback;
-      const modal = document.getElementById('authModal');
-      const input = document.getElementById('authModalInput');
-      input.value = '';
-      modal.classList.add('active');
-      setTimeout(() => input.focus(), 150);
+      setOptions(opts, val) {
+        this.options = opts;
+        if (val !== undefined) this.value = val;
+        this.render();
+      }
+
+      setValue(val) {
+        this.value = val;
+        this.render();
+      }
+
+      render() {
+        if (!this.container) return;
+        const current = this.options.find(o => String(o.value) === String(this.value)) || this.options[0] || { label: '请选择', value: '' };
+        
+        this.container.className = 'md3-select-wrapper' + (this.container.classList.contains('full') ? ' full' : '');
+        this.container.innerHTML = `
+          <div class="md3-select-trigger">
+            <span class="md3-select-text">${current.icon || ''} ${current.label}</span>
+            <span class="md3-select-arrow">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </span>
+          </div>
+          <div class="md3-select-dropdown">
+            ${this.options.map(opt => `
+              <div class="md3-option ${String(opt.value) === String(this.value) ? 'selected' : ''}" data-val="${opt.value}">
+                <span>${opt.icon || ''} ${opt.label}</span>
+                ${opt.sub ? `<code>${opt.sub}</code>` : ''}
+              </div>
+            `).join('')}
+          </div>
+        `;
+
+        const trigger = this.container.querySelector('.md3-select-trigger');
+        trigger.onclick = (e) => {
+          e.stopPropagation();
+          const isOpen = this.container.classList.contains('open');
+          document.querySelectorAll('.md3-select-wrapper.open').forEach(el => el.classList.remove('open'));
+          if (!isOpen) this.container.classList.add('open');
+        };
+
+        this.container.querySelectorAll('.md3-option').forEach(optEl => {
+          optEl.onclick = (e) => {
+            e.stopPropagation();
+            const val = optEl.dataset.val;
+            this.setValue(val);
+            this.container.classList.remove('open');
+            this.onChange(val);
+          };
+        });
+      }
     }
 
-    function submitAuthModal() {
-      const val = document.getElementById('authModalInput').value.trim();
-      if (!val) return;
-      localStorage.setItem('gw_admin_token', val);
-      document.getElementById('authModal').classList.remove('active');
-      if (authCallback) authCallback(val);
-    }
-
-    document.getElementById('authModalInput').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') submitAuthModal();
+    // Global document click closes open custom selects
+    document.addEventListener('click', () => {
+      document.querySelectorAll('.md3-select-wrapper.open').forEach(el => el.classList.remove('open'));
     });
 
-    let confirmResolve = null;
-    function showConfirm(title, desc, isDanger = false) {
-      return new Promise((resolve) => {
-        confirmResolve = resolve;
+    // --- State Management ---
+    let token = localStorage.getItem('gw_admin_token') || '';
+    let isLogFollowing = true;
+    let logInterval = null;
+    let editingAccountId = null;
+
+    // --- Appearance & Wallpaper Settings System ---
+    const defaultAppearance = {
+      wallpaper: '',
+      bgDim: 75,
+      cardOpacity: 88,
+      wallpaperBlur: 0
+    };
+
+    function loadAppearance() {
+      try {
+        const raw = localStorage.getItem('gw_appearance');
+        const cfg = raw ? JSON.parse(raw) : defaultAppearance;
+        applyAppearanceToDOM(cfg);
+      } catch (e) {
+        applyAppearanceToDOM(defaultAppearance);
+      }
+    }
+
+    function applyAppearanceToDOM(cfg) {
+      const backdrop = document.getElementById('wallpaperBackdrop');
+      const root = document.documentElement;
+
+      if (cfg.wallpaper) {
+        backdrop.style.backgroundImage = `url("${cfg.wallpaper}")`;
+      } else {
+        backdrop.style.backgroundImage = 'none';
+      }
+
+      root.style.setProperty('--bg-dim-opacity', (cfg.bgDim / 100).toString());
+      root.style.setProperty('--card-opacity', (cfg.cardOpacity / 100).toString());
+      root.style.setProperty('--sidebar-opacity', Math.min(0.95, (cfg.cardOpacity / 100) + 0.05).toString());
+      root.style.setProperty('--wallpaper-blur', `${cfg.wallpaperBlur}px`);
+
+      // Update modal inputs if exists
+      const sBgDim = document.getElementById('sliderBgDim');
+      const sCardOp = document.getElementById('sliderCardOpacity');
+      const sBlur = document.getElementById('sliderWallpaperBlur');
+      if (sBgDim) sBgDim.value = cfg.bgDim;
+      if (sCardOp) sCardOp.value = cfg.cardOpacity;
+      if (sBlur) sBlur.value = cfg.wallpaperBlur;
+
+      const lBgDim = document.getElementById('labelBgDim');
+      const lCardOp = document.getElementById('labelCardOpacity');
+      const lBlur = document.getElementById('labelWallpaperBlur');
+      if (lBgDim) lBgDim.textContent = `${cfg.bgDim}%`;
+      if (lCardOp) lCardOp.textContent = `${cfg.cardOpacity}%`;
+      if (lBlur) lBlur.textContent = `${cfg.wallpaperBlur}px`;
+    }
+
+    function saveAppearance(cfg) {
+      localStorage.setItem('gw_appearance', JSON.stringify(cfg));
+      applyAppearanceToDOM(cfg);
+    }
+
+    function getAppearanceFromInputs() {
+      const raw = localStorage.getItem('gw_appearance');
+      const current = raw ? JSON.parse(raw) : { ...defaultAppearance };
+      current.bgDim = Number(document.getElementById('sliderBgDim').value);
+      current.cardOpacity = Number(document.getElementById('sliderCardOpacity').value);
+      current.wallpaperBlur = Number(document.getElementById('sliderWallpaperBlur').value);
+      return current;
+    }
+
+    function updateAppearanceConfig() {
+      const cfg = getAppearanceFromInputs();
+      saveAppearance(cfg);
+    }
+
+    function openAppearanceModal() {
+      loadAppearance();
+      document.getElementById('appearanceModal').classList.add('active');
+    }
+
+    function closeAppearanceModal() {
+      document.getElementById('appearanceModal').classList.remove('active');
+    }
+
+    function handleWallpaperUpload(input) {
+      const file = input.files[0];
+      if (!file) return;
+      if (file.size > 8 * 1024 * 1024) {
+        toast('壁纸文件体积过大 (需小于 8MB)', true);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const cfg = getAppearanceFromInputs();
+        cfg.wallpaper = e.target.result;
+        saveAppearance(cfg);
+        toast('背景壁纸已成功应用并保存');
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function setWallpaperFromUrl() {
+      const url = document.getElementById('wallpaperUrlInput').value.trim();
+      if (!url) return;
+      const cfg = getAppearanceFromInputs();
+      cfg.wallpaper = url;
+      saveAppearance(cfg);
+      toast('网络壁纸已应用');
+    }
+
+    function applyPresetWallpaper(url) {
+      const cfg = getAppearanceFromInputs();
+      cfg.wallpaper = url;
+      saveAppearance(cfg);
+      toast('已应用精选赛博壁纸');
+    }
+
+    function clearWallpaper() {
+      const cfg = getAppearanceFromInputs();
+      cfg.wallpaper = '';
+      saveAppearance(cfg);
+      toast('背景壁纸已清除');
+    }
+
+    function resetAppearance() {
+      saveAppearance(defaultAppearance);
+      toast('外观设置已重置为默认');
+    }
+
+    // --- Custom Modal Promises ---
+    let authModalResolver = null;
+    function promptAuth() {
+      return new Promise(resolve => {
+        authModalResolver = resolve;
+        document.getElementById('authModalInput').value = '';
+        document.getElementById('authModal').classList.add('active');
+        setTimeout(() => document.getElementById('authModalInput').focus(), 150);
+      });
+    }
+    function submitAuthModal() {
+      const val = document.getElementById('authModalInput').value.trim();
+      document.getElementById('authModal').classList.remove('active');
+      if (authModalResolver) {
+        authModalResolver(val);
+        authModalResolver = null;
+      }
+    }
+    function closeAuthModal() {
+      document.getElementById('authModal').classList.remove('active');
+      if (authModalResolver) {
+        authModalResolver('');
+        authModalResolver = null;
+      }
+    }
+
+    let confirmModalResolver = null;
+    function showConfirm(title, msg, isDanger = false) {
+      return new Promise(resolve => {
+        confirmModalResolver = resolve;
         document.getElementById('confirmModalTitle').textContent = title;
-        document.getElementById('confirmModalDesc').textContent = desc;
-        const btn = document.getElementById('confirmModalBtn');
-        btn.className = isDanger ? 'btn btn-danger' : 'btn btn-primary';
+        document.getElementById('confirmModalMsg').textContent = msg;
+        const okBtn = document.getElementById('confirmModalOkBtn');
+        okBtn.className = isDanger ? 'btn btn-danger' : 'btn btn-primary';
         document.getElementById('confirmModal').classList.add('active');
       });
     }
-
-    function closeConfirmModal(result) {
+    function resolveConfirmModal(result) {
       document.getElementById('confirmModal').classList.remove('active');
-      if (confirmResolve) {
-        confirmResolve(result);
-        confirmResolve = null;
+      if (confirmModalResolver) {
+        confirmModalResolver(result);
+        confirmModalResolver = null;
       }
     }
 
-    async function api(path, opt = {}) {
-      let token = localStorage.getItem('gw_admin_token');
-      if (!token) {
-        await new Promise(openAuthModal);
-        token = localStorage.getItem('gw_admin_token');
-      }
-
-      const headers = {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + (token || ''),
-        ...(opt.headers || {})
-      };
-      const res = await fetch('/admin/api' + path, { ...opt, headers });
-      if (res.status === 401) {
-        localStorage.removeItem('gw_admin_token');
-        await new Promise(openAuthModal);
-        return api(path, opt);
-      }
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `HTTP ${res.status}`);
-      }
-      return res.json();
-    }
-
+    // --- Toast & Base API ---
     function toast(msg, isError = false) {
       const el = document.getElementById('toast');
       el.textContent = msg;
@@ -1518,6 +1895,28 @@
     function logout() {
       localStorage.removeItem('gw_admin_token');
       location.reload();
+    }
+
+    async function api(path, options = {}) {
+      options.headers = options.headers || {};
+      if (token) options.headers['X-Admin-Token'] = token;
+      if (options.body && typeof options.body === 'string') {
+        options.headers['Content-Type'] = 'application/json';
+      }
+
+      const res = await fetch('/admin/api' + path, options);
+      if (res.status === 401) {
+        const inputToken = await promptAuth();
+        if (!inputToken) throw new Error('鉴权未通过');
+        token = inputToken;
+        localStorage.setItem('gw_admin_token', token);
+        return api(path, options);
+      }
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+      return res.json();
     }
 
     // --- Tab Navigation ---
@@ -1548,6 +1947,8 @@
     // --- Upstream NovelAI Data Renderer ---
     let cachedAccounts = [];
     let selectedUpstreamAccountId = '';
+    let upstreamSelectInstance = null;
+    let overviewQuotaSelectInstance = null;
 
     function formatTimestamp(sec) {
       if (!sec || sec <= 0 || sec < 100000000) return '实时可用 / 无需重置';
@@ -1561,292 +1962,251 @@
 
     function renderUpstreamControls(accounts) {
       cachedAccounts = accounts || [];
-      const chipContainer = document.getElementById('upstreamAccountChips');
-      const dropdown = document.getElementById('upstreamDropdown');
+      
+      // Render MD3 Custom Select Options
+      const selectOpts = [
+        { label: '⚡ 自动轮询选择账号', value: '', sub: 'Default' },
+        ...cachedAccounts.map(a => ({
+          label: a.name || a.id,
+          value: a.id,
+          sub: a.masked_key || ''
+        }))
+      ];
 
-      // 1. Dropdown
-      let dropHtml = '<option value="">⚡ 自动轮询选择账号</option>';
-      dropHtml += cachedAccounts.map(a => `<option value="${a.id}">${a.name} (${a.masked_key})</option>`).join('');
-      dropdown.innerHTML = dropHtml;
-      dropdown.value = selectedUpstreamAccountId;
-
-      // 2. Chips
-      if (!cachedAccounts.length) {
-        chipContainer.innerHTML = '<span class="muted" style="font-size:12px;">未配置多账号池</span>';
-        return;
+      if (!upstreamSelectInstance) {
+        upstreamSelectInstance = new MD3Select('upstreamDropdownContainer', {
+          options: selectOpts,
+          value: selectedUpstreamAccountId,
+          onChange: (val) => selectUpstreamAccount(val)
+        });
+      } else {
+        upstreamSelectInstance.setOptions(selectOpts, selectedUpstreamAccountId);
       }
+
+      // Render Top Quick Chips
       let html = `<button class="account-chip ${!selectedUpstreamAccountId ? 'active' : ''}" onclick="selectUpstreamAccount('')">⚡ 自动选择</button>`;
       html += cachedAccounts.map(a => {
         const isAct = selectedUpstreamAccountId === a.id;
         return `<button class="account-chip ${isAct ? 'active' : ''}" onclick="selectUpstreamAccount('${a.id}')">${a.name} <code style="font-size:10px;">${a.masked_key}</code></button>`;
       }).join('');
-      chipContainer.innerHTML = html;
+      document.getElementById('upstreamChips').innerHTML = html;
     }
 
     function selectUpstreamAccount(id) {
       selectedUpstreamAccountId = id;
+      if (upstreamSelectInstance) upstreamSelectInstance.setValue(id);
       renderUpstreamControls(cachedAccounts);
-      loadUpstreamStatus();
+      loadUpstreamData();
     }
 
-    async function loadUpstreamStatus() {
-      const loadingEl = document.getElementById('upstreamLoading');
-      const contentEl = document.getElementById('upstreamContent');
-      loadingEl.classList.remove('hidden');
-      contentEl.classList.add('hidden');
-
+    async function loadUpstreamData() {
       try {
         const qs = selectedUpstreamAccountId ? `?account_id=${encodeURIComponent(selectedUpstreamAccountId)}` : '';
-        const [ud, sub] = await Promise.all([
-          api('/upstream/user/data' + qs),
-          api('/upstream/subscription' + qs)
+        const [subRes, dataRes] = await Promise.all([
+          api('/upstream/subscription' + qs),
+          api('/upstream/user/data' + qs)
         ]);
 
-        const uData = ud.data || {};
-        const subData = sub.data || {};
-        const pri = uData.priority || {};
-        const sInfo = uData.subscription || subData || {};
-        const perks = sInfo.perks || {};
-        const usage = sInfo.usage || {};
-        const info = uData.information || {};
+        const rawObj = { account_id: selectedUpstreamAccountId || 'auto-round-robin', subscription: subRes, user_data: dataRes };
+        document.getElementById('upstreamRawJson').textContent = JSON.stringify(rawObj, null, 2);
 
-        // 1. Account Basic Info
-        document.getElementById('upAccountName').textContent = (cachedAccounts.find(a => a.id === ud.account_id)?.name) || ud.account_id || '当前生效账号';
-        document.getElementById('upAccountId').textContent = ud.account_id || 'shared';
-        document.getElementById('upMaskedKey').textContent = ud.masked_key || '••••••••';
-        document.getElementById('upAvatar').textContent = ((ud.account_id || 'N')[0]).toUpperCase();
+        // 1. Render Tier & Subscription info
+        const tierMap = { 0: 'Free (Tier 0)', 1: 'Tablet (Tier 1)', 2: 'Scroll (Tier 2)', 3: 'Opus (Tier 3)' };
+        const tierNum = subRes.tier ?? 3;
+        const tierName = tierMap[tierNum] || `Tier ${tierNum}`;
+        document.getElementById('statTier').textContent = tierName;
+        document.getElementById('uCardTierName').textContent = tierName;
+        document.getElementById('uCardTierBadge').textContent = tierNum === 3 ? 'Opus' : `Tier ${tierNum}`;
 
-        // 2. Tier Badge
-        const tier = sInfo.tier || 0;
-        const tierBadge = document.getElementById('upTierBadge');
-        if (tier >= 3) {
-          tierBadge.className = 'tier-badge opus';
-          tierBadge.textContent = 'Tier 3 · OPUS 旗舰版 (免费 V5 算力池)';
-        } else if (tier === 2) {
-          tierBadge.className = 'tier-badge scroll';
-          tierBadge.textContent = 'Tier 2 · Scroll 进阶版';
-        } else if (tier === 1) {
-          tierBadge.className = 'tier-badge tablet';
-          tierBadge.textContent = 'Tier 1 · Tablet 基础版';
-        } else {
-          tierBadge.className = 'tier-badge';
-          tierBadge.textContent = 'Free / 未订阅';
-        }
+        const isAct = subRes.active !== false;
+        document.getElementById('uCardSubActive').innerHTML = isAct 
+          ? `<span class="badge badge-green">活跃有效</span>` 
+          : `<span class="badge badge-red">已停用 / 过期</span>`;
 
-        document.getElementById('upExpiresAt').textContent = formatTimestamp(sInfo.expiresAt);
+        const expStr = formatTimestamp(subRes.expiresAt);
+        document.getElementById('statTierSub').textContent = `有效至: ${expStr}`;
+        document.getElementById('uCardExpiresAt').textContent = expStr;
 
-        // 3. Priority Actions (智能处理 0 / 负时间戳)
-        const curPri = (pri.taskPriority !== undefined && pri.taskPriority > 0) ? pri.taskPriority : (perks.startPriority ?? 10);
-        const maxPri = pri.maxPriorityActions || perks.maxPriorityActions || 1000;
-        document.getElementById('upPriorityVal').textContent = `${curPri} / ${maxPri}`;
-        document.getElementById('upNextRefill').textContent = `下次补满: ${formatTimestamp(pri.nextRefillAt)}`;
+        document.getElementById('uCardPaymentProcessor').textContent = subRes.paymentProcessor || 'Paddle / Official';
+        document.getElementById('uCardAutoRenew').textContent = (subRes.isSubscriptionActive || !subRes.isCanceled) ? '是 (自动续期)' : '否 (已取消自动续订)';
 
-        // 4. Usage Percent & V5 Rate State
-        const pct = usage.percent ?? 0;
-        const upUsagePercent = document.getElementById('upUsagePercent');
-        upUsagePercent.textContent = `${pct}%`;
-        if (pct > 100) {
-          upUsagePercent.style.color = 'var(--accent-tier)';
-          document.getElementById('upUsageNext').textContent = `⚠️ 超出基础池，消耗 Anlas (距恢复: ${usage.timeUntilNextPercent || 0}s)`;
-        } else {
-          upUsagePercent.style.color = 'var(--accent-green)';
-          document.getElementById('upUsageNext').textContent = usage.timeUntilNextPercent ? `距恢复下一阶点数: ${usage.timeUntilNextPercent}s` : 'V5 算力池: 充沛正常';
-        }
-
-        // 5. Training Steps
-        const tSteps = sInfo.trainingStepsLeft?.fixedTrainingStepsLeft ?? perks.moduleTrainingSteps ?? 0;
-        const purSteps = sInfo.trainingStepsLeft?.purchasedTrainingSteps ?? 0;
-        document.getElementById('upTrainingSteps').textContent = Number(tSteps + purSteps).toLocaleString();
-        document.getElementById('upTrainingSub').textContent = `固定配额: ${tSteps} / 额外购买: ${purSteps}`;
-
-        // 6. Safe & Features
-        const banned = info.banStatus && info.banStatus !== 'not_banned';
-        const ctxTokens = perks.contextTokens || 8192;
-        const safeEl = document.getElementById('upAccountSafe');
-        if (banned) {
-          safeEl.textContent = '账号异常 (Banned)';
-          safeEl.style.color = 'var(--accent-red)';
-        } else {
-          safeEl.textContent = `状态正常 (${ctxTokens} Tokens)`;
-          safeEl.style.color = 'var(--primary)';
-        }
-        document.getElementById('upAccountType').textContent = `登录方式: ${info.loginMethod || 'accessKey'} · 邮箱: ${info.emailVerified ? '已认证' : '未认证'}`;
-
-        // 7. Structured Detailed Perks
-        document.getElementById('perkContextTokens').textContent = `${(perks.contextTokens || 8192).toLocaleString()} Tokens`;
-        document.getElementById('perkUnlimitedPriority').textContent = perks.unlimitedMaxPriority ? '已激活 (True)' : '未激活';
-        document.getElementById('perkStartPriority').textContent = `${perks.startPriority ?? 10}`;
-        document.getElementById('perkModuleSteps').textContent = `${(perks.moduleTrainingSteps || 10000).toLocaleString()} 步`;
-
-        document.getElementById('accCreatedAt').textContent = formatTimestamp(info.accountCreatedAt);
-        document.getElementById('accEmailStatus').textContent = info.emailVerified ? '已认证 (Verified)' : '未认证';
-        document.getElementById('accBanStatus').textContent = info.banStatus || 'not_banned';
-        document.getElementById('accPaymentProcessor').textContent = (sInfo.paymentProcessor || 'Chargebee').toUpperCase();
-
-        // 8. Raw JSON Viewers
-        document.getElementById('rawUserData').textContent = JSON.stringify(uData, null, 2);
-        document.getElementById('rawSubscription').textContent = JSON.stringify(subData, null, 2);
-
-        loadingEl.classList.add('hidden');
-        contentEl.classList.remove('hidden');
-      } catch (err) {
-        loadingEl.innerHTML = `<span style="color:var(--accent-red);">上游状态同步失败: ${err.message}</span>`;
-      }
-    }
-
-    // --- Overview & Metrics ---
-    async function refreshAll() {
-      try {
-        const data = await api('/overview');
-        const u = data.usage || {};
-
-        // KPIs
-        document.getElementById('todayCount').textContent = u.used_today ?? 0;
-        document.getElementById('todayRemain').textContent = `剩余 ${u.remaining_today ?? 0}`;
-        document.getElementById('todayLimitMeta').textContent = `每日上限 ${u.daily_limit ?? 0}`;
-        const dayPct = u.daily_limit ? Math.min(100, Math.round((u.used_today / u.daily_limit) * 100)) : 0;
-        document.getElementById('todayPercent').textContent = `${dayPct}%`;
-        document.getElementById('todayProgress').style.width = `${dayPct}%`;
-
-        document.getElementById('weekCount').textContent = u.used_this_week ?? 0;
-        document.getElementById('weekRemain').textContent = `剩余 ${u.remaining_week ?? 0}`;
-        document.getElementById('weekLimitMeta').textContent = `滚动周上限 ${u.weekly_limit ?? 0}`;
-        const weekPct = u.weekly_limit ? Math.min(100, Math.round((u.used_this_week / u.weekly_limit) * 100)) : 0;
-        document.getElementById('weekPercent').textContent = `${weekPct}%`;
-        document.getElementById('weekProgress').style.width = `${weekPct}%`;
-
-        document.getElementById('modelCount').textContent = data.models ? data.models.length : 0;
-        document.getElementById('accountCount').textContent = data.accounts ? data.accounts.length : 0;
-
-        // Model Usage Table
-        renderModelUsageTable(u);
-
-        // Quota Config
-        const isQuotaEnabled = (data.env?.V5_QUOTA_ENABLED || 'true').toLowerCase() !== 'false';
-        document.getElementById('overviewQuotaEnabled').value = isQuotaEnabled ? 'true' : 'false';
-        document.getElementById('overviewDailyLimit').value = data.env?.V5_DAILY_LIMIT || u.daily_limit || 190;
-        document.getElementById('overviewWeeklyLimit').value = data.env?.V5_WEEKLY_LIMIT || u.weekly_limit || 1730;
+        // 2. Render Perks & Anlas
+        const perks = subRes.perks || {};
+        const priority = dataRes.priority || {};
+        const totalAnlas = (perks.fixedTrainingStepsLeft ?? 0) + (priority.taskPriority ?? 0); // fallback / display
         
-        const qBadge = document.getElementById('quotaEnabledBadge');
-        qBadge.textContent = isQuotaEnabled ? '限制已开启' : '限制已关闭';
-        qBadge.className = `badge ${isQuotaEnabled ? 'badge-ok' : 'badge-off'}`;
-
-        // Settings Fields
-        for (const k of ['V5_QUOTA_ENABLED','V5_DAILY_LIMIT','V5_WEEKLY_LIMIT','MAX_CONCURRENT','COOLDOWN_MIN','COOLDOWN_MAX','IMAGE_BASE_URL']) {
-          const el = document.getElementById(k);
-          if (el && data.env) el.value = data.env[k] || '';
+        let anlasDisplay = '--';
+        if (perks.maxPriorityActions !== undefined) {
+          anlasDisplay = Number(perks.maxPriorityActions).toLocaleString();
+        } else if (perks.unlimitedRefillRate !== undefined) {
+          anlasDisplay = 'Opus Unlimited';
         }
+        document.getElementById('statAnlas').textContent = anlasDisplay;
+        document.getElementById('uCardAnlasPaid').textContent = anlasDisplay;
 
-        // Render Upstream Dashboard & Accounts
-        renderUpstreamControls(data.accounts);
-        loadUpstreamStatus();
-        renderAccountsTable(data.accounts);
-        renderModelsTable(data.models);
+        const ctxTokens = perks.contextTokens || 8192;
+        document.getElementById('uCardContextTokens').textContent = `${Number(ctxTokens).toLocaleString()} Tokens`;
 
-        toast('数据已更新');
+        const isUnlimited = perks.unlimitedMaxPriority || tierNum === 3;
+        document.getElementById('uCardUnlimitedGen').innerHTML = isUnlimited
+          ? `<span class="badge badge-green">无限免费生成 (Opus)</span>`
+          : `<span class="badge badge-tier">标准模式</span>`;
+
+        const steps = perks.fixedTrainingStepsLeft ?? 0;
+        document.getElementById('uCardTrainingSteps').textContent = `${Number(steps).toLocaleString()} 步`;
+
+        const refillStr = formatTimestamp(perks.nextRefillAt);
+        document.getElementById('uCardRefillAt').textContent = refillStr;
+
+        // 3. Priority & Account Status
+        const taskPri = priority.taskPriority ?? perks.startPriority ?? 10;
+        document.getElementById('uCardTaskPriority').textContent = taskPri;
+        document.getElementById('uCardMaxActions').textContent = perks.maxPriorityActions ?? 1000;
+        document.getElementById('uCardCreatedAt').textContent = formatTimestamp(dataRes.createdAt || dataRes.registrationTimestamp);
+        
+        const isBanned = dataRes.banned || false;
+        document.getElementById('uCardAccountBanned').innerHTML = isBanned
+          ? `<span class="badge badge-red">已封禁</span>`
+          : `<span class="badge badge-green">状态正常</span>`;
+
+        document.getElementById('uCardPrioritySetting').textContent = (dataRes.settings && dataRes.settings.disableFreeGeneration) ? '已关闭' : '优先消耗免费额度';
+
+        const now = new Date();
+        document.getElementById('upstreamLastSync').textContent = `最后同步: ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
+
       } catch (err) {
-        toast('数据更新失败: ' + err.message, true);
+        console.warn('Failed to load upstream details:', err);
+        document.getElementById('upstreamRawJson').textContent = `获取上游信息异常: ${err.message}\n请检查账号 Token 是否已过期或网络连通性。`;
       }
     }
 
-    function renderModelUsageTable(u) {
-      const rows = Object.entries(u.per_model || {});
-      const container = document.getElementById('modelUsageTable');
-      if (!rows.length) {
-        container.innerHTML = '<div class="muted" style="padding:16px;text-align:center;">暂无模型生成记录</div>';
-        return;
+    // --- Overview Quota & Stat Cards ---
+    async function loadOverview() {
+      try {
+        const [status, accountsData] = await Promise.all([
+          api('/status'),
+          api('/accounts')
+        ]);
+
+        renderUpstreamControls(accountsData.accounts);
+
+        // V5 Quotas
+        const v5 = status.v5_quota || {};
+        const dailyUsed = v5.daily_count || 0;
+        const dailyMax = v5.daily_limit || 190;
+        const weeklyUsed = v5.weekly_count || 0;
+        const weeklyMax = v5.weekly_limit || 1730;
+
+        document.getElementById('statDailyQuota').textContent = `${dailyUsed} / ${dailyMax}`;
+        const dailyPct = Math.min(100, Math.round((dailyUsed / dailyMax) * 100));
+        document.getElementById('statDailyProgress').style.width = `${dailyPct}%`;
+        document.getElementById('statDailySub').textContent = `今日消耗占比 ${dailyPct}%`;
+
+        document.getElementById('statWeeklyQuota').textContent = `${weeklyUsed} / ${weeklyMax}`;
+        const weeklyPct = Math.min(100, Math.round((weeklyUsed / weeklyMax) * 100));
+        document.getElementById('statWeeklyProgress').style.width = `${weeklyPct}%`;
+        document.getElementById('statWeeklySub').textContent = `本周消耗占比 ${weeklyPct}%`;
+
+        // Quota setting inputs & MD3 Custom Select for Quota Switch
+        const quotaEnabledVal = String(v5.enabled !== false);
+        if (!overviewQuotaSelectInstance) {
+          overviewQuotaSelectInstance = new MD3Select('overviewQuotaEnabledWrapper', {
+            options: [
+              { label: '启用配额流控 (Quota Enabled)', value: 'true' },
+              { label: '禁用配额流控 (Quota Disabled)', value: 'false' }
+            ],
+            value: quotaEnabledVal
+          });
+        } else {
+          overviewQuotaSelectInstance.setValue(quotaEnabledVal);
+        }
+
+        document.getElementById('overviewDailyLimit').value = dailyMax;
+        document.getElementById('overviewWeeklyLimit').value = weeklyMax;
+
+        // Fetch Upstream data
+        loadUpstreamData();
+      } catch (err) {
+        toast('加载总览数据失败: ' + err.message, true);
       }
-      rows.sort((a, b) => (b[1].used_today || 0) - (a[1].used_today || 0));
-      let html = `<table>
-        <thead>
-          <tr>
-            <th>对外模型标识</th>
-            <th>今日用量</th>
-            <th>滚动 7 天用量</th>
-            <th>今日 V5 占比</th>
-            <th>本周 V5 占比</th>
-          </tr>
-        </thead>
-        <tbody>`;
-      html += rows.map(([name, stat]) => {
-        const dPct = u.used_today ? Math.round((stat.used_today / u.used_today) * 100) : 0;
-        const wPct = u.used_this_week ? Math.round((stat.used_this_week / u.used_this_week) * 100) : 0;
-        return `<tr>
-          <td><code>${name}</code></td>
-          <td><strong style="color:#fff;">${stat.used_today || 0}</strong></td>
-          <td><strong style="color:var(--text-muted);">${stat.used_this_week || 0}</strong></td>
-          <td><span class="badge badge-cyan">${dPct}%</span></td>
-          <td><span class="badge badge-cyan">${wPct}%</span></td>
-        </tr>`;
-      }).join('');
-      html += '</tbody></table>';
-      container.innerHTML = html;
     }
 
     async function saveOverviewQuota() {
+      const enabled = overviewQuotaSelectInstance ? (overviewQuotaSelectInstance.value === 'true') : true;
+      const daily_limit = Number(document.getElementById('overviewDailyLimit').value) || 190;
+      const weekly_limit = Number(document.getElementById('overviewWeeklyLimit').value) || 1730;
+
       try {
-        const body = {
-          V5_QUOTA_ENABLED: document.getElementById('overviewQuotaEnabled').value,
-          V5_DAILY_LIMIT: document.getElementById('overviewDailyLimit').value,
-          V5_WEEKLY_LIMIT: document.getElementById('overviewWeeklyLimit').value
-        };
-        await api('/env', { method: 'PUT', body: JSON.stringify(body) });
-        toast('限额配置已保存，请重启网关生效');
-        refreshAll();
+        await api('/settings', {
+          method: 'POST',
+          body: JSON.stringify({
+            V5_QUOTA_ENABLED: String(enabled),
+            V5_DAILY_LIMIT: String(daily_limit),
+            V5_WEEKLY_LIMIT: String(weekly_limit)
+          })
+        });
+        toast('配额设置已保存并同步至系统环境');
+        loadOverview();
       } catch (err) {
-        toast('保存失败: ' + err.message, true);
+        toast('保存配额失败: ' + err.message, true);
       }
     }
 
     // --- Accounts Management ---
-    let editingAccountId = '';
-
-    function renderAccountsTable(rows) {
-      const container = document.getElementById('accountsTable');
-      if (!rows || !rows.length) {
-        container.innerHTML = '<div class="muted" style="padding:16px;text-align:center;">未配置任何轮询账号</div>';
+    function renderAccountsTable(accounts) {
+      const container = document.getElementById('accountsTableContainer');
+      if (!accounts || accounts.length === 0) {
+        container.innerHTML = '<div style="padding: 32px; text-align: center; color: var(--text-muted);">暂无配置的 NovelAI 账号，请点击右上角添加。</div>';
         return;
       }
-      let html = `<table>
-        <thead>
-          <tr>
-            <th>账号标识 & 名称</th>
-            <th>脱敏凭据 (Key)</th>
-            <th>权重</th>
-            <th>状态</th>
-            <th>成功 / 失败</th>
-            <th style="text-align:right;">操作</th>
-          </tr>
-        </thead>
-        <tbody>`;
-      html += rows.map(a => {
-        let statusBadge = `<span class="badge badge-ok">Ready</span>`;
-        if (!a.enabled || a.status === 'disabled') statusBadge = `<span class="badge badge-off">Disabled</span>`;
-        else if (a.status === 'cooldown') statusBadge = `<span class="badge" style="background:rgba(255,209,102,0.15);color:var(--accent-tier);">Cooldown (30s)</span>`;
-        else if (a.status === 'active') statusBadge = `<span class="badge badge-cyan">Active</span>`;
 
-        return `<tr>
-          <td>
-            <strong style="color:#fff;">${a.name}</strong><br>
-            <span class="muted" style="font-size:11px;">${a.id}</span>
-          </td>
-          <td><code>${a.masked_key}</code></td>
-          <td><span class="badge badge-cyan">${a.weight}</span></td>
-          <td>
-            ${statusBadge}
-            ${a.last_error ? `<br><span style="font-size:10.5px;color:var(--accent-red);max-width:180px;display:inline-block;overflow:hidden;text-overflow:ellipsis;">${a.last_error}</span>` : ''}
-          </td>
-          <td><span style="color:var(--accent-green);">${a.success_count || 0}</span> / <span style="color:var(--accent-red);">${a.failure_count || 0}</span></td>
-          <td style="text-align:right;">
-            <div style="display:inline-flex;gap:6px;">
-              <button class="btn btn-sm" onclick="editAccount('${a.id}')">编辑</button>
-              <button class="btn btn-sm" onclick="testAccount('${a.id}')">测试</button>
-              <button class="btn btn-sm" onclick="resetAccount('${a.id}')">重置</button>
-              <button class="btn btn-sm btn-danger" onclick="deleteAccount('${a.id}')">删除</button>
-            </div>
-          </td>
-        </tr>`;
-      }).join('');
+      let html = `
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>显示名称</th>
+              <th>Token 掩码</th>
+              <th>权重</th>
+              <th>状态</th>
+              <th>连续失败</th>
+              <th>最后请求时间</th>
+              <th style="text-align: right;">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      accounts.forEach(a => {
+        const isCooling = a.cooling_down;
+        let statusBadge = '<span class="badge badge-green">正常空闲</span>';
+        if (!a.enabled) {
+          statusBadge = '<span class="badge badge-red">已停用</span>';
+        } else if (isCooling) {
+          statusBadge = '<span class="badge badge-tier">冷却熔断中</span>';
+        }
+
+        html += `
+          <tr>
+            <td><strong style="color: var(--primary); font-family: var(--font-mono);">${a.id}</strong></td>
+            <td>${a.name || '--'}</td>
+            <td><code>${a.masked_key || 'pst-••••••••'}</code></td>
+            <td><span class="badge badge-cyan">权重 ${a.weight || 1}</span></td>
+            <td>${statusBadge}</td>
+            <td><span style="font-family: var(--font-mono);">${a.fail_count || 0} 次</span></td>
+            <td><span style="font-size: 12px; color: var(--text-muted);">${a.last_used_at ? formatTimestamp(a.last_used_at) : '从未调用'}</span></td>
+            <td style="text-align: right;">
+              <div style="display: inline-flex; gap: 6px;">
+                <button class="btn btn-sm" onclick="testAccount('${a.id}')">探活</button>
+                <button class="btn btn-sm" onclick="editAccount('${a.id}')">编辑</button>
+                <button class="btn btn-sm" onclick="resetAccount('${a.id}')">重置</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteAccount('${a.id}')">删除</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      });
+
       html += '</tbody></table>';
       container.innerHTML = html;
     }
@@ -1942,132 +2302,109 @@
       }
     }
 
-    // --- Models & Config ---
-    function renderModelsTable(models) {
-      const container = document.getElementById('modelsTable');
-      if (!models || !models.length) {
-        container.innerHTML = '<div class="muted" style="padding:16px;text-align:center;">未注册任何模型</div>';
-        return;
-      }
-      let html = `<table>
-        <thead>
-          <tr>
-            <th>对外模型标识 (Alias)</th>
-            <th>NovelAI 内部模型名</th>
-            <th>类型</th>
-            <th>调用状态</th>
-          </tr>
-        </thead>
-        <tbody>`;
-      html += models.map(m => `<tr>
-        <td><code>${m.id}</code></td>
-        <td><strong style="color:#fff;">${m.name}</strong></td>
-        <td><span class="badge badge-cyan">${m.type}</span></td>
-        <td><span class="badge ${m.enabled ? 'badge-ok' : 'badge-off'}">${m.enabled ? '允许调用' : '已禁用'}</span></td>
-      </tr>`).join('');
-      html += '</tbody></table>';
-      container.innerHTML = html;
-    }
-
+    // --- Models & Mapping Management ---
     async function loadModelConfig() {
       try {
-        const d = await api('/models/config');
-        document.getElementById('modelsConfig').value = d.content || '';
+        const res = await api('/models/config');
+        document.getElementById('modelsTomlEditor').value = res.raw_content || '';
       } catch (err) {
-        toast('加载模型配置失败: ' + err.message, true);
+        toast('获取 models.toml 失败: ' + err.message, true);
       }
     }
 
     async function saveModelConfig() {
+      const content = document.getElementById('modelsTomlEditor').value;
       try {
         await api('/models/config', {
-          method: 'PUT',
-          body: JSON.stringify({ content: document.getElementById('modelsConfig').value })
+          method: 'POST',
+          body: JSON.stringify({ raw_content: content })
         });
-        toast('模型配置保存成功，重启生效');
+        toast('models.toml 已成功保存并热重载');
       } catch (err) {
         toast('保存失败: ' + err.message, true);
       }
     }
 
-    async function refreshModels() {
-      toast('正在从 NovelAI 官网抓取最新模型特征...');
+    // --- Settings Management ---
+    async function loadSettings() {
       try {
-        const res = await api('/models/refresh', { method: 'POST' });
-        toast(res.detail || '模型抓取完成，已写入配置');
-        loadModelConfig();
-      } catch (err) {
-        toast('抓取失败: ' + err.message, true);
-      }
-    }
-
-    // --- Settings & Logs ---
-    async function saveSettings() {
-      const keys = ['V5_QUOTA_ENABLED','V5_DAILY_LIMIT','V5_WEEKLY_LIMIT','MAX_CONCURRENT','COOLDOWN_MIN','COOLDOWN_MAX','IMAGE_BASE_URL'];
-      const body = {};
-      keys.forEach(k => {
-        const el = document.getElementById(k);
-        if (el) body[k] = el.value;
-      });
-      try {
-        await api('/env', { method: 'PUT', body: JSON.stringify(body) });
-        toast('环境变量已更新，请重启网关生效');
-      } catch (err) {
-        toast('保存失败: ' + err.message, true);
-      }
-    }
-
-    let logFollow = true;
-    function toggleLogFollow() {
-      logFollow = !logFollow;
-      document.getElementById('logFollowBtn').textContent = logFollow ? '暂停跟随' : '跟随最新';
-      document.getElementById('logStatus').textContent = logFollow ? '自动刷新已启动 (2s)' : '自动刷新已暂停';
-      if (logFollow) loadLogs();
-    }
-
-    async function loadLogs() {
-      try {
-        const d = await api('/logs?lines=200');
-        const box = document.getElementById('logsBox');
-        if (d.lines) {
-          box.innerHTML = d.lines.map(line => {
-            if (line.includes('ERROR')) return `<span class="log-line-error">${escapeHtml(line)}</span>`;
-            if (line.includes('WARNING') || line.includes('WARN')) return `<span class="log-line-warn">${escapeHtml(line)}</span>`;
-            if (line.includes('INFO')) return `<span class="log-line-info">${escapeHtml(line)}</span>`;
-            return escapeHtml(line);
-          }).join('\n');
-          if (logFollow) box.scrollTop = box.scrollHeight;
+        const data = await api('/settings');
+        for (const [k, v] of Object.entries(data)) {
+          const el = document.getElementById(k);
+          if (el) el.value = v;
         }
       } catch (err) {
-        document.getElementById('logsBox').textContent = '日志读取失败: ' + err.message;
+        console.warn('Load settings failed', err);
       }
+    }
+
+    async function saveSettings() {
+      const keys = ['MAX_CONCURRENT', 'COOLDOWN_MIN', 'COOLDOWN_MAX', 'V5_QUOTA_ENABLED', 'V5_DAILY_LIMIT', 'V5_WEEKLY_LIMIT', 'IMAGE_BASE_URL'];
+      const payload = {};
+      keys.forEach(k => {
+        const el = document.getElementById(k);
+        if (el && el.value !== '') payload[k] = el.value.trim();
+      });
+
+      try {
+        await api('/settings', { method: 'POST', body: JSON.stringify(payload) });
+        toast('环境配置已保存生效');
+      } catch (err) {
+        toast('保存配置失败: ' + err.message, true);
+      }
+    }
+
+    // --- Live Logs Stream ---
+    async function loadLogs() {
+      try {
+        const data = await api('/logs');
+        const box = document.getElementById('logsBox');
+        if (Array.isArray(data.logs)) {
+          box.innerHTML = data.logs.map(line => {
+            let cls = '';
+            if (line.includes('ERROR') || line.includes('Err')) cls = 'log-line-error';
+            else if (line.includes('WARN')) cls = 'log-line-warn';
+            else if (line.includes('INFO')) cls = 'log-line-info';
+            return `<div class="${cls}">${escapeHtml(line)}</div>`;
+          }).join('') || '<div style="color:var(--text-muted)">暂无最新日志</div>';
+        }
+        if (isLogFollowing) {
+          box.scrollTop = box.scrollHeight;
+        }
+      } catch (err) {
+        document.getElementById('logsBox').textContent = '读取实时日志流出错: ' + err.message;
+      }
+    }
+
+    function toggleLogFollow() {
+      isLogFollowing = !isLogFollowing;
+      const btn = document.getElementById('logFollowBtn');
+      btn.textContent = isLogFollowing ? '暂停跟随' : '恢复跟随';
+      document.getElementById('logStatus').textContent = isLogFollowing ? '自动刷新已启动 (2s)' : '自动滚动已暂停';
     }
 
     function escapeHtml(str) {
-      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
-    async function confirmRestart() {
-      const ok = await showConfirm('重启网关容器', '确认立即重启网关容器？正在进行的生图请求可能会中断。', true);
-      if (!ok) return;
-      try {
-        await api('/restart', { method: 'POST' });
-        toast('网关正在重启中，约 3 秒后重新就绪...');
-        setTimeout(refreshAll, 3000);
-      } catch (err) {
-        toast('重启请求已发送');
-      }
+    // --- Global Refresh ---
+    function refreshAll() {
+      loadOverview();
+      loadSettings();
+      loadAccounts();
     }
 
-    // Auto Refresh Loop
-    setInterval(() => {
-      if (!document.getElementById('logs').classList.contains('hidden') && logFollow) {
-        loadLogs();
-      }
-    }, 2000);
-
-    // Initial Load
-    refreshAll();
+    // --- Initialization ---
+    window.addEventListener('DOMContentLoaded', () => {
+      loadAppearance();
+      refreshAll();
+      logInterval = setInterval(() => {
+        const activeTab = document.querySelector('nav button.active')?.dataset.tab;
+        if (activeTab === 'logs' && isLogFollowing) {
+          loadLogs();
+        }
+      }, 2000);
+    });
   </script>
 </body>
 </html>
