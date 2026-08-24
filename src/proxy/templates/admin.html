@@ -2107,7 +2107,7 @@
         renderUpstreamControls(accountsData.accounts);
 
         // V5 Quotas
-        const v5 = status.v5_quota || {};
+        const v5 = status.usage || status.v5_quota || {};
         const dailyUsed = v5.daily_count || 0;
         const dailyMax = v5.daily_limit || 190;
         const weeklyUsed = v5.weekly_count || 0;
@@ -2322,7 +2322,7 @@
     async function loadModelConfig() {
       try {
         const res = await api('/models/config');
-        document.getElementById('modelsTomlEditor').value = res.raw_content || '';
+      document.getElementById('modelsTomlEditor').value = res.content || '';
       } catch (err) {
         toast('获取 models.toml 失败: ' + err.message, true);
       }
@@ -2332,9 +2332,8 @@
       const content = document.getElementById('modelsTomlEditor').value;
       try {
         await api('/models/config', {
-          method: 'POST',
-          body: JSON.stringify({ raw_content: content })
-        });
+          method: 'PUT',
+          body: JSON.stringify({ content })
         toast('models.toml 已成功保存并热重载');
       } catch (err) {
         toast('保存失败: ' + err.message, true);
@@ -2376,8 +2375,9 @@
       try {
         const data = await api('/logs');
         const box = document.getElementById('logsBox');
-        if (Array.isArray(data.logs)) {
-          box.innerHTML = data.logs.map(line => {
+        const lines = data.lines || data.logs || [];
+        if (Array.isArray(lines)) {
+          box.innerHTML = lines.map(line => {
             let cls = '';
             if (line.includes('ERROR') || line.includes('Err')) cls = 'log-line-error';
             else if (line.includes('WARN')) cls = 'log-line-warn';

@@ -301,6 +301,15 @@ async def test_account(account_id: str, request: Request) -> dict[str, Any]:
         return {"ok": False, "message": "账号测试失败"}
 
 
+@router.get("/env")
+async def get_env(request: Request) -> dict[str, Any]:
+    """返回允许管理的环境变量。"""
+    await _require_auth(request)
+    env = _env_values()
+    safe = {key: (_safe_env(value) if any(word in key for word in ("KEY", "TOKEN", "PASSWORD")) else value) for key, value in env.items()}
+    return {"env": safe}
+
+
 @router.put("/env")
 async def update_env(request: Request) -> dict[str, str]:
     """保存允许管理的环境变量，凭据必须显式传入才覆盖。"""
