@@ -118,6 +118,8 @@ class Settings(BaseSettings):
         "/ai/generate-image",
         "/ai/upscale",
         "/ai/generate-voice",
+        "/ai/augment-image",
+        "/ai/encode-vibe",
     }
 
     # 并发与冷却
@@ -174,22 +176,45 @@ class Settings(BaseSettings):
         """判断路径是否为重负载请求。"""
         return any(path.startswith(p) for p in self.heavy_prefixes)
 
+    # 映射到 image.novelai.net 的 API 路径前缀（参考 Swagger doc.json）
+    _IMAGE_PATH_PREFIXES: tuple[str, ...] = (
+        "/ai/generate-image",
+        "/ai/augment-image",
+        "/ai/encode-vibe",
+        "/ai/upscale",
+        "/oa/v1/",
+        "/user/data",
+        "/user/subscription",
+        "/user/priority",
+        "/user/information",
+        "/user/clientsettings",
+        "/user/keystore",
+        "/user/objects",
+        "/user/giftkeys",
+        "/user/create-persistent-token",
+        "/user/consent",
+    )
+
+    # 映射到 text.novelai.net 的 API 路径前缀
+    _TEXT_PATH_PREFIXES: tuple[str, ...] = (
+        "/ai/generate",
+        "/ai/generate-stream",
+    )
+
     def get_upstream_url(self, api_path: str) -> str:
         """根据 API 路径选择对应的上游服务器。
 
-        image.novelai.net: 图片生成、标签建议、Vibe 编码、导演工具
-        api.novelai.net: 放大、图片标注、用户数据、TTS
+        image.novelai.net: 图片生成、标签建议、Vibe 编码、导演工具、
+                         OpenAI 兼容端点、部分用户数据接口
+        api.novelai.net: TTS、账号注册/登录/订阅绑定等主站接口
         text.novelai.net: 文本生成
         """
         if api_path == "/ai/generate-voice":
             return f"{self.novelai_api_url}{api_path}"
-        if api_path.startswith((
-            "/ai/generate-image",
-            "/ai/augment-image",
-            "/ai/encode-vibe",
-        )):
+        # image 前缀与 /ai/generate 有重叠，先判断 image 避免误判
+        if any(api_path.startswith(p) for p in self._IMAGE_PATH_PREFIXES):
             return f"{self.novelai_image_url}{api_path}"
-        if api_path in {"/ai/generate", "/ai/generate-stream"}:
+        if any(api_path.startswith(p) for p in self._TEXT_PATH_PREFIXES):
             return f"{self.novelai_text_url}{api_path}"
         return f"{self.novelai_api_url}{api_path}"
 

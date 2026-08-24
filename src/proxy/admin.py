@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from .account_pool import account_pool, parse_accounts, serialize_accounts
+from .account_pool import account_pool, mask_secret, parse_accounts, serialize_accounts
 from .config import _parse_weighted_api_keys, settings
 from .model_registry import ModelRegistry
 from .model_fetcher import handle_refresh_upstream_models
@@ -126,6 +126,78 @@ async def overview(request: Request) -> dict[str, Any]:
     env = _env_values()
     safe = {key: (_safe_env(value) if any(word in key for word in ("KEY", "TOKEN", "PASSWORD")) else value) for key, value in env.items()}
     return {"env": safe, "models": _models(), "usage": get_usage(), "accounts": account_pool.public()}
+
+
+async def _choose_upstream_account(account_id: str | None) -> tuple[str, str]:
+    """选择用于探测 NovelAI 上游的账号。
+
+    返回 (account_id, secret)。优先使用账号池；未配置账号池时回退到共享凭据。
+    """
+    if account_id:
+        secret = account_pool.get_secret(account_id)
+        if not secret:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        return account_id, secret
+
+    if account_pool._accounts:
+        return account_pool.choose()
+
+    secret = settings.get_shared_auth_token()
+    if secret:
+        return "shared", secret
+
+    raise HTTPException(status_code=503, detail="未配置 NovelAI 凭据")
+
+
+async def _fetch_upstream(path: str, account_id: str | None) -> dict[str, Any]:
+    """代理请求 NovelAI 上游用户接口并附加账号元数据。"""
+    selected_id, secret = await _choose_upstream_account(account_id)
+    target = f"{settings.novelai_image_url}{path}"
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                target,
+                headers={"Authorization": f"Bearer {secret}", "Accept": "application/json"},
+            )
+    except Exception as exc:
+        account_pool.failure(selected_id, str(exc)[:300])
+        raise HTTPException(status_code=502, detail=f"上游连接失败: {exc}") from exc
+
+    if response.status_code >= 400:
+        account_pool.failure(selected_id, f"HTTP {response.status_code}")
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=response.text[:500] or "上游请求失败",
+        )
+
+    account_pool.success(selected_id)
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {"raw": response.text}
+
+    return {
+        "account_id": selected_id,
+        "masked_key": mask_secret(secret),
+        "upstream": target,
+        "data": payload,
+    }
+
+
+@router.get("/upstream/user/data")
+async def upstream_user_data(request: Request, account_id: str | None = None) -> dict[str, Any]:
+    """代理获取 NovelAI /user/data（包含任务优先级与额度百分比）。"""
+    await _require_auth(request)
+    return await _fetch_upstream("/user/data", account_id)
+
+
+@router.get("/upstream/subscription")
+async def upstream_subscription(request: Request, account_id: str | None = None) -> dict[str, Any]:
+    """代理获取 NovelAI /user/subscription（包含订阅等级、Anlas 数量）。"""
+    await _require_auth(request)
+    return await _fetch_upstream("/user/subscription", account_id)
 
 
 def _persist_accounts(accounts: list[dict[str, Any]]) -> None:
