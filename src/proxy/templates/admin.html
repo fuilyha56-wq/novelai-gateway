@@ -12,28 +12,30 @@
       color-scheme: dark;
       --primary: #00ffff;
       --primary-dim: rgba(0, 255, 255, 0.12);
-      --primary-glow: rgba(0, 255, 255, 0.35);
-      --primary-container: #00363d;
-      --on-primary: #002024;
+      --primary-glow: rgba(0, 255, 255, 0.4);
+      --primary-container: #003840;
+      --on-primary: #001f24;
       
-      --surface-bg: #070b12;
-      --surface-1: #0e1626;
-      --surface-2: #141f36;
-      --surface-3: #1a2846;
-      --surface-elevated: rgba(20, 31, 54, 0.75);
-      --surface-outline: #223559;
-      --surface-outline-dim: rgba(34, 53, 89, 0.5);
+      --surface-bg: #060a12;
+      --surface-1: #0d1527;
+      --surface-2: #121e38;
+      --surface-3: #18284a;
+      --surface-elevated: rgba(18, 30, 56, 0.78);
+      --surface-outline: #22375f;
+      --surface-outline-dim: rgba(34, 55, 95, 0.5);
+      --surface-hover: rgba(0, 255, 255, 0.04);
       
-      --text-main: #edf5fc;
-      --text-muted: #8ca3c7;
-      --text-subtle: #597194;
+      --text-main: #f0f6fc;
+      --text-muted: #8fa5c9;
+      --text-subtle: #5c7499;
       
       --accent-tier: #ffd166;
       --accent-green: #06d6a0;
-      --accent-green-dim: rgba(6, 214, 160, 0.15);
+      --accent-green-dim: rgba(6, 214, 160, 0.16);
       --accent-red: #ff4d6d;
-      --accent-red-dim: rgba(255, 77, 109, 0.15);
+      --accent-red-dim: rgba(255, 77, 109, 0.16);
       --accent-purple: #c77dff;
+      --accent-blue: #4cc9f0;
       
       --radius-sm: 8px;
       --radius-md: 14px;
@@ -42,17 +44,17 @@
       
       --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
       --font-mono: 'Fira Code', ui-monospace, monospace;
-      --shadow-subtle: 0 4px 20px -2px rgba(0, 0, 0, 0.45);
-      --shadow-cyan: 0 0 25px -5px rgba(0, 255, 255, 0.22);
+      --shadow-subtle: 0 8px 32px rgba(0, 0, 0, 0.45);
+      --shadow-cyan: 0 0 24px -4px rgba(0, 255, 255, 0.28);
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       background-color: var(--surface-bg);
       background-image: 
-        radial-gradient(circle at 10% 0%, rgba(0, 255, 255, 0.08) 0%, transparent 40%),
-        radial-gradient(circle at 90% 20%, rgba(199, 125, 255, 0.05) 0%, transparent 35%),
-        radial-gradient(circle at 50% 100%, rgba(6, 214, 160, 0.04) 0%, transparent 45%);
+        radial-gradient(circle at 8% 0%, rgba(0, 255, 255, 0.09) 0%, transparent 45%),
+        radial-gradient(circle at 92% 15%, rgba(199, 125, 255, 0.07) 0%, transparent 40%),
+        radial-gradient(circle at 50% 100%, rgba(6, 214, 160, 0.05) 0%, transparent 50%);
       color: var(--text-main);
       font-family: var(--font-sans);
       font-size: 14px;
@@ -61,7 +63,7 @@
       display: flex;
     }
 
-    /* MD3 Layout Shell */
+    /* Layout Shell */
     .app-shell {
       display: grid;
       grid-template-columns: 260px 1fr;
@@ -71,8 +73,8 @@
 
     /* Sidebar Navigation Rail */
     aside {
-      background: rgba(10, 16, 28, 0.88);
-      backdrop-filter: blur(16px);
+      background: rgba(9, 15, 27, 0.92);
+      backdrop-filter: blur(20px);
       border-right: 1px solid var(--surface-outline);
       padding: 24px 16px;
       display: flex;
@@ -88,13 +90,13 @@
       display: flex;
       align-items: center;
       gap: 12px;
-      padding: 6px 12px;
+      padding: 6px 10px;
     }
     .brand-icon {
-      width: 38px;
-      height: 38px;
+      width: 40px;
+      height: 40px;
       border-radius: var(--radius-md);
-      background: linear-gradient(135deg, var(--primary), #0088ff);
+      background: linear-gradient(135deg, var(--primary), #0077ff);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -150,7 +152,7 @@
     nav button.active {
       background: var(--primary-dim);
       color: var(--primary);
-      border-color: rgba(0, 255, 255, 0.3);
+      border-color: rgba(0, 255, 255, 0.35);
       box-shadow: 0 0 16px -4px var(--primary-dim);
     }
     nav button.active svg { opacity: 1; color: var(--primary); }
@@ -186,7 +188,7 @@
     /* Main Container */
     main {
       padding: 32px clamp(20px, 4vw, 56px);
-      max-width: 1480px;
+      max-width: 1520px;
       width: 100%;
     }
 
@@ -213,7 +215,7 @@
       gap: 10px;
     }
 
-    /* Buttons (MD3 Standard) */
+    /* MD3 Buttons */
     .btn {
       display: inline-flex;
       align-items: center;
@@ -225,7 +227,7 @@
       font-size: 13px;
       font-weight: 600;
       cursor: pointer;
-      transition: all 0.2s ease;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
       border: 1px solid var(--surface-outline);
       background: var(--surface-2);
       color: var(--text-main);
@@ -249,7 +251,7 @@
       background: #33ffff;
       border-color: #33ffff;
       color: var(--on-primary);
-      box-shadow: 0 4px 20px 0 var(--primary-glow);
+      box-shadow: 0 4px 22px 0 var(--primary-glow);
     }
     .btn-danger {
       background: var(--accent-red-dim);
@@ -269,12 +271,14 @@
     .btn-icon {
       padding: 8px;
       border-radius: 50%;
+      width: 34px;
+      height: 34px;
     }
 
     /* MD3 Cards & Panels */
     .panel {
       background: var(--surface-elevated);
-      backdrop-filter: blur(12px);
+      backdrop-filter: blur(16px);
       border: 1px solid var(--surface-outline);
       border-radius: var(--radius-lg);
       padding: 24px;
@@ -283,7 +287,7 @@
       transition: border-color 0.2s;
     }
     .panel:hover {
-      border-color: rgba(0, 255, 255, 0.22);
+      border-color: rgba(0, 255, 255, 0.25);
     }
     .panel-header {
       display: flex;
@@ -296,11 +300,11 @@
     .panel-title {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 12px;
     }
     .panel-title-icon {
-      width: 32px;
-      height: 32px;
+      width: 36px;
+      height: 36px;
       border-radius: var(--radius-sm);
       background: var(--primary-dim);
       color: var(--primary);
@@ -308,9 +312,9 @@
       align-items: center;
       justify-content: center;
     }
-    .panel-title-icon svg { width: 18px; height: 18px; }
+    .panel-title-icon svg { width: 20px; height: 20px; }
     .panel-title h3 {
-      font-size: 17px;
+      font-size: 17.5px;
       font-weight: 700;
       color: #fff;
     }
@@ -343,7 +347,7 @@
     }
     .kpi-card:hover {
       transform: translateY(-2px);
-      border-color: rgba(0, 255, 255, 0.35);
+      border-color: rgba(0, 255, 255, 0.4);
     }
     .kpi-card::before {
       content: '';
@@ -353,7 +357,6 @@
       width: 4px;
       height: 100%;
       background: var(--surface-outline);
-      transition: background 0.2s;
     }
     .kpi-card.cyan::before { background: var(--primary); }
     .kpi-card.purple::before { background: var(--accent-purple); }
@@ -402,13 +405,13 @@
 
     /* NovelAI Upstream Dashboard Component */
     .upstream-hero {
-      background: linear-gradient(135deg, rgba(0, 255, 255, 0.08) 0%, rgba(20, 31, 54, 0.6) 100%);
-      border: 1px solid rgba(0, 255, 255, 0.25);
+      background: linear-gradient(135deg, rgba(0, 255, 255, 0.08) 0%, rgba(18, 30, 56, 0.65) 100%);
+      border: 1px solid rgba(0, 255, 255, 0.28);
       border-radius: var(--radius-lg);
       padding: 24px;
       margin-bottom: 22px;
       position: relative;
-      box-shadow: 0 8px 30px -4px rgba(0, 255, 255, 0.08);
+      box-shadow: 0 8px 30px -4px rgba(0, 255, 255, 0.1);
     }
     .upstream-bar {
       display: flex;
@@ -427,7 +430,7 @@
       align-items: center;
     }
     .account-chip {
-      padding: 6px 14px;
+      padding: 7px 15px;
       border-radius: var(--radius-full);
       background: var(--surface-2);
       border: 1px solid var(--surface-outline);
@@ -438,17 +441,18 @@
       transition: all 0.2s;
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
     }
     .account-chip:hover {
       border-color: var(--primary);
       color: #fff;
+      background: var(--surface-3);
     }
     .account-chip.active {
       background: var(--primary-dim);
       border-color: var(--primary);
       color: var(--primary);
-      box-shadow: 0 0 12px -2px var(--primary-glow);
+      box-shadow: 0 0 14px -2px var(--primary-glow);
     }
 
     .account-banner {
@@ -458,7 +462,7 @@
       background: var(--surface-2);
       border: 1px solid var(--surface-outline);
       border-radius: var(--radius-md);
-      padding: 16px 20px;
+      padding: 18px 22px;
       margin-bottom: 18px;
       flex-wrap: wrap;
       gap: 16px;
@@ -469,8 +473,8 @@
       gap: 14px;
     }
     .account-avatar {
-      width: 44px;
-      height: 44px;
+      width: 46px;
+      height: 46px;
       border-radius: var(--radius-md);
       background: linear-gradient(135deg, #00ffff, #7b2cbf);
       display: flex;
@@ -478,23 +482,24 @@
       justify-content: center;
       color: #fff;
       font-weight: 800;
-      font-size: 16px;
-      box-shadow: 0 4px 12px rgba(0, 255, 255, 0.2);
+      font-size: 17px;
+      box-shadow: 0 4px 14px rgba(0, 255, 255, 0.25);
     }
     .account-title h4 {
-      font-size: 16px;
+      font-size: 16.5px;
       font-weight: 700;
       color: #fff;
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
+      flex-wrap: wrap;
     }
     .account-title code {
       font-family: var(--font-mono);
       font-size: 12px;
-      color: var(--text-muted);
+      color: #b0c8ea;
       background: var(--surface-3);
-      padding: 2px 6px;
+      padding: 2px 7px;
       border-radius: 4px;
     }
 
@@ -502,9 +507,9 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      padding: 6px 14px;
+      padding: 5px 14px;
       border-radius: var(--radius-full);
-      font-size: 13px;
+      font-size: 12.5px;
       font-weight: 700;
       letter-spacing: 0.3px;
       background: rgba(255, 209, 102, 0.15);
@@ -512,7 +517,7 @@
       border: 1px solid rgba(255, 209, 102, 0.35);
     }
     .tier-badge.opus {
-      background: linear-gradient(90deg, rgba(255, 209, 102, 0.2), rgba(0, 255, 255, 0.2));
+      background: linear-gradient(90deg, rgba(255, 209, 102, 0.22), rgba(0, 255, 255, 0.22));
       color: #fff;
       border-color: rgba(0, 255, 255, 0.5);
       box-shadow: 0 0 16px rgba(0, 255, 255, 0.2);
@@ -541,7 +546,9 @@
       display: flex;
       flex-direction: column;
       justify-content: space-between;
+      transition: border-color 0.2s;
     }
+    .upstream-card:hover { border-color: rgba(0, 255, 255, 0.35); }
     .upstream-card-label {
       font-size: 12px;
       color: var(--text-muted);
@@ -551,10 +558,10 @@
       gap: 6px;
       margin-bottom: 8px;
     }
-    .upstream-card-label svg { width: 15px; height: 15px; color: var(--primary); }
+    .upstream-card-label svg { width: 16px; height: 16px; color: var(--primary); }
     .upstream-card-val {
-      font-size: 20px;
-      font-weight: 700;
+      font-size: 21px;
+      font-weight: 800;
       color: #fff;
       font-family: var(--font-mono);
     }
@@ -563,6 +570,41 @@
       color: var(--text-subtle);
       margin-top: 6px;
     }
+
+    /* Structured Perks & Details Grid */
+    .structured-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }
+    .structured-box {
+      background: var(--surface-1);
+      border: 1px solid var(--surface-outline-dim);
+      border-radius: var(--radius-md);
+      padding: 16px;
+    }
+    .structured-box-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--surface-outline-dim);
+    }
+    .structured-box-title svg { width: 16px; height: 16px; color: var(--primary); }
+    .prop-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 0;
+      font-size: 12.5px;
+    }
+    .prop-label { color: var(--text-muted); }
+    .prop-val { font-weight: 600; color: #fff; font-family: var(--font-mono); font-size: 12px; }
 
     /* Raw JSON Drawer (Accordion) */
     .raw-drawer {
@@ -583,8 +625,9 @@
       justify-content: space-between;
       user-select: none;
       background: var(--surface-2);
+      transition: background 0.2s;
     }
-    .raw-drawer summary:hover { color: var(--primary); }
+    .raw-drawer summary:hover { color: var(--primary); background: var(--surface-3); }
     .raw-drawer-content {
       padding: 16px;
       display: grid;
@@ -592,14 +635,14 @@
       gap: 12px;
     }
     .raw-pre {
-      background: #05080e;
+      background: #04070e;
       border: 1px solid var(--surface-outline);
       border-radius: var(--radius-sm);
       padding: 12px;
       font-family: var(--font-mono);
       font-size: 11px;
-      color: #b0c4de;
-      max-height: 240px;
+      color: #9ebddc;
+      max-height: 260px;
       overflow: auto;
       white-space: pre-wrap;
     }
@@ -631,7 +674,7 @@
       letter-spacing: 0.5px;
     }
     tr:last-child td { border-bottom: none; }
-    tr:hover td { background: rgba(0, 255, 255, 0.02); }
+    tr:hover td { background: var(--surface-hover); }
     code {
       font-family: var(--font-mono);
       color: #9cdcfe;
@@ -643,9 +686,9 @@
       display: inline-flex;
       align-items: center;
       gap: 5px;
-      padding: 3px 9px;
+      padding: 3px 10px;
       border-radius: var(--radius-full);
-      font-size: 11px;
+      font-size: 11.5px;
       font-weight: 600;
     }
     .badge-ok {
@@ -664,7 +707,7 @@
       border: 1px solid rgba(0, 255, 255, 0.3);
     }
 
-    /* Form Fields */
+    /* Form Fields & Customized MD3 Select */
     .form-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -681,7 +724,8 @@
       font-weight: 600;
       color: var(--text-muted);
     }
-    input[type="text"], input[type="number"], input[type="password"], select, textarea {
+    
+    input[type="text"], input[type="number"], input[type="password"], textarea, select {
       width: 100%;
       background: var(--surface-1);
       border: 1px solid var(--surface-outline);
@@ -691,11 +735,30 @@
       font-family: inherit;
       font-size: 13px;
       outline: none;
-      transition: all 0.2s;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     }
+    
+    /* MD3 Customized Dropdown Select */
+    select {
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2300ffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 14px center;
+      background-size: 15px;
+      padding-right: 38px;
+      cursor: pointer;
+    }
+    select option {
+      background-color: var(--surface-2);
+      color: var(--text-main);
+      padding: 10px;
+    }
+
     input:focus, select:focus, textarea:focus {
       border-color: var(--primary);
-      box-shadow: 0 0 10px -2px var(--primary-glow);
+      box-shadow: 0 0 12px -2px var(--primary-glow);
       background: var(--surface-2);
     }
     textarea {
@@ -741,19 +804,19 @@
       background: var(--on-primary);
     }
 
-    /* Modal Dialog */
+    /* MD3 Modal Dialog Overlay */
     .modal-overlay {
       position: fixed;
       inset: 0;
-      background: rgba(4, 7, 13, 0.78);
-      backdrop-filter: blur(8px);
+      background: rgba(3, 6, 12, 0.82);
+      backdrop-filter: blur(10px);
       display: flex;
       align-items: center;
       justify-content: center;
       z-index: 100;
       opacity: 0;
       pointer-events: none;
-      transition: opacity 0.2s;
+      transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .modal-overlay.active {
       opacity: 1;
@@ -762,19 +825,30 @@
     .modal-card {
       background: var(--surface-2);
       border: 1px solid var(--primary);
-      box-shadow: var(--shadow-cyan), 0 20px 40px rgba(0, 0, 0, 0.6);
+      box-shadow: var(--shadow-cyan), 0 24px 48px rgba(0, 0, 0, 0.7);
       border-radius: var(--radius-lg);
       width: 90%;
       max-width: 540px;
-      padding: 26px;
-      transform: scale(0.95);
-      transition: transform 0.2s;
+      padding: 28px;
+      transform: scale(0.92);
+      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .modal-overlay.active .modal-card { transform: scale(1); }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .modal-header h3 {
+      font-size: 19px;
+      font-weight: 700;
+      color: #fff;
+    }
 
     /* Live Log Viewport */
     .log-viewport {
-      background: #05080e;
+      background: #04070e;
       border: 1px solid var(--surface-outline);
       border-radius: var(--radius-md);
       padding: 16px;
@@ -800,7 +874,7 @@
       border: 1px solid var(--primary);
       box-shadow: var(--shadow-cyan);
       color: #fff;
-      padding: 14px 20px;
+      padding: 14px 22px;
       border-radius: var(--radius-md);
       font-size: 13px;
       font-weight: 600;
@@ -820,14 +894,14 @@
     .hidden { display: none !important; }
 
     @media (max-width: 1024px) {
-      .kpi-grid, .upstream-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .kpi-grid, .upstream-metric-grid, .structured-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .app-shell { grid-template-columns: 1fr; }
       aside { height: auto; position: static; flex-direction: row; align-items: center; flex-wrap: wrap; }
       nav { flex-direction: row; overflow-x: auto; flex: 1; }
       .raw-drawer-content { grid-template-columns: 1fr; }
     }
     @media (max-width: 640px) {
-      .kpi-grid, .upstream-metric-grid, .form-grid { grid-template-columns: 1fr; }
+      .kpi-grid, .upstream-metric-grid, .structured-grid, .form-grid { grid-template-columns: 1fr; }
       main { padding: 16px; }
     }
   </style>
@@ -890,7 +964,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
             刷新数据
           </button>
-          <button class="btn btn-primary" onclick="restartGateway()">
+          <button class="btn btn-primary" onclick="confirmRestart()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
             重启网关
           </button>
@@ -966,12 +1040,13 @@
                 <span>查询 /user/data 与 /user/subscription 权威数据，展示订阅等级、算力额度与特权</span>
               </div>
             </div>
-            <div class="account-chips" id="upstreamAccountChips">
-              <!-- Rendered via JS -->
+            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+              <div class="account-chips" id="upstreamAccountChips"></div>
+              <select id="upstreamDropdown" style="width: auto; min-width: 160px;" onchange="selectUpstreamAccount(this.value)"></select>
             </div>
           </div>
 
-          <div id="upstreamLoading" class="muted" style="padding: 20px 0; text-align: center;">正在同步 NovelAI 上游状态...</div>
+          <div id="upstreamLoading" class="muted" style="padding: 24px 0; text-align: center;">正在同步 NovelAI 上游状态...</div>
 
           <div id="upstreamContent" class="hidden">
             <!-- Account Banner -->
@@ -1003,7 +1078,7 @@
                   任务优先级 (Priority)
                 </div>
                 <div class="upstream-card-val" id="upPriorityVal">10 / 1000</div>
-                <div class="upstream-card-sub" id="upNextRefill">下次补满: 计算中...</div>
+                <div class="upstream-card-sub" id="upNextRefill">下次补满: 实时充足</div>
               </div>
 
               <div class="upstream-card">
@@ -1021,7 +1096,7 @@
                   训练步数 (Training Steps)
                 </div>
                 <div class="upstream-card-val" id="upTrainingSteps">10,000</div>
-                <div class="upstream-card-sub">固定步数配额</div>
+                <div class="upstream-card-sub" id="upTrainingSub">固定 10000 / 购买 0</div>
               </div>
 
               <div class="upstream-card">
@@ -1031,6 +1106,55 @@
                 </div>
                 <div class="upstream-card-val" id="upAccountSafe">正常 (8K Token)</div>
                 <div class="upstream-card-sub" id="upAccountType">登录方式: accessKey</div>
+              </div>
+            </div>
+
+            <!-- Structured Perks & Detailed Grid -->
+            <div class="structured-grid">
+              <div class="structured-box">
+                <div class="structured-box-title">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                  上游订阅特权矩阵 (Subscription Perks)
+                </div>
+                <div class="prop-row">
+                  <span class="prop-label">上下文令牌容量 (Context Tokens)</span>
+                  <span class="prop-val" id="perkContextTokens">8,192 Tokens</span>
+                </div>
+                <div class="prop-row">
+                  <span class="prop-label">无限最高优先级 (Unlimited Max Priority)</span>
+                  <span class="prop-val" id="perkUnlimitedPriority">已激活 (True)</span>
+                </div>
+                <div class="prop-row">
+                  <span class="prop-label">初始任务优先级 (Start Priority)</span>
+                  <span class="prop-val" id="perkStartPriority">10</span>
+                </div>
+                <div class="prop-row">
+                  <span class="prop-label">每月免费模块训练步数 (Module Training)</span>
+                  <span class="prop-val" id="perkModuleSteps">10,000 步</span>
+                </div>
+              </div>
+
+              <div class="structured-box">
+                <div class="structured-box-title">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                  账户安全与账单 (Account & Billing)
+                </div>
+                <div class="prop-row">
+                  <span class="prop-label">账号创建时间 (Created At)</span>
+                  <span class="prop-val" id="accCreatedAt">-</span>
+                </div>
+                <div class="prop-row">
+                  <span class="prop-label">邮箱验证状态 (Email Verified)</span>
+                  <span class="prop-val" id="accEmailStatus">已验证</span>
+                </div>
+                <div class="prop-row">
+                  <span class="prop-label">账号封禁状态 (Ban Status)</span>
+                  <span class="prop-val" id="accBanStatus" style="color: var(--accent-green);">正常 (not_banned)</span>
+                </div>
+                <div class="prop-row">
+                  <span class="prop-label">支付处理器 (Payment Processor)</span>
+                  <span class="prop-val" id="accPaymentProcessor">Chargebee</span>
+                </div>
               </div>
             </div>
 
@@ -1172,7 +1296,7 @@
           <div class="panel-header">
             <div class="panel-title">
               <div class="panel-title-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
               </div>
               <div>
                 <h3>网关环境配置 (.env)</h3>
@@ -1241,11 +1365,11 @@
     </main>
   </div>
 
-  <!-- Account Modal Dialog -->
+  <!-- Custom MD3 Account Modal Dialog -->
   <div id="accountModal" class="modal-overlay">
     <div class="modal-card">
-      <div class="panel-header" style="margin-bottom: 16px;">
-        <h3 id="accountModalTitle" style="color: #fff; font-size: 18px;">添加账号</h3>
+      <div class="modal-header">
+        <h3 id="accountModalTitle">添加 NovelAI 账号</h3>
         <button class="btn btn-sm btn-icon" onclick="closeAccountForm()">✕</button>
       </div>
       <div class="form-grid">
@@ -1280,30 +1404,101 @@
     </div>
   </div>
 
+  <!-- Custom MD3 Prompt / Auth Modal Dialog -->
+  <div id="authModal" class="modal-overlay">
+    <div class="modal-card" style="max-width: 440px;">
+      <div class="modal-header">
+        <h3 id="authModalTitle">网关身份认证</h3>
+      </div>
+      <p id="authModalDesc" class="muted" style="margin-bottom: 16px; font-size: 13px;">请输入管理控制台密码 (GATEWAY_PASSWORD):</p>
+      <div class="form-field">
+        <input id="authModalInput" type="password" placeholder="输入密码并按回车">
+      </div>
+      <div style="margin-top: 20px; display: flex; justify-content: flex-end; gap: 10px;">
+        <button class="btn btn-primary" onclick="submitAuthModal()">确认进入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom MD3 Confirm Dialog -->
+  <div id="confirmModal" class="modal-overlay">
+    <div class="modal-card" style="max-width: 440px;">
+      <div class="modal-header">
+        <h3 id="confirmModalTitle">操作确认</h3>
+        <button class="btn btn-sm btn-icon" onclick="closeConfirmModal(false)">✕</button>
+      </div>
+      <p id="confirmModalDesc" class="muted" style="margin-bottom: 20px; font-size: 13px;"></p>
+      <div style="display: flex; justify-content: flex-end; gap: 10px;">
+        <button class="btn" onclick="closeConfirmModal(false)">取消</button>
+        <button id="confirmModalBtn" class="btn btn-primary" onclick="closeConfirmModal(true)">确认</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast"></div>
 
   <script>
     // --- Auth & API Request Helper ---
-    let token = localStorage.getItem('gw_admin_token');
-    if (!token) {
-      token = prompt('请输入网关管理密码 (GATEWAY_PASSWORD):');
-      if (token) localStorage.setItem('gw_admin_token', token);
+    let authCallback = null;
+
+    function openAuthModal(callback) {
+      authCallback = callback;
+      const modal = document.getElementById('authModal');
+      const input = document.getElementById('authModalInput');
+      input.value = '';
+      modal.classList.add('active');
+      setTimeout(() => input.focus(), 150);
+    }
+
+    function submitAuthModal() {
+      const val = document.getElementById('authModalInput').value.trim();
+      if (!val) return;
+      localStorage.setItem('gw_admin_token', val);
+      document.getElementById('authModal').classList.remove('active');
+      if (authCallback) authCallback(val);
+    }
+
+    document.getElementById('authModalInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitAuthModal();
+    });
+
+    let confirmResolve = null;
+    function showConfirm(title, desc, isDanger = false) {
+      return new Promise((resolve) => {
+        confirmResolve = resolve;
+        document.getElementById('confirmModalTitle').textContent = title;
+        document.getElementById('confirmModalDesc').textContent = desc;
+        const btn = document.getElementById('confirmModalBtn');
+        btn.className = isDanger ? 'btn btn-danger' : 'btn btn-primary';
+        document.getElementById('confirmModal').classList.add('active');
+      });
+    }
+
+    function closeConfirmModal(result) {
+      document.getElementById('confirmModal').classList.remove('active');
+      if (confirmResolve) {
+        confirmResolve(result);
+        confirmResolve = null;
+      }
     }
 
     async function api(path, opt = {}) {
+      let token = localStorage.getItem('gw_admin_token');
+      if (!token) {
+        await new Promise(openAuthModal);
+        token = localStorage.getItem('gw_admin_token');
+      }
+
       const headers = {
         'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + (localStorage.getItem('gw_admin_token') || ''),
+        Authorization: 'Bearer ' + (token || ''),
         ...(opt.headers || {})
       };
       const res = await fetch('/admin/api' + path, { ...opt, headers });
       if (res.status === 401) {
         localStorage.removeItem('gw_admin_token');
-        token = prompt('密码已失效，请重新输入 GATEWAY_PASSWORD:');
-        if (token) {
-          localStorage.setItem('gw_admin_token', token);
-          return api(path, opt);
-        }
+        await new Promise(openAuthModal);
+        return api(path, opt);
       }
       if (!res.ok) {
         const text = await res.text();
@@ -1355,7 +1550,7 @@
     let selectedUpstreamAccountId = '';
 
     function formatTimestamp(sec) {
-      if (!sec) return '无到期记录';
+      if (!sec || sec <= 0 || sec < 100000000) return '实时可用 / 无需重置';
       const d = new Date(sec * 1000);
       return d.getFullYear() + '-' + 
              String(d.getMonth() + 1).padStart(2, '0') + '-' + 
@@ -1364,24 +1559,33 @@
              String(d.getMinutes()).padStart(2, '0');
     }
 
-    function renderUpstreamChips(accounts) {
+    function renderUpstreamControls(accounts) {
       cachedAccounts = accounts || [];
-      const container = document.getElementById('upstreamAccountChips');
+      const chipContainer = document.getElementById('upstreamAccountChips');
+      const dropdown = document.getElementById('upstreamDropdown');
+
+      // 1. Dropdown
+      let dropHtml = '<option value="">⚡ 自动轮询选择账号</option>';
+      dropHtml += cachedAccounts.map(a => `<option value="${a.id}">${a.name} (${a.masked_key})</option>`).join('');
+      dropdown.innerHTML = dropHtml;
+      dropdown.value = selectedUpstreamAccountId;
+
+      // 2. Chips
       if (!cachedAccounts.length) {
-        container.innerHTML = '<span class="muted" style="font-size:12px;">未配置账号池</span>';
+        chipContainer.innerHTML = '<span class="muted" style="font-size:12px;">未配置多账号池</span>';
         return;
       }
-      let html = `<button class="account-chip ${!selectedUpstreamAccountId ? 'active' : ''}" onclick="selectUpstreamAccount('')">⚡ 自动轮询选择</button>`;
+      let html = `<button class="account-chip ${!selectedUpstreamAccountId ? 'active' : ''}" onclick="selectUpstreamAccount('')">⚡ 自动选择</button>`;
       html += cachedAccounts.map(a => {
         const isAct = selectedUpstreamAccountId === a.id;
         return `<button class="account-chip ${isAct ? 'active' : ''}" onclick="selectUpstreamAccount('${a.id}')">${a.name} <code style="font-size:10px;">${a.masked_key}</code></button>`;
       }).join('');
-      container.innerHTML = html;
+      chipContainer.innerHTML = html;
     }
 
     function selectUpstreamAccount(id) {
       selectedUpstreamAccountId = id;
-      renderUpstreamChips(cachedAccounts);
+      renderUpstreamControls(cachedAccounts);
       loadUpstreamStatus();
     }
 
@@ -1417,7 +1621,7 @@
         const tierBadge = document.getElementById('upTierBadge');
         if (tier >= 3) {
           tierBadge.className = 'tier-badge opus';
-          tierBadge.textContent = 'Tier 3 · OPUS 旗舰版';
+          tierBadge.textContent = 'Tier 3 · OPUS 旗舰版 (免费 V5 算力池)';
         } else if (tier === 2) {
           tierBadge.className = 'tier-badge scroll';
           tierBadge.textContent = 'Tier 2 · Scroll 进阶版';
@@ -1431,27 +1635,29 @@
 
         document.getElementById('upExpiresAt').textContent = formatTimestamp(sInfo.expiresAt);
 
-        // 3. Priority Actions
-        const curPri = pri.taskPriority ?? '-';
-        const maxPri = pri.maxPriorityActions ?? perks.maxPriorityActions ?? 1000;
+        // 3. Priority Actions (智能处理 0 / 负时间戳)
+        const curPri = (pri.taskPriority !== undefined && pri.taskPriority > 0) ? pri.taskPriority : (perks.startPriority ?? 10);
+        const maxPri = pri.maxPriorityActions || perks.maxPriorityActions || 1000;
         document.getElementById('upPriorityVal').textContent = `${curPri} / ${maxPri}`;
-        document.getElementById('upNextRefill').textContent = `下次重置: ${formatTimestamp(pri.nextRefillAt)}`;
+        document.getElementById('upNextRefill').textContent = `下次补满: ${formatTimestamp(pri.nextRefillAt)}`;
 
-        // 4. Usage Percent
+        // 4. Usage Percent & V5 Rate State
         const pct = usage.percent ?? 0;
         const upUsagePercent = document.getElementById('upUsagePercent');
         upUsagePercent.textContent = `${pct}%`;
         if (pct > 100) {
           upUsagePercent.style.color = 'var(--accent-tier)';
+          document.getElementById('upUsageNext').textContent = `⚠️ 超出基础池，消耗 Anlas (距恢复: ${usage.timeUntilNextPercent || 0}s)`;
         } else {
           upUsagePercent.style.color = 'var(--accent-green)';
+          document.getElementById('upUsageNext').textContent = usage.timeUntilNextPercent ? `距恢复下一阶点数: ${usage.timeUntilNextPercent}s` : 'V5 算力池: 充沛正常';
         }
-        document.getElementById('upUsageNext').textContent = usage.timeUntilNextPercent ? `距下一阶: ${usage.timeUntilNextPercent}s` : '额度状态: 充盈';
 
         // 5. Training Steps
         const tSteps = sInfo.trainingStepsLeft?.fixedTrainingStepsLeft ?? perks.moduleTrainingSteps ?? 0;
         const purSteps = sInfo.trainingStepsLeft?.purchasedTrainingSteps ?? 0;
         document.getElementById('upTrainingSteps').textContent = Number(tSteps + purSteps).toLocaleString();
+        document.getElementById('upTrainingSub').textContent = `固定配额: ${tSteps} / 额外购买: ${purSteps}`;
 
         // 6. Safe & Features
         const banned = info.banStatus && info.banStatus !== 'not_banned';
@@ -1464,9 +1670,20 @@
           safeEl.textContent = `状态正常 (${ctxTokens} Tokens)`;
           safeEl.style.color = 'var(--primary)';
         }
-        document.getElementById('upAccountType').textContent = `登录方式: ${info.loginMethod || 'accessKey'} · 验证: ${info.emailVerified ? '已认证' : '未认证'}`;
+        document.getElementById('upAccountType').textContent = `登录方式: ${info.loginMethod || 'accessKey'} · 邮箱: ${info.emailVerified ? '已认证' : '未认证'}`;
 
-        // 7. Raw JSON Viewers
+        // 7. Structured Detailed Perks
+        document.getElementById('perkContextTokens').textContent = `${(perks.contextTokens || 8192).toLocaleString()} Tokens`;
+        document.getElementById('perkUnlimitedPriority').textContent = perks.unlimitedMaxPriority ? '已激活 (True)' : '未激活';
+        document.getElementById('perkStartPriority').textContent = `${perks.startPriority ?? 10}`;
+        document.getElementById('perkModuleSteps').textContent = `${(perks.moduleTrainingSteps || 10000).toLocaleString()} 步`;
+
+        document.getElementById('accCreatedAt').textContent = formatTimestamp(info.accountCreatedAt);
+        document.getElementById('accEmailStatus').textContent = info.emailVerified ? '已认证 (Verified)' : '未认证';
+        document.getElementById('accBanStatus').textContent = info.banStatus || 'not_banned';
+        document.getElementById('accPaymentProcessor').textContent = (sInfo.paymentProcessor || 'Chargebee').toUpperCase();
+
+        // 8. Raw JSON Viewers
         document.getElementById('rawUserData').textContent = JSON.stringify(uData, null, 2);
         document.getElementById('rawSubscription').textContent = JSON.stringify(subData, null, 2);
 
@@ -1521,7 +1738,7 @@
         }
 
         // Render Upstream Dashboard & Accounts
-        renderUpstreamChips(data.accounts);
+        renderUpstreamControls(data.accounts);
         loadUpstreamStatus();
         renderAccountsTable(data.accounts);
         renderModelsTable(data.models);
@@ -1637,7 +1854,7 @@
     async function loadAccounts() {
       const data = await api('/accounts');
       renderAccountsTable(data.accounts);
-      renderUpstreamChips(data.accounts);
+      renderUpstreamControls(data.accounts);
     }
 
     function openAccountForm(a = {}) {
@@ -1713,7 +1930,8 @@
     }
 
     async function deleteAccount(id) {
-      if (!confirm(`确认永久删除账号 [${id}]？`)) return;
+      const ok = await showConfirm('删除账号', `确认永久从轮询池删除账号 [${id}]？此操作不可恢复。`, true);
+      if (!ok) return;
       try {
         await api(`/accounts/${id}`, { method: 'DELETE' });
         toast('账号已删除');
@@ -1829,8 +2047,9 @@
       return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
-    async function restartGateway() {
-      if (!confirm('确认立即重启网关容器？')) return;
+    async function confirmRestart() {
+      const ok = await showConfirm('重启网关容器', '确认立即重启网关容器？正在进行的生图请求可能会中断。', true);
+      if (!ok) return;
       try {
         await api('/restart', { method: 'POST' });
         toast('网关正在重启中，约 3 秒后重新就绪...');
