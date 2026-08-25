@@ -1168,7 +1168,7 @@
             <div id="upstreamDropdownContainer" class="md3-select-wrapper">
               <!-- populated dynamically -->
             </div>
-            <button class="btn btn-sm btn-outline-primary" onclick="loadUpstreamData()">
+            <button id="upstreamFetchBtn" class="btn btn-sm btn-outline-primary" onclick="loadUpstreamData()">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
               拉取上游
             </button>
@@ -1330,6 +1330,34 @@
               <div class="upstream-row">
                 <span class="upstream-label">优先消耗免费特权</span>
                 <span id="uCardPrioritySetting" class="upstream-val">开启</span>
+              </div>
+            </div>
+
+            <!-- Card 4: Official Opus V5 Generation Usage -->
+            <div class="upstream-card">
+              <div class="upstream-card-header">
+                <span class="upstream-card-title">
+                  <svg style="width: 16px; height: 16px; color: var(--primary);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
+                  Opus V5 官方生成额度
+                </span>
+                <span class="badge badge-cyan">V5 USAGE</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">剩余额度百分比</span>
+                <span id="uCardV5Percent" class="upstream-val highlight">--</span>
+              </div>
+              <div class="progress-track"><div id="uCardV5Progress" class="progress-fill" style="width: 0%;"></div></div>
+              <div class="upstream-row">
+                <span class="upstream-label">预计可生成图片</span>
+                <span id="uCardV5Images" class="upstream-val">--</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">自动补充状态</span>
+                <span id="uCardV5Refill" class="upstream-val">--</span>
+              </div>
+              <div class="upstream-row">
+                <span class="upstream-label">免费生成条件</span>
+                <span class="upstream-val">标准分辨率 / 最多 28 Steps</span>
               </div>
             </div>
           </div>
@@ -1844,13 +1872,19 @@
 
     // --- Custom Modal Promises ---
     let authModalResolver = null;
+    let authPromptPromise = null;
     function promptAuth() {
-      return new Promise(resolve => {
-        authModalResolver = resolve;
+      if (authPromptPromise) return authPromptPromise;
+      authPromptPromise = new Promise(resolve => {
+        authModalResolver = value => {
+          authPromptPromise = null;
+          resolve(value);
+        };
         document.getElementById('authModalInput').value = '';
         document.getElementById('authModal').classList.add('active');
         setTimeout(() => document.getElementById('authModalInput').focus(), 150);
       });
+      return authPromptPromise;
     }
     function submitAuthModal() {
       const val = document.getElementById('authModalInput').value.trim();
@@ -2016,14 +2050,23 @@
     }
 
     async function loadUpstreamData() {
+      const fetchButton = document.getElementById('upstreamFetchBtn');
+      const originalButtonContent = fetchButton.innerHTML;
+      fetchButton.disabled = true;
+      fetchButton.textContent = '正在拉取...';
+      document.getElementById('upstreamLastSync').textContent = '正在同步...';
+
       try {
         const qs = selectedUpstreamAccountId ? `?account_id=${encodeURIComponent(selectedUpstreamAccountId)}` : '';
-        const [subRes, dataRes] = await Promise.all([
-          api('/upstream/subscription' + qs),
-          api('/upstream/user/data' + qs)
-        ]);
+        const response = await api('/upstream/account-data' + qs);
+        const subRes = response.subscription;
+        const dataRes = response.user_data;
 
-        const rawObj = { account_id: selectedUpstreamAccountId || 'auto-round-robin', subscription: subRes, user_data: dataRes };
+        const rawObj = {
+          account_id: response.account_id,
+          subscription: subRes,
+          user_data: dataRes
+        };
         document.getElementById('upstreamRawJson').textContent = JSON.stringify(rawObj, null, 2);
 
         // 1. Render Tier & Subscription info
@@ -2049,14 +2092,10 @@
         // 2. Render Perks & Anlas
         const perks = subRes.perks || {};
         const priority = dataRes.priority || {};
-        const totalAnlas = (perks.fixedTrainingStepsLeft ?? 0) + (priority.taskPriority ?? 0); // fallback / display
+        const trainingSteps = subRes.trainingStepsLeft || {};
+        const totalAnlas = (trainingSteps.fixedTrainingStepsLeft ?? 0) + (trainingSteps.purchasedTrainingSteps ?? 0);
         
-        let anlasDisplay = '--';
-        if (perks.maxPriorityActions !== undefined) {
-          anlasDisplay = Number(perks.maxPriorityActions).toLocaleString();
-        } else if (perks.unlimitedRefillRate !== undefined) {
-          anlasDisplay = 'Opus Unlimited';
-        }
+        const anlasDisplay = Number(totalAnlas).toLocaleString();
         document.getElementById('statAnlas').textContent = anlasDisplay;
         document.getElementById('uCardAnlasPaid').textContent = anlasDisplay;
 
@@ -2068,31 +2107,61 @@
           ? `<span class="badge badge-green">无限免费生成 (Opus)</span>`
           : `<span class="badge badge-tier">标准模式</span>`;
 
-        const steps = perks.fixedTrainingStepsLeft ?? 0;
-        document.getElementById('uCardTrainingSteps').textContent = `${Number(steps).toLocaleString()} 步`;
+        document.getElementById('uCardTrainingSteps').textContent = `${Number(totalAnlas).toLocaleString()} 步`;
 
-        const refillStr = formatTimestamp(perks.nextRefillAt);
+        const refillStr = formatTimestamp(priority.nextRefillAt);
         document.getElementById('uCardRefillAt').textContent = refillStr;
 
         // 3. Priority & Account Status
         const taskPri = priority.taskPriority ?? perks.startPriority ?? 10;
         document.getElementById('uCardTaskPriority').textContent = taskPri;
         document.getElementById('uCardMaxActions').textContent = perks.maxPriorityActions ?? 1000;
-        document.getElementById('uCardCreatedAt').textContent = formatTimestamp(dataRes.createdAt || dataRes.registrationTimestamp);
+        const accountInfo = dataRes.information || {};
+        document.getElementById('uCardCreatedAt').textContent = formatTimestamp(accountInfo.accountCreatedAt);
         
-        const isBanned = dataRes.banned || false;
+        const isBanned = accountInfo.banStatus && accountInfo.banStatus !== 'not_banned';
         document.getElementById('uCardAccountBanned').innerHTML = isBanned
           ? `<span class="badge badge-red">已封禁</span>`
           : `<span class="badge badge-green">状态正常</span>`;
 
         document.getElementById('uCardPrioritySetting').textContent = (dataRes.settings && dataRes.settings.disableFreeGeneration) ? '已关闭' : '优先消耗免费额度';
 
+        // 4. Official Opus V5 generation usage allowance
+        const v5Usage = subRes.usage || {};
+        const v5Percent = Number(v5Usage.percent);
+        const hasV5Usage = Number.isFinite(v5Percent);
+        const v5RemainingPercent = hasV5Usage ? Math.max(0, v5Percent) : 0;
+        const v5EstimatedImages = Math.round(v5RemainingPercent * 17.3);
+        document.getElementById('uCardV5Percent').textContent = hasV5Usage
+          ? `${v5Usage.isNegative ? '-' : ''}${v5RemainingPercent}% remaining`
+          : '上游未返回';
+        document.getElementById('uCardV5Progress').style.width = `${Math.min(v5RemainingPercent, 100)}%`;
+        document.getElementById('uCardV5Images').textContent = hasV5Usage
+          ? `约 ${Number(v5EstimatedImages).toLocaleString()} 张`
+          : '--';
+
+        const refillSeconds = Number(v5Usage.timeUntilNextPercent);
+        if (!hasV5Usage) {
+          document.getElementById('uCardV5Refill').textContent = '--';
+        } else if (!Number.isFinite(refillSeconds) || refillSeconds <= 0) {
+          document.getElementById('uCardV5Refill').innerHTML = '<span class="badge badge-tier">当前暂停补充</span>';
+        } else {
+          const refillMinutes = Math.ceil(refillSeconds / 60);
+          document.getElementById('uCardV5Refill').textContent = `约 ${refillMinutes} 分钟后 +1%`;
+        }
+
         const now = new Date();
         document.getElementById('upstreamLastSync').textContent = `最后同步: ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
+        toast(`已拉取账号 ${rawObj.account_id} 的上游数据`);
 
       } catch (err) {
         console.warn('Failed to load upstream details:', err);
+        document.getElementById('upstreamLastSync').textContent = '同步失败';
         document.getElementById('upstreamRawJson').textContent = `获取上游信息异常: ${err.message}\n请检查账号 Token 是否已过期或网络连通性。`;
+        toast('拉取上游失败: ' + err.message, true);
+      } finally {
+        fetchButton.disabled = false;
+        fetchButton.innerHTML = originalButtonContent;
       }
     }
 
@@ -2108,10 +2177,10 @@
 
         // V5 Quotas
         const v5 = status.usage || status.v5_quota || {};
-        const dailyUsed = v5.daily_count || 0;
-        const dailyMax = v5.daily_limit || 190;
-        const weeklyUsed = v5.weekly_count || 0;
-        const weeklyMax = v5.weekly_limit || 1730;
+        const dailyUsed = Number(v5.used_today ?? v5.daily_count ?? 0);
+        const dailyMax = Number(v5.daily_limit ?? 190);
+        const weeklyUsed = Number(v5.used_this_week ?? v5.weekly_count ?? 0);
+        const weeklyMax = Number(v5.weekly_limit ?? 1730);
 
         document.getElementById('statDailyQuota').textContent = `${dailyUsed} / ${dailyMax}`;
         const dailyPct = Math.min(100, Math.round((dailyUsed / dailyMax) * 100));
@@ -2322,7 +2391,7 @@
     async function loadModelConfig() {
       try {
         const res = await api('/models/config');
-      document.getElementById('modelsTomlEditor').value = res.content || '';
+        document.getElementById('modelsTomlEditor').value = res.content || '';
       } catch (err) {
         toast('获取 models.toml 失败: ' + err.message, true);
       }
@@ -2334,6 +2403,7 @@
         await api('/models/config', {
           method: 'PUT',
           body: JSON.stringify({ content })
+        });
         toast('models.toml 已成功保存并热重载');
       } catch (err) {
         toast('保存失败: ' + err.message, true);

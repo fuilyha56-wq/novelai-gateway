@@ -12,7 +12,16 @@ from typing import Any, Set
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .account_pool import account_pool
+from .account_pool import (
+    account_pool,
+    load_accounts_file,
+    parse_accounts,
+    save_accounts_file,
+    serialize_accounts,
+)
+
+
+_ACCOUNTS_PATH = Path("config/accounts.json")
 
 
 def _normalize_credential(value: str) -> str:
@@ -140,6 +149,22 @@ class Settings(BaseSettings):
         """初始化不参与配置序列化的 Key 轮询状态。"""
         self._api_key_lock = Lock()
         self._api_key_index = 0
+        if _ACCOUNTS_PATH.exists():
+            persisted_accounts = load_accounts_file(_ACCOUNTS_PATH)
+        elif self.shared_api_keys.strip():
+            persisted_accounts = save_accounts_file(
+                _ACCOUNTS_PATH,
+                parse_accounts(self.shared_api_keys),
+            )
+        elif self.shared_api_key.strip():
+            persisted_accounts = save_accounts_file(
+                _ACCOUNTS_PATH,
+                [{"id": "shared", "name": "共享账号", "key": self.shared_api_key}],
+            )
+        else:
+            persisted_accounts = []
+        if persisted_accounts:
+            self.shared_api_keys = serialize_accounts(persisted_accounts)
         account_pool.configure(self.shared_api_keys)
 
     def get_shared_auth_token(self) -> str:

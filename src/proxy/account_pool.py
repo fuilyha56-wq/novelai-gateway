@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -81,6 +83,33 @@ def serialize_accounts(accounts: list[dict[str, Any]]) -> str:
     return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
 
+def load_accounts_file(path: Path) -> list[dict[str, Any]]:
+    """从 JSON 文件读取并规范化多账号配置。"""
+    if not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError(f"账号配置必须是 JSON 数组: {path}")
+    return parse_accounts(json.dumps(payload, ensure_ascii=False))
+
+
+def save_accounts_file(path: Path, accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """原子写入规范化后的多账号配置并返回保存内容。"""
+    normalized = parse_accounts(serialize_accounts(accounts))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    temporary_path.write_text(
+        json.dumps(normalized, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    try:
+        os.chmod(temporary_path, 0o640)
+    except OSError:
+        pass
+    temporary_path.replace(path)
+    return normalized
+
+
 @dataclass
 class AccountState:
     """账号持久化信息和运行时状态。"""
@@ -151,12 +180,18 @@ class AccountPool:
         """使用平滑加权轮询选择账号，返回账号 ID 和凭据。"""
         now = time.monotonic()
         with self._lock:
-            candidates = [
+            enabled_accounts = [
                 account for account in self._accounts.values()
-                if account.enabled and account.key and account.cooldown_until <= now
+                if account.enabled and account.key
+            ]
+            if not enabled_accounts:
+                raise RuntimeError("没有可用的 NovelAI 账号")
+            candidates = [
+                account for account in enabled_accounts
+                if account.cooldown_until <= now
             ]
             if not candidates:
-                raise RuntimeError("没有可用的 NovelAI 账号")
+                candidates = [min(enabled_accounts, key=lambda account: account.cooldown_until)]
             total = sum(account.weight for account in candidates)
             selected: AccountState | None = None
             for account in candidates:

@@ -1,8 +1,17 @@
 """多账号轮询、解析和脱敏测试。"""
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from src.proxy.account_pool import AccountPool, mask_secret, parse_accounts, serialize_accounts
+from src.proxy.account_pool import (
+    AccountPool,
+    load_accounts_file,
+    mask_secret,
+    parse_accounts,
+    save_accounts_file,
+    serialize_accounts,
+)
 
 
 class AccountPoolTests(unittest.TestCase):
@@ -46,10 +55,35 @@ class AccountPoolTests(unittest.TestCase):
         self.assertTrue(pool.reset("a"))
         self.assertEqual(pool.public()[0]["status"], "ready")
 
+    def test_all_cooling_accounts_allow_recovery_probe(self) -> None:
+        pool = AccountPool()
+        pool.configure('[{"id":"a","key":"key-a"},{"id":"b","key":"key-b"}]')
+        pool.failure("a", "network down", cooldown_seconds=30)
+        pool.failure("b", "network down", cooldown_seconds=60)
+
+        self.assertEqual(pool.choose()[0], "a")
+
     def test_serialize_preserves_secret_and_management_fields(self) -> None:
         encoded = serialize_accounts([{"id": "a", "name": "主账号", "key": "key-a", "weight": 2, "enabled": False}])
         self.assertEqual(parse_accounts(encoded)[0]["enabled"], False)
         self.assertEqual(parse_accounts(encoded)[0]["weight"], 2)
+
+    def test_accounts_file_round_trip_preserves_configuration(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "accounts.json"
+            accounts = [{"id": "a", "name": "主账号", "key": "key-a", "weight": 3, "enabled": True}]
+
+            saved = save_accounts_file(path, accounts)
+
+            self.assertEqual(load_accounts_file(path), saved)
+            self.assertEqual(saved[0]["weight"], 3)
+            self.assertEqual(saved[0]["key"], "key-a")
+
+    def test_missing_accounts_file_returns_empty_list(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "accounts.json"
+
+            self.assertEqual(load_accounts_file(path), [])
 
 
 if __name__ == "__main__":

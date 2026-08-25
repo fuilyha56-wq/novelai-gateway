@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from .account_pool import account_pool, mask_secret, parse_accounts, serialize_accounts
+from .account_pool import account_pool, mask_secret, parse_accounts, save_accounts_file, serialize_accounts
 from .config import _parse_weighted_api_keys, settings
 from .model_registry import ModelRegistry
 from .model_fetcher import handle_refresh_upstream_models
@@ -21,6 +21,7 @@ from .v5_quota import get_usage
 router = APIRouter(prefix="/admin/api")
 _logger = logging.getLogger("gateway")
 _ENV_PATH = Path(".env")
+_ACCOUNTS_PATH = Path("config/accounts.json")
 _LOG_BUFFER: list[str] = []
 _LOG_PATH = Path("logs/gateway.log")
 
@@ -155,9 +156,8 @@ async def _choose_upstream_account(account_id: str | None) -> tuple[str, str]:
     raise HTTPException(status_code=503, detail="未配置 NovelAI 凭据")
 
 
-async def _fetch_upstream(path: str, account_id: str | None) -> dict[str, Any]:
-    """代理请求 NovelAI 上游用户接口并附加账号元数据。"""
-    selected_id, secret = await _choose_upstream_account(account_id)
+async def _fetch_upstream_with_account(path: str, selected_id: str, secret: str) -> dict[str, Any]:
+    """使用指定账号代理请求 NovelAI 上游用户接口。"""
     target = f"{settings.novelai_image_url}{path}"
     import httpx
 
@@ -192,6 +192,12 @@ async def _fetch_upstream(path: str, account_id: str | None) -> dict[str, Any]:
     }
 
 
+async def _fetch_upstream(path: str, account_id: str | None) -> dict[str, Any]:
+    """选择账号并代理请求 NovelAI 上游用户接口。"""
+    selected_id, secret = await _choose_upstream_account(account_id)
+    return await _fetch_upstream_with_account(path, selected_id, secret)
+
+
 @router.get("/upstream/user/data")
 async def upstream_user_data(request: Request, account_id: str | None = None) -> dict[str, Any]:
     """代理获取 NovelAI /user/data（包含任务优先级与额度百分比）。"""
@@ -206,10 +212,27 @@ async def upstream_subscription(request: Request, account_id: str | None = None)
     return await _fetch_upstream("/user/subscription", account_id)
 
 
+@router.get("/upstream/account-data")
+async def upstream_account_data(request: Request, account_id: str | None = None) -> dict[str, Any]:
+    """使用同一账号并行获取 NovelAI 订阅与用户数据。"""
+    await _require_auth(request)
+    selected_id, secret = await _choose_upstream_account(account_id)
+    subscription, user_data = await asyncio.gather(
+        _fetch_upstream_with_account("/user/subscription", selected_id, secret),
+        _fetch_upstream_with_account("/user/data", selected_id, secret),
+    )
+    return {
+        "account_id": selected_id,
+        "masked_key": mask_secret(secret),
+        "subscription": subscription["data"],
+        "user_data": user_data["data"],
+    }
+
+
 def _persist_accounts(accounts: list[dict[str, Any]]) -> None:
     """持久化账号并让当前进程立即使用新账号池。"""
-    encoded = serialize_accounts(accounts)
-    _write_env({"SHARED_API_KEYS": encoded})
+    persisted_accounts = save_accounts_file(_ACCOUNTS_PATH, accounts)
+    encoded = serialize_accounts(persisted_accounts)
     settings.shared_api_keys = encoded
     account_pool.configure(encoded)
 
@@ -320,10 +343,11 @@ async def update_env(request: Request) -> dict[str, str]:
         "V5_QUOTA_ENABLED", "V5_DAILY_LIMIT", "V5_WEEKLY_LIMIT", "SHARED_API_KEYS",
     }
     values = {key: str(value) for key, value in body.items() if key in allowed}
+    shared_api_keys = values.pop("SHARED_API_KEYS", None)
     _write_env(values)
-    if "SHARED_API_KEYS" in values:
-        settings.shared_api_keys = values["SHARED_API_KEYS"]
-        account_pool.configure(settings.shared_api_keys)
+    if shared_api_keys is not None:
+        _persist_accounts(parse_accounts(shared_api_keys))
+        values["SHARED_API_KEYS"] = "persisted"
     return {"message": "配置已保存，重启网关后生效", "updated": ",".join(values)}
 
 

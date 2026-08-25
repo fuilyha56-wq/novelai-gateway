@@ -20,6 +20,7 @@ backup_src/
 uv.lock
 config/models.toml
 config/models_suggested.toml
+config/accounts.json
 
 # 临时调研/测试产物，不纳入版本控制
 DESIGN.md
