@@ -245,6 +245,53 @@ NewAPI 等会过滤扩展 body 字段时，可使用下列 Header 覆盖请求�
 
 V4/V4.5 模型所需的 `v4_prompt`、`v4_negative_prompt` 等结构由网关自动补全；也可自行传入高级结构。
 
+#### 自定义参数与 V5 新字段（模型门控 / straight_alpha / 透明背景 / 全量透传）
+
+网关按请求模型自动门控参数：**V5 系模型放行 V5 专属参数**（`straight_alpha`、`tag_hint_transparent_background`、`tag_hint_qt`、`tag_hint_uc_preset`），其他模型族自动剔除这些字段。V5 模型默认注入 `straight_alpha: true`（对齐官方前端，避免透明图黑边），可用请求显式覆盖。
+
+一等公民参数可直接写在请求 body 中，适用于全部产图端点（generations / img2img / inpainting / edits / vibe-transfer / character-reference / precise-reference）：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `straight_alpha` | boolean | V5 为 `true` | 直通 alpha 输出，避免透明图出现黑边；仅 V5 生效 |
+| `transparent_background` | boolean | - | 透明背景开关；网关自动映射为上游字段 `tag_hint_transparent_background` |
+| `tag_hint_transparent_background` | boolean | - | 上游原始字段名，与 `transparent_background` 等效 |
+| `tag_hint_qt` | integer | - | 质量标签提示（官方前端 standard 档对应 `1`） |
+| `tag_hint_uc_preset` | integer | - | UC 预设提示（官方前端 heavy 档对应 `2`） |
+| `ucPreset` | integer | `0` | UC 预设（旧式字段），可覆盖 |
+| `qualityToggle` | boolean | `true` | 质量标签开关（旧式字段），可覆盖 |
+
+透明背景用法：请求带 `"transparent_background": true`，提示词配合 `transparent background, has alpha` 等标签效果更稳。返回 PNG 保留 alpha 通道（网关仅对不透明图做白底压平，实质透明的图原样透传）。
+
+**全量透传**：除网关协议保留字段外，body 顶层与 `extra_params` 中的任意字段都会透传进上游 `parameters`——无需逐个等网关支持（如官方 spec 中的 `color_correct`、未来 V5.x 新增参数）。两种写法等价：
+
+```json
+{
+  "model": "nai-v5-full",
+  "prompt": "1girl, transparent background, has alpha",
+  "transparent_background": true,
+  "color_correct": true
+}
+```
+
+```json
+{
+  "model": "nai-v5-full",
+  "prompt": "1girl, transparent background, has alpha",
+  "extra_params": { "transparent_background": true, "color_correct": true }
+}
+```
+
+校验规则（透传照样做校验）：
+
+- **计费/限额关键参数**（`width`、`height`、`steps`、`n_samples`、`scale`、`strength`、`seed`、`uncond_scale`、`cfg_rescale`、`noise`）允许通过 `extra_params` 覆盖，但逐项做与顶层字段相同的边界校验，非法值 400；`-limit` 免费额度校验在合并之后执行，无法通过覆盖绕过。
+- **协议保留字段**（`model`、`prompt`、`input`、`action`、`response_format`、`size`、`n`、`stream`、`image_format`、`image`、`mask`、`references`、`characters`、`reference_image(s)`、`service_tier` 等）不允许经 `extra_params` 覆盖，冲突返回 400。
+- 其余字段原样透传，由 NovelAI 校验。
+
+经 NewAPI 等中转、body 扩展字段被过滤时，可改用请求头 `X-NovelAI-Extra-Params`（值为 JSON 对象字符串）；与 body 同时传入时 Header 优先（与 `X-Sampler` 等既有约定一致）。
+
+`ucPresetId` / `qualityPresetId` 是 NovelAI 网页前端的私有字段，不在官方 API spec（`https://image.novelai.net/docs/doc.json`）中，服务端可能忽略；请使用 `ucPreset`（integer）、`qualityToggle`（boolean）与 `tag_hint_*` 字段。
+
 ### 4.1 经 NewAPI 的统一图像操作协议
 
 当 NewAPI 只允许 `/v1/images/generations` 时，除 `upscale` 和 `annotate` 外的产图能力都可走这一个端点。请求路径固定为：

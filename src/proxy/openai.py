@@ -122,6 +122,172 @@ def _validate_image_params(
         raise HTTPException(status_code=400, detail=f"response_format 非法，当前 {response_format}，合法值: {VALID_RESPONSE_FORMATS}")
 
 
+# ── 自定义参数透传（模型感知 + extra_params + 全量透传） ──────────
+
+# V5 专属参数：仅 V5 系模型放行（官方前端仅在 V5 请求中发送），
+# 其他模型族在 _apply_custom_params 中自动剔除。
+_V5_ONLY_PARAMS = frozenset({
+    "straight_alpha",
+    "tag_hint_transparent_background",
+    "tag_hint_qt",
+    "tag_hint_uc_preset",
+})
+
+# 网关协议保留字段：不透传进 NAI parameters，extra_params 覆盖直接 400。
+# - OpenAI 协议字段：由网关转换（prompt→input、size→width/height、n→n_samples）
+# - 响应形态字段：stream/image_format 决定响应解析方式，网关仅支持 zip+png
+# - 参考图协议字段：网关转换为上游 *_multiple 结构并计入计费
+# - 输入图字段：由各端点显式放入 params（multipart 切换依赖 payload 顶层结构）
+_RESERVED_BODY_KEYS = frozenset({
+    "model", "prompt", "input", "action", "response_format", "size", "n",
+    "user", "quality_tags", "revised_prompt",
+    "operation", "novelai_operation", "service_tier", "extra_params",
+    "references", "characters", "reference_image", "reference_images",
+    "reference_strength", "reference_information_extracted",
+    "image", "mask", "stream", "image_format",
+})
+
+# 计费/限额关键参数：extra_params 允许覆盖，但逐项做与顶层字段相同的校验
+#（-limit 免费额度边界由入口 absorb 在 _enforce_limit_model 之前合并来保证）。
+_CRITICAL_OVERRIDE_KEYS = frozenset({
+    "width", "height", "steps", "n_samples", "scale", "strength", "seed",
+    "uncond_scale", "cfg_rescale", "noise",
+})
+
+
+def _validate_critical_override(key: str, value: Any) -> Any:
+    """校验 extra_params 覆盖的计费/限额关键参数，返回规范化后的值。"""
+    if key in ("width", "height"):
+        v = _safe_int(value, 0)
+        if not (MIN_IMAGE_DIM <= v <= MAX_IMAGE_DIM) or v % 64 != 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"extra_params.{key} 非法: {value!r}（需 {MIN_IMAGE_DIM}-{MAX_IMAGE_DIM} 且为 64 的倍数）",
+            )
+        return v
+    if key == "steps":
+        v = _safe_int(value, 0)
+        if not (MIN_STEPS <= v <= MAX_STEPS):
+            raise HTTPException(
+                status_code=400,
+                detail=f"extra_params.steps 非法: {value!r}（需 {MIN_STEPS}-{MAX_STEPS}）",
+            )
+        return v
+    if key == "n_samples":
+        v = _safe_int(value, 0)
+        if not (MIN_N_SAMPLES <= v <= MAX_N_SAMPLES):
+            raise HTTPException(
+                status_code=400,
+                detail=f"extra_params.n_samples 非法: {value!r}（需 {MIN_N_SAMPLES}-{MAX_N_SAMPLES}）",
+            )
+        return v
+    if key == "scale":
+        v = _safe_float(value, -1.0)
+        if not 0 <= v <= 10:
+            raise HTTPException(status_code=400, detail=f"extra_params.scale 非法: {value!r}（需 0-10）")
+        return v
+    if key == "strength":
+        v = _safe_float(value, -1.0)
+        if not 0 <= v <= 1:
+            raise HTTPException(status_code=400, detail=f"extra_params.strength 非法: {value!r}（需 0-1）")
+        return v
+    if key == "seed":
+        v = _safe_int(value, -1)
+        if not 0 <= v <= 4294967295:
+            raise HTTPException(status_code=400, detail=f"extra_params.seed 非法: {value!r}（需 0-4294967295）")
+        return v
+    # uncond_scale / cfg_rescale / noise：无硬边界，透传由 NAI 校验
+    return value
+
+
+def _absorb_extra_params(body: dict[str, Any], extra_params_json: str | None = None) -> None:
+    """将 extra_params 对象与 X-NovelAI-Extra-Params header 合并进 body 顶层。
+
+    必须在各 handler 入口、_enforce_limit_model 与参数构建之前调用：合并后，
+    尺寸/步数等关键覆盖值与顶层字段走同一套校验与 -limit 免费额度检查，
+    Anlas 计费口径自动保持一致。
+
+    - body.extra_params 与 header（JSON 对象，NewAPI 等中转过滤 body 字段时使用）
+      合并，header 优先（与 X-Sampler 等既有约定一致）；
+    - 保留字段（协议字段/响应形态）不允许覆盖，返回 400；
+    - 计费/限额关键参数允许覆盖，逐项校验后写入顶层；
+    - 其余字段原样并入顶层，最终由 _apply_custom_params 全量透传。
+    """
+    sources: list[dict[str, Any]] = []
+    body_extra = body.get("extra_params")
+    if body_extra is not None:
+        if not isinstance(body_extra, dict):
+            raise HTTPException(status_code=400, detail="extra_params 必须是对象（字段名 -> 值）")
+        sources.append(body_extra)
+    if extra_params_json:
+        try:
+            header_extra = json.loads(extra_params_json)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="X-NovelAI-Extra-Params 必须是合法 JSON 对象")
+        if not isinstance(header_extra, dict):
+            raise HTTPException(status_code=400, detail="X-NovelAI-Extra-Params 必须是 JSON 对象")
+        sources.append(header_extra)
+
+    if not sources:
+        return
+
+    merged: dict[str, Any] = {}
+    for source in sources:
+        merged.update(source)
+
+    illegal = sorted(str(key) for key in merged if key in _RESERVED_BODY_KEYS)
+    if illegal:
+        raise HTTPException(
+            status_code=400,
+            detail=f"extra_params 不允许覆盖网关协议字段: {', '.join(illegal)}",
+        )
+
+    for key, value in merged.items():
+        if key in _CRITICAL_OVERRIDE_KEYS:
+            merged[key] = _validate_critical_override(key, value)
+
+    body.update(merged)
+
+
+def _apply_custom_params(body: dict[str, Any], params: dict[str, Any], nai_model: str) -> None:
+    """模型感知的参数放行与全量透传，在各生成端点 params 构建完成后调用。
+
+    1. 一等公民参数：straight_alpha / transparent_background（映射为
+       tag_hint_transparent_background）/ tag_hint_qt / tag_hint_uc_preset。
+       V5 模型默认注入 straight_alpha=true（对齐官方前端，避免透明图黑边）。
+    2. 全量透传：body 中未被网关显式处理的非保留字段原样并入 parameters
+       （extra_params 已在入口由 _absorb_extra_params 并入 body）。
+    3. 模型门控：V5 专属参数仅对 V5 系模型放行，其他模型族剔除并记 DEBUG。
+    """
+    if "straight_alpha" in body:
+        params["straight_alpha"] = bool(body["straight_alpha"])
+    elif _is_v5_model(nai_model):
+        params.setdefault("straight_alpha", True)
+
+    if "transparent_background" in body:
+        params["tag_hint_transparent_background"] = bool(body["transparent_background"])
+    if "tag_hint_transparent_background" in body:
+        params["tag_hint_transparent_background"] = bool(body["tag_hint_transparent_background"])
+    if "tag_hint_qt" in body:
+        params["tag_hint_qt"] = _safe_int(body["tag_hint_qt"], 1)
+    if "tag_hint_uc_preset" in body:
+        params["tag_hint_uc_preset"] = _safe_int(body["tag_hint_uc_preset"], 0)
+
+    # 全量透传：未显式处理的非保留 body 字段原样进入 parameters
+    #（transparent_background 已被映射为 tag_hint_transparent_background，跳过原名）
+    for key, value in body.items():
+        if key == "transparent_background":
+            continue
+        if key not in _RESERVED_BODY_KEYS and key not in params:
+            params[key] = value
+
+    # 模型门控：V5 专属参数仅 V5 系模型放行
+    if not _is_v5_model(nai_model):
+        for key in _V5_ONLY_PARAMS & params.keys():
+            params.pop(key)
+            logger.debug(f"[custom-params] {key} 为 V5 专属参数，{nai_model} 已剔除")
+
+
 def _normalize_vibe_reference_images(body: dict[str, Any]) -> list[str]:
     """读取并校验请求中的单张或多张 Vibe 参考图。"""
     has_single = "reference_image" in body
@@ -493,6 +659,9 @@ def _flatten_to_rgb(png_bytes: bytes) -> bytes:
     - JPEG 转换时 alpha 被误当颜色通道 → 红色噪点
     - NewAPI 等中转站二次处理时偏色
 
+    例外：存在实质性透明像素（alpha 最小值 < 250，即 V5 透明背景输出）时
+    原样返回 RGBA，不压平、不重编码，保住透明通道。
+
     如果图片已经是 RGB 则原样返回；否则 flatten 后重新编码为 PNG。
     重新编码时保留原始 PNG 的 tEXt 元数据（NAI 的 Comment/Description/Software/Source 等），
     以便下游工具读取 NAI 元数据反推提示词。
@@ -504,6 +673,12 @@ def _flatten_to_rgb(png_bytes: bytes) -> bytes:
         img = Image.open(io.BytesIO(png_bytes))
         if img.mode == "RGB":
             return png_bytes  # 已经是 RGB，无需转换
+
+        # 实质性透明（V5 透明背景）→ 原样保留，透明通道不能丢
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            alpha_lo, _alpha_hi = img.convert("RGBA").getchannel("A").getextrema()
+            if alpha_lo < 250:
+                return png_bytes
 
         # 提取原始 PNG 元数据（tEXt/zTXt/iTXt chunks）
         # img.info 里包含 Comment, Description, Software, Source 等 NAI 元数据字段
@@ -1545,8 +1720,9 @@ def _build_generation_payload(
         "scale": body.get("scale", body.get("guidance_scale", 5.0)),
         "sampler": body.get("sampler", "k_euler_ancestral"),
         "negative_prompt": negative_prompt,
-        "ucPreset": 0,
-        "qualityToggle": True,
+        # UC 预设 / 质量标签开关：可由 body 顶层或 extra_params 覆盖（提示性字段）
+        "ucPreset": body.get("ucPreset", 0),
+        "qualityToggle": body.get("qualityToggle", True),
         "noise_schedule": body.get("noise_schedule", "karras"),
         # V4.5 用 params_version=3，V5 用 params_version=4
         "params_version": 4 if _is_v5_model(nai_model) else 3,
@@ -1767,6 +1943,8 @@ def _build_generation_payload(
         params.setdefault("skip_cfg_above_sigma", None)
         params.setdefault("characterPrompts", [])
 
+    _apply_custom_params(body, params, nai_model)
+
     return nai_payload, prompt, response_format
 
 
@@ -1781,6 +1959,7 @@ async def handle_openai_generations(request: Request) -> Response:
     Header 优先级高于 body。
     """
     body = await request.json()
+    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
 
     # 从 Header 读取采样参数（NewAPI 中转兼容）
     # Header 优先级高于 body，这样用户可以通过 Header 强制指定参数
@@ -1941,6 +2120,7 @@ async def handle_openai_generations(request: Request) -> Response:
 async def handle_nai_inpainting(request: Request) -> Response:
     """处理 NAI SDK 风格的局部重绘请求。"""
     body = await request.json()
+    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
 
     prompt = body.get("prompt", body.get("input", ""))
     model = body.get("model", "nai-diffusion-4-5-full-inpainting")
@@ -2037,6 +2217,8 @@ async def handle_nai_inpainting(request: Request) -> Response:
         params.setdefault("skip_cfg_above_sigma", None)
         params.setdefault("characterPrompts", [])
 
+    _apply_custom_params(body, params, nai_model)
+
     accept_format = "json" if response_format == "nai_json" else "zip"
 
     # V5 每日限额预检
@@ -2079,11 +2261,15 @@ async def handle_openai_image_edits(request: Request) -> Response:
 
     if "multipart/form-data" in content_type:
         form = await request.form()
-        prompt = form.get("prompt", "")
-        model = form.get("model", "nai-diffusion-4-5-full-inpainting")
-        negative_prompt = form.get("negative_prompt", "") or DEFAULT_NEGATIVE_PROMPT
-        response_format = form.get("response_format", "b64_json")
-        size_str = form.get("size", "1024x1024")
+        # 表单文本字段统一进 body（值均为字符串），文件字段单独读取；
+        # 先 absorb extra_params 再取值，保证与 JSON 分支走同一套校验
+        body = {key: value for key, value in form.multi_items() if isinstance(value, str)}
+        _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
+        prompt = body.get("prompt", "")
+        model = body.get("model", "nai-diffusion-4-5-full-inpainting")
+        negative_prompt = body.get("negative_prompt", "") or DEFAULT_NEGATIVE_PROMPT
+        response_format = body.get("response_format", "b64_json")
+        size_str = body.get("size", "1024x1024")
         width, height = _parse_size(size_str)
         width, height = _clamp_dimensions(width, height)
 
@@ -2112,6 +2298,7 @@ async def handle_openai_image_edits(request: Request) -> Response:
         await form.close()
     else:
         body = await request.json()
+        _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
         prompt = body.get("prompt", "")
         model = body.get("model", "nai-diffusion-4-5-full-inpainting")
         _enforce_limit_model(model, {**body, "action": "infill"})
@@ -2147,21 +2334,14 @@ async def handle_openai_image_edits(request: Request) -> Response:
     quality_tags = QUALITY_TAGS
     full_prompt = prompt + quality_tags if quality_tags else prompt
 
-    # 统一参数来源：multipart 分支从 form 读取（值为字符串），JSON 分支从 body 读取。
-    # 两个分支都把可选参数收集到 edit_params，供下方 params 构造使用，
-    # 类型转换统一在 params 构造处完成，与 handle_nai_inpainting / handle_img2img 对齐。
+    # 统一参数来源：multipart 分支的文本字段已并入 body（值为字符串），
+    # JSON 分支从 body 读取。可选参数收集到 edit_params 供 params 构造使用，
+    # 类型转换统一在 params 构造处完成（extra_params 覆盖值已在入口校验）。
     edit_params: dict[str, Any] = {}
-    if "multipart/form-data" in content_type:
-        for key in ("steps", "scale", "sampler", "noise_schedule",
-                    "cfg_rescale", "noise", "strength", "seed"):
-            val = form.get(key)
-            if val is not None:
-                edit_params[key] = val
-    else:
-        for key in ("steps", "scale", "sampler", "noise_schedule",
-                    "cfg_rescale", "noise", "strength", "seed"):
-            if key in body:
-                edit_params[key] = body[key]
+    for key in ("steps", "scale", "sampler", "noise_schedule",
+                "cfg_rescale", "noise", "strength", "seed"):
+        if key in body:
+            edit_params[key] = body[key]
 
     params = {
         "width": width,
@@ -2233,6 +2413,8 @@ async def handle_openai_image_edits(request: Request) -> Response:
         params.setdefault("skip_cfg_above_sigma", None)
         params.setdefault("characterPrompts", [])
 
+    _apply_custom_params(body, params, nai_model)
+
     accept_format = "json" if response_format == "nai_json" else "zip"
 
     # V5 每日限额预检
@@ -2272,6 +2454,7 @@ async def handle_openai_image_edits(request: Request) -> Response:
 async def handle_img2img(request: Request) -> Response:
     """处理图生图请求 (action=img2img)。"""
     body = await request.json()
+    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
 
     prompt = body.get("prompt", "")
     model = body.get("model", "nai-diffusion-4-5-full")
@@ -2362,6 +2545,8 @@ async def handle_img2img(request: Request) -> Response:
         params.setdefault("skip_cfg_above_sigma", None)
         params.setdefault("characterPrompts", [])
 
+    _apply_custom_params(body, params, nai_model)
+
     accept_format = "json" if response_format == "nai_json" else "zip"
 
     # V5 每日限额预检
@@ -2401,6 +2586,7 @@ async def handle_img2img(request: Request) -> Response:
 async def handle_vibe_transfer(request: Request) -> Response:
     """处理 Vibe Transfer 风格迁移请求。"""
     body = await request.json()
+    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
 
     prompt = body.get("prompt", "")
     model = body.get("model", "nai-diffusion-4-5-full")
@@ -2507,6 +2693,8 @@ async def handle_vibe_transfer(request: Request) -> Response:
         params.setdefault("skip_cfg_above_sigma", None)
         params.setdefault("characterPrompts", [])
 
+    _apply_custom_params(body, params, nai_model)
+
     accept_format = "json" if response_format == "nai_json" else "zip"
 
     # V5 每日限额预检
@@ -2587,6 +2775,7 @@ async def handle_character_reference(request: Request) -> Response:
     也支持直接传 v4_prompt / v4_negative_prompt 进行高级控制。
     """
     body = await request.json()
+    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
 
     prompt = body.get("prompt", "")
     model = body.get("model", "nai-diffusion-4-5-full")
@@ -2738,6 +2927,8 @@ async def handle_character_reference(request: Request) -> Response:
         params.setdefault("skip_cfg_above_sigma", None)
         params.setdefault("characterPrompts", [])
 
+    _apply_custom_params(body, params, nai_model)
+
     accept_format = "json" if response_format == "nai_json" else "zip"
 
     # V5 每日限额预检
@@ -2812,6 +3003,7 @@ async def handle_precise_reference(request: Request) -> Response:
         }
     """
     body = await request.json()
+    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
 
     prompt = body.get("prompt", "")
     model = body.get("model", "nai-diffusion-4-5-full")
@@ -2944,6 +3136,8 @@ async def handle_precise_reference(request: Request) -> Response:
         "action": "generate",
         "parameters": params,
     }
+
+    _apply_custom_params(body, params, nai_model)
 
     accept_format = "json" if response_format == "nai_json" else "zip"
 
