@@ -261,7 +261,7 @@ V4/V4.5 模型所需的 `v4_prompt`、`v4_negative_prompt` 等结构由网关自
 | `ucPreset` | integer | `0` | UC 预设（旧式字段），可覆盖 |
 | `qualityToggle` | boolean | `true` | 质量标签开关（旧式字段），可覆盖 |
 
-透明背景用法：请求带 `"transparent_background": true`，提示词配合 `transparent background, has alpha` 等标签效果更稳。返回 PNG 保留 alpha 通道（网关仅对不透明图做白底压平，实质透明的图原样透传）。
+透明背景用法：请求带 `"transparent_background": true` 即可——**网关会自动把 `transparent background, has alpha` 标签补进提示词**（NAI V5 的透明由提示词标签驱动，参数本身只是 pass-through hint；提示词已含透明相关标签时不重复添加）。手动在提示词里写标签（不传参数）同样有效。返回 PNG 保留 alpha 通道（网关仅对不透明图做白底压平，实质透明的图原样透传）。
 
 **全量透传**：除网关协议保留字段外，body 顶层与 `extra_params` 中的任意字段都会透传进上游 `parameters`——无需逐个等网关支持（如官方 spec 中的 `color_correct`、未来 V5.x 新增参数）。两种写法等价：
 
