@@ -494,49 +494,5 @@ class HandlerIntegrationTests(unittest.TestCase):
         self.assertIs(self._last_params()["color_correct"], True)
 
 
-class TransparencyTagTests(unittest.TestCase):
-    """transparent_background 开启时自动补提示词透明标签（仅 V5）。"""
-
-    def test_auto_tags_appended_on_v5(self) -> None:
-        body = {"model": "nai-v5-full-limit", "prompt": "1girl, solo",
-                "transparent_background": True}
-        _absorb_extra_params(body)
-        self.assertTrue(body["prompt"].endswith(", transparent background, has alpha"))
-
-    def test_auto_tags_via_extra_params_channel(self) -> None:
-        body = {"model": "nai-diffusion-5-full", "prompt": "1girl",
-                "extra_params": {"transparent_background": True}}
-        _absorb_extra_params(body)
-        self.assertTrue(body["prompt"].endswith(", transparent background, has alpha"))
-
-    def test_no_duplicate_when_prompt_has_tags(self) -> None:
-        body = {"model": "nai-v5-full", "prompt": "1girl, TRANSPARENT background"}
-        _absorb_extra_params(body)
-        self.assertEqual(body["prompt"], "1girl, TRANSPARENT background")
-
-    def test_no_tags_for_non_v5(self) -> None:
-        body = {"model": "nai-v4.5-full", "prompt": "1girl, solo"}
-        _absorb_extra_params(body)
-        self.assertEqual(body["prompt"], "1girl, solo")
-
-    def test_no_tags_when_switch_off(self) -> None:
-        body = {"model": "nai-v5-full", "prompt": "1girl, solo"}
-        _absorb_extra_params(body)
-        self.assertEqual(body["prompt"], "1girl, solo")
-
-    def test_tags_reach_upstream_input_and_v4_prompt(self) -> None:
-        body = {"model": "nai-diffusion-5-full", "prompt": "1girl, solo", "transparent_background": True}
-        _absorb_extra_params(body)
-        nai_payload, _, _ = _build_generation_payload(body)
-        self.assertIn("transparent background", nai_payload["input"])
-        caption = nai_payload["parameters"]["v4_prompt"]["caption"]["base_caption"]
-        self.assertIn("transparent background", caption)
-
-    def test_nai_sdk_input_key_also_supported(self) -> None:
-        body = {"model": "nai-v5-full", "input": "1girl, solo", "transparent_background": True}
-        _absorb_extra_params(body)
-        self.assertTrue(body["input"].endswith(", transparent background, has alpha"))
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -200,34 +200,6 @@ def _validate_critical_override(key: str, value: Any) -> Any:
     return value
 
 
-_TRANSPARENCY_TAGS = ", transparent background, has alpha"
-
-
-def _looks_v5_model_id(model: str | None) -> bool:
-    """按公开模型 ID 粗判 V5（registry 解析前使用，nai-v5-* / nai-diffusion-5-*）。"""
-    m = str(model or "").lower()
-    return "v5" in m or "diffusion-5" in m
-
-
-def _auto_transparency_tags(body: dict[str, Any]) -> None:
-    """transparent_background 开启时自动补透明标签（仅 V5）。
-
-    NAI V5 的透明背景由提示词标签驱动；tag_hint_transparent_background 只是
-    pass-through hint（官方 spec 原文 "the prompt is asking for a transparent
-    background"），单独传参数不出透明图。网关在开关打开时自动把标签补进
-    prompt（prompt/input 均兼容），提示词已有透明相关标签时不重复添加。
-    """
-    if not _looks_v5_model_id(body.get("model")):
-        return
-    on = bool(body.get("transparent_background") or body.get("tag_hint_transparent_background"))
-    if not on:
-        return
-    for key in ("prompt", "input"):
-        value = body.get(key)
-        if isinstance(value, str) and value and "transparent" not in value.lower():
-            body[key] = value + _TRANSPARENCY_TAGS
-
-
 def _absorb_extra_params(body: dict[str, Any], extra_params_json: str | None = None) -> None:
     """将 extra_params 对象与 X-NovelAI-Extra-Params header 合并进 body 顶层。
 
@@ -257,8 +229,6 @@ def _absorb_extra_params(body: dict[str, Any], extra_params_json: str | None = N
         sources.append(header_extra)
 
     if not sources:
-        # 没有 extra_params 也要跑透明标签的隐式配合（transparent_background 可为顶层字段）
-        _auto_transparency_tags(body)
         return
 
     merged: dict[str, Any] = {}
@@ -277,9 +247,6 @@ def _absorb_extra_params(body: dict[str, Any], extra_params_json: str | None = N
             merged[key] = _validate_critical_override(key, value)
 
     body.update(merged)
-
-    # 一等公民开关的隐式配合：透明背景自动补提示词标签
-    _auto_transparency_tags(body)
 
 
 def _apply_custom_params(body: dict[str, Any], params: dict[str, Any], nai_model: str) -> None:
