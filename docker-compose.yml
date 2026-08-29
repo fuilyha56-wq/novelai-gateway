@@ -11,6 +11,8 @@ services:
     volumes:
       # 配置文件（首次部署需从 .example 复制）
       - ./config:/app/config
+      # 代码直接挂载宿主机仓库（部署 = git pull + restart；docker cp 会在容器重建时丢失）
+      - ./src:/app/src
       # 生成的图片持久化
       - ./images:/app/images
       # 日志持久化
