@@ -1,8 +1,10 @@
-"""两档计费单测：Opus 免费额度档位判定、档位价格、usage 注入。
+"""两档计费单测：Opus 免费额度档位判定、档内固定价、usage 注入。
 
--limit 模型合并进完整版模型的两档计费：
-- 档内（Opus 免费额度边界内）→ 档内价（V4.5=0 / V5=8）
-- 档外（超边界或付费操作）→ 完整版原价（V4.5=200 / V5=520）
+-limit 模型的固定价并入完整版模型的两档计费：
+- 档内（Opus 免费额度边界内）→ usage = 档内固定价（V4.5=0 / V5=8），
+  NewAPI 侧 tier("limit", ...) 分支 1:1 落账；
+- 档外（超边界或付费操作）→ usage = None，沿用 Anlas 动态换算旧口径，
+  NewAPI 按 tier("full", p * 130000 / p * 100000) 动态计费。
 """
 
 import base64
@@ -58,18 +60,18 @@ def _raw_png_b64() -> str:
 
 
 class TieredBillingUnitsTests(unittest.TestCase):
-    """模型 → (档内价, 档外价) 映射，接受上游名与网关名。"""
+    """模型 → 档内固定价，接受上游名与网关名。"""
 
     def test_v5_family(self) -> None:
-        self.assertEqual(_tiered_billing_units("nai-diffusion-5-full"), (8, 520))
-        self.assertEqual(_tiered_billing_units("nai-diffusion-5-full-inpainting"), (8, 520))
-        self.assertEqual(_tiered_billing_units("nai-v5-full"), (8, 520))
-        self.assertEqual(_tiered_billing_units("nai-v5-inpaint"), (8, 520))
+        self.assertEqual(_tiered_billing_units("nai-diffusion-5-full"), 8)
+        self.assertEqual(_tiered_billing_units("nai-diffusion-5-full-inpainting"), 8)
+        self.assertEqual(_tiered_billing_units("nai-v5-full"), 8)
+        self.assertEqual(_tiered_billing_units("nai-v5-inpaint"), 8)
 
     def test_v45_family(self) -> None:
-        self.assertEqual(_tiered_billing_units("nai-diffusion-4-5-full"), (0, 200))
-        self.assertEqual(_tiered_billing_units("nai-diffusion-4-5-full-inpainting"), (0, 200))
-        self.assertEqual(_tiered_billing_units("nai-v4.5-curated"), (0, 200))
+        self.assertEqual(_tiered_billing_units("nai-diffusion-4-5-full"), 0)
+        self.assertEqual(_tiered_billing_units("nai-diffusion-4-5-full-inpainting"), 0)
+        self.assertEqual(_tiered_billing_units("nai-v4.5-curated"), 0)
 
     def test_other_models_excluded(self) -> None:
         self.assertIsNone(_tiered_billing_units("nai-diffusion-4-curated-preview"))
@@ -131,21 +133,21 @@ class OpusFreeEnvelopeTests(unittest.TestCase):
 
 
 class BillingPromptTokensTests(unittest.TestCase):
-    """档位价取值：档内价 / 档外价 / 不参与两档计费的模型。"""
+    """档内固定价 / 档外回落动态口径 / 不参与两档计费的模型。"""
 
     def test_v5_in_envelope_is_8(self) -> None:
         self.assertEqual(_billing_prompt_tokens("nai-diffusion-5-full", {"steps": 28}), 8)
 
-    def test_v5_out_of_envelope_is_520(self) -> None:
-        self.assertEqual(_billing_prompt_tokens("nai-diffusion-5-full", {"steps": 50}), 520)
-        self.assertEqual(_billing_prompt_tokens("nai-v5-full", None), 520)
+    def test_v5_out_of_envelope_falls_back_to_legacy(self) -> None:
+        self.assertIsNone(_billing_prompt_tokens("nai-diffusion-5-full", {"steps": 50}))
+        self.assertIsNone(_billing_prompt_tokens("nai-v5-full", None))
 
     def test_v45_in_envelope_is_0(self) -> None:
         self.assertEqual(_billing_prompt_tokens("nai-diffusion-4-5-full", {}), 0)
 
-    def test_v45_out_of_envelope_is_200(self) -> None:
-        self.assertEqual(_billing_prompt_tokens("nai-diffusion-4-5-full", {"size": "1536x1024"}), 200)
-        self.assertEqual(_billing_prompt_tokens("nai-v4.5-full", None), 200)
+    def test_v45_out_of_envelope_falls_back_to_legacy(self) -> None:
+        self.assertIsNone(_billing_prompt_tokens("nai-diffusion-4-5-full", {"size": "1536x1024"}))
+        self.assertIsNone(_billing_prompt_tokens("nai-v4.5-full", None))
 
     def test_other_models_return_none(self) -> None:
         self.assertIsNone(_billing_prompt_tokens("nai-diffusion-3", {}))
@@ -156,7 +158,7 @@ class BillingPromptTokensTests(unittest.TestCase):
 
 
 class ResponseUsageInjectionTests(unittest.TestCase):
-    """响应 usage 注入：两档计费优先，否则沿用 Anlas 换算旧口径。"""
+    """响应 usage 注入：档内固定价优先，档外沿用 Anlas 换算旧口径。"""
 
     def _usage_of(self, **kwargs) -> dict:
         response = _build_image_response_v2(
@@ -164,7 +166,7 @@ class ResponseUsageInjectionTests(unittest.TestCase):
         )
         return json.loads(response.body)["usage"]
 
-    def test_billing_units_override_usage(self) -> None:
+    def test_limit_tier_usage_is_8_for_v5(self) -> None:
         usage = self._usage_of(anlas_cost=17, billing_prompt_tokens=8)
         self.assertEqual(usage["prompt_tokens"], 8)
         self.assertEqual(usage["total_tokens"], 8)
@@ -184,9 +186,9 @@ class ResponseUsageInjectionTests(unittest.TestCase):
 
     def test_png_response_billing_override(self) -> None:
         response = _build_png_image_response(
-            _png_bytes("red"), "test", anlas_cost=5, billing_prompt_tokens=520
+            _png_bytes("red"), "test", anlas_cost=5, billing_prompt_tokens=8
         )
-        self.assertEqual(json.loads(response.body)["usage"]["prompt_tokens"], 520)
+        self.assertEqual(json.loads(response.body)["usage"]["prompt_tokens"], 8)
 
     def test_png_response_legacy(self) -> None:
         response = _build_png_image_response(_png_bytes("red"), "test", anlas_cost=5)

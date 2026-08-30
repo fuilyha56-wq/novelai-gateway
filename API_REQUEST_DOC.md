@@ -363,7 +363,7 @@ Authorization: Bearer <GATEWAY_PASSWORD>
 }
 ```
 
-2026-08-30 起完整版 V4.5/V5 模型采用**两档计费**：网关按 Opus 免费额度边界判档，把档位价格直接写入 `usage.prompt_tokens`（V4.5 档内 0 / 档外 200，V5 档内 8 / 档外 520，与 NewAPI ModelPrice 同单位），NewAPI 用 `tier("limit", p * 1000000)` 把该值 1:1 映射为按次扣费。档内/档外边界与 `-limit` 模型限制一致（见第 2 节），规则明细见 `TIERED_PRICING.md`。
+2026-08-30 起完整版 V4.5/V5 模型采用**两档计费**：网关按 Opus 免费额度边界判档——档内把固定档内价写入 `usage.prompt_tokens`（V4.5 = 0 / V5 = 8，即原 `-limit` 价），NewAPI 表达式 `p < 100` 分支 1:1 落账；档外不改写 usage，按 Anlas 换算的动态 token 计费（V5 = p × 130000、V4.5 = p × 100000）。档内/档外边界与 `-limit` 模型限制一致（见第 2 节），规则明细见 `TIERED_PRICING.md`。
 
 `-limit` 模型与其他模型的 `usage` 按 Anlas 换算返回观测值（`prompt_tokens = max(1, round(Anlas/20*1000))`，V5 ×2），例如普通 `512x512`、28 steps 文生图为 5 Anlas，即 250 tokens；Director 去背景为 65 Anlas，即 3250 tokens。
 
@@ -717,8 +717,8 @@ $$
 
 | operation 类别 | Gateway 返回的 `usage.prompt_tokens` | NewAPI 计费是否保持有效 |
 |---|---:|---|
-| 文生图、图生图、两种重绘、Vibe、Character Reference、Precise Reference | 完整版 V4.5/V5：档位价（档内 0/8，档外 200/520）；`-limit` 及其他模型：按现有 Anlas 公式 | 是；完整版用 `tier("limit", p * 1000000)`，其余按 response `usage` 观测 |
-| 六个 Director Tools | 完整版 V4.5/V5：档外价（200/520）；其他模型：固定 5 或 65 Anlas 的 token 映射 | 是 |
+| 文生图、图生图、两种重绘、Vibe、Character Reference、Precise Reference | 完整版 V4.5/V5：档内固定价（0/8）或动态 Anlas token（档外）；`-limit` 及其他模型：按现有 Anlas 公式 | 是；完整版用 `p < 100 ? tier("limit", ...) : tier("full", ...)` 两档表达式 |
+| 六个 Director Tools | 动态 Anlas token（档外口径） | 是 |
 | `upscale` | 不返回 | 不适用；统一入口会拒绝，避免 0 token 漏计费 |
 | `annotate` | 不返回 | 不适用；统一入口会拒绝，避免 0 token 漏计费 |
 
@@ -992,7 +992,7 @@ Header 值优先级高于 body。
 
 ### 13.1 网关侧 Anlas 映射
 
-生成类 JSON 响应会包含 `usage.prompt_tokens`。**完整版 V4.5/V5 模型（两档计费）**：该值即档位价格（V4.5 档内 0 / 档外 200，V5 档内 8 / 档外 520），由网关按 Opus 免费额度边界判档写入，NewAPI 用 `tier("limit", p * 1000000)` 1:1 落账（见 `TIERED_PRICING.md`）。
+生成类 JSON 响应会包含 `usage.prompt_tokens`。**完整版 V4.5/V5 模型（两档计费）**：档内该值为固定档内价（V4.5 = 0 / V5 = 8），档外为 Anlas 换算的动态 token；NewAPI 用 `p < 100 ? tier("limit", ...) : tier("full", ...)` 两档表达式落账（见 `TIERED_PRICING.md`）。
 
 其余模型与 `-limit` 模型的 `usage` 仅为观测值，映射为（V5 销售价 = 上游 Anlas × 2）：
 
@@ -1008,7 +1008,7 @@ Header 值优先级高于 body。
 
 `-limit` 模型按次计费（NewAPI `ModelPrice`），`usage` 按上表观测口径返回。
 
-直连 Director Tools 返回 `X-Anlas-Cost` 与 `X-Prompt-Tokens` 响应头；经统一图片入口调用时，完整版 V4.5/V5 的标准 `usage` 写档外价，其他模型写入相同 Anlas 成本：
+直连 Director Tools 返回 `X-Anlas-Cost` 与 `X-Prompt-Tokens` 响应头；经统一图片入口调用时，标准 `usage` 写入相同 Anlas 成本（档外动态口径）：
 
 ```http
 X-Anlas-Cost: 5
@@ -1019,17 +1019,18 @@ X-Prompt-Tokens: 250
 
 ### 13.2 tiered_expr 示例
 
-完整版 V4.5/V5 模型在 NewAPI 配置（`p` 即档位按次价格）：
+完整版 V4.5/V5 模型在 NewAPI 配置（`p` 为网关 usage tokens；档内 0/1/8 走固定价分支，动态档恒 ≥ 250）：
 
 ```text
-tier("limit", p * 1000000)
+V5:   p < 100 ? tier("limit", p * 1000000) : tier("full", p * 130000)
+V4.5: p < 100 ? tier("limit", p * 0)        : tier("full", p * 100000)
 ```
 
-实际金额取决于 NewAPI 的 QuotaPerUnit 与分组倍率；此表达式仅说明网关返回 `usage` 的用途。
+实际金额取决于 NewAPI 的 QuotaPerUnit 与分组倍率；分支必须经 tier() 返回浮点表达式，不能写整数字面量（结算时会因 int→float64 断言失败回退预扣额度）。
 
 ### 13.3 条件计价建议
 
-完整版模型的档位判定（判档所需的 `n`/`n_samples`、steps、尺寸、参考图等因素）全部在网关完成，结果直接体现为 `usage.prompt_tokens` 的档位价；NewAPI 不应再根据请求参数乘倍率，否则会重复收费。
+完整版模型的档位判定（判档所需的 `n`/`n_samples`、steps、尺寸、参考图等因素）全部在网关完成，结果直接体现为 `usage.prompt_tokens`（档内固定价或动态 token）；NewAPI 不应再根据请求参数乘倍率，否则会重复收费。
 
 Director Tools 经统一入口调用时也会把固定成本写入 `usage`。`upscale`、`annotate` 不允许通过统一入口调用，需要在专用端点单独配置可审计价格。不要将 Chat/TTS 与图像 Anlas 规则混用；当前默认配置下这两个能力为禁用状态。
 

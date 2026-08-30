@@ -971,37 +971,41 @@ def _anlas_to_tokens(anlas: int) -> int:
     return max(1, round(anlas / _BASE_ANLAS * _BASE_TOKENS))
 
 
-# ── 两档计费（-limit 模型已并入完整版模型）─────────────────────
-# 档内 = Opus 免费额度边界内（_in_opus_free_envelope）；档外 = 超出边界或付费操作。
-# 数值与 NewAPI ModelPrice 同单位；NewAPI 侧对 6 个完整版模型配置
-# tier("limit", p * 1000000) 把该值 1:1 映射为按次扣费（见 TIERED_PRICING.md）。
-# 调价须与 NewAPI 沟通后同步修改此处。
-_BILLING_UNITS_V45 = (0, 200)
-_BILLING_UNITS_V5 = (8, 520)
+# ── 两档计费（-limit 模型已并入完整版模型的档内定价）───────────
+# 档内 = Opus 免费额度边界内（_in_opus_free_envelope）→ 固定档内价（即原 -limit 价）；
+# 档外 = 超出边界或付费操作 → 不改写 usage，沿用 Anlas 动态换算旧口径，
+#        由 NewAPI 按 token 动态计费（V5: p * 130000 / V4.5: p * 100000，见 TIERED_PRICING.md）。
+# NewAPI 侧表达式形如 p < 100 ? tier("limit", p * 1000000) : tier("full", p * 130000)，
+# 其中 p < 100 的分支承载档内固定价（档内 usage 即价格单位；动态档 usage 恒 ≥ 250）。
+# 调价须与 NewAPI 表达式同步修改。
+_BILLING_LIMIT_UNITS_V45 = 0  # V4.5 档内免费（= 原 nai-v4.5-*-limit 价格）
+_BILLING_LIMIT_UNITS_V5 = 8   # V5 档内固定价（= 原 nai-v5-*-limit 价格）
 
 
-def _tiered_billing_units(model_name: str) -> tuple[int, int] | None:
-    """按上游模型名或网关模型名返回 (档内价, 档外价)；不参与两档计费返回 None。"""
+def _tiered_billing_units(model_name: str) -> int | None:
+    """按上游模型名或网关模型名返回档内固定价；不参与两档计费返回 None。"""
     if "diffusion-5" in model_name or "nai-v5" in model_name:
-        return _BILLING_UNITS_V5
+        return _BILLING_LIMIT_UNITS_V5
     if "diffusion-4-5" in model_name or "nai-v4.5" in model_name:
-        return _BILLING_UNITS_V45
+        return _BILLING_LIMIT_UNITS_V45
     return None
 
 
 def _billing_prompt_tokens(model_name: str, body: dict[str, Any] | None = None) -> int | None:
-    """两档计费下写入响应 usage.prompt_tokens 的值（与 ModelPrice 同单位）。
+    """两档计费下写入响应 usage.prompt_tokens 的值。
 
-    body 非 None 时按 Opus 免费额度边界判档；body 为 None 表示工具端点等
-    必然超出免费额度的路径，直接取档外价。不参与两档计费的模型返回 None，
-    调用方沿用 Anlas 换算的旧口径。
+    body 非 None 且请求落在 Opus 免费额度档内 → 返回档内固定价
+    （NewAPI 侧 tier("limit", ...) 分支 1:1 落账）。
+    档外（超出边界、付费工具端点、body=None）→ 返回 None，调用方沿用
+    Anlas 动态换算的旧口径，NewAPI 按 tier("full", p * 系数) 动态计费。
+    不参与两档计费的模型（V3/V4 等）恒返回 None。
     """
     units = _tiered_billing_units(model_name)
     if units is None:
         return None
     if body is not None and _in_opus_free_envelope(body):
-        return units[0]
-    return units[1]
+        return units
+    return None
 
 
 def _build_image_response_v2(
@@ -3668,7 +3672,7 @@ async def _dispatch_image_operation(
     handler, anlas_cost = png_handler_info
     binary_response = await handler(request_copy)
     png_data = binary_response.body
-    # 工具端点必然超出 Opus 免费额度，两档计费下取档外价（body=None）
+    # 工具端点必然超出 Opus 免费额度（body=None → 档外）→ None → 沿用 Anlas 动态口径
     return _build_png_image_response(
         png_data=png_data,
         prompt=str(body.get("prompt", "")),
