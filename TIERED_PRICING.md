@@ -1,9 +1,9 @@
 # NovelAI Gateway 动态计费配置
 
-> 本文只描述当前代码实际返回的计费数据。旧版“固定 1 token/次 + 请求参数倍率”方案已经废弃，不应再使用。
+> 本文只描述当前代码实际返回的计费数据。
 >
-> **2026-08-30 起 NewAPI 侧计费方式已变更**：全部 NAI 模型改为**按次计费（ModelPrice × 分组倍率）**，
-> 不再使用 tiered_expr 按 usage token 计费。网关返回的 usage 仍保留（仅供观测），不参与计费。
+> **2026-08-30（第二次调整）**：6 个完整版 V4.5/V5 模型改为**两档计费**——请求落在 Opus 免费额度档内按档内价（即原 `-limit` 价），超出档按完整版原价。`-limit` 模型保留不变。
+> **2026-08-30（第一次调整）**：全部 NAI 模型改按次计费（ModelPrice × 分组倍率），废弃 `tier("base", p * 4800)` 旧表达式。
 > 旧配置备份在 new-api 数据库 `options_backup_20260830` 表。
 
 ## 1. 计费数据来源
@@ -13,70 +13,75 @@
 ```json
 {
   "usage": {
-    "prompt_tokens": 1000,
+    "prompt_tokens": 8,
     "completion_tokens": 0,
-    "total_tokens": 1000
+    "total_tokens": 8
   }
 }
 ```
 
-`prompt_tokens` 由网关先估算本次 NovelAI Anlas，再按下式换算：
+- **完整版 V4.5/V5 模型（两档计费）**：`prompt_tokens` = 档位价格（与 ModelPrice 同单位），由网关按 Opus 免费额度边界判档后直接写入（`src/proxy/openai.py` 的 `_billing_prompt_tokens`）。NewAPI 表达式 `tier("limit", p * 1000000)` 把该值 1:1 映射为按次扣费。
+- **`-limit` 模型**：按次 ModelPrice，不读 usage；usage 按 Anlas 换算仅供观测（`prompt_tokens = max(1, round(Anlas/20*1000))`，V5 销售价 ×2）。
+- 其他模型（V3/V4 等）：沿用 Anlas 换算，仅供观测。
 
-```text
-prompt_tokens = max(1, round(Anlas / 20 * 1000))
-```
+## 2. NewAPI 配置
 
-V4/V4.5 的 Anlas 即上游实际消耗；**V5 非 `-limit` 模型按销售定价 = V4.5 × 2**，网关在估算时已对最终 Anlas（含参考图附加费）整体乘 2，再套用上式换算 token（如 V5 base case = 40 销售 Anlas → 2000 token）。V5 `-limit` 模型走固定价（见第 3 节），不参与动态换算。
+### 2.1 完整版模型两档计费（tiered_expr）
 
-因此 ~~NewAPI 必须按照响应中的 usage 动态计费~~（**2026-08-30 起已改为按次计费，usage 不再参与计费**），不能依据 `size`、`steps`、`n` 等原始请求字段重复乘倍率，否则会二次加价。
+options 表两个键：
 
-## 2. NewAPI 配置（按次计费，2026-08-30 起）
+- `billing_setting.billing_mode`：6 个完整版模型 → `"tiered_expr"`
+- `billing_setting.billing_expr`：6 个完整版模型 → `tier("limit", p * 1000000)`
 
-全部 NAI 模型在 new-api 的 `ModelPrice`（按次，美元）中定价，计费 = ModelPrice × 分组倍率（GroupRatio）：
+换算：`quota = p × 1000000 / 1,000,000 × QuotaPerUnit × 分组倍率 = p × QuotaPerUnit × 分组倍率`，即 p 就是按次价格，与 ModelPrice 计费完全同构。
+
+档位价格（网关 `openai.py` 的 `_BILLING_UNITS_V45` / `_BILLING_UNITS_V5` 常量，调价须同步修改）：
+
+| 模型 | 档内（Opus 免费额度内） | 档外 |
+|---|---:|---:|
+| `nai-v4.5-full` / `nai-v4.5-curated` / `nai-v4.5-inpaint` | 0（免费） | 200 |
+| `nai-v5-full` / `nai-v5-curated` / `nai-v5-inpaint` | 8 | 520 |
+
+### 2.2 `-limit` 模型（按次，未变）
 
 | 模型 | 按次价格 |
 |---|---:|
-| `nai-v4.5-full` / `nai-v4.5-curated` / `nai-v4.5-inpaint` | $200 |
-| `nai-v5-full` / `nai-v5-curated` / `nai-v5-inpaint` | $520 |
 | `nai-v4.5-*-limit` | $0（免费） |
 | `nai-v5-*-limit` | $8 |
 
-价格锚点：V4.5 基准（832×1216 或 1024²、28 步、1 张）改前实扣 $200；V5 基准改前实扣 $520（上游销售 Anlas ×2 后按旧系数换算）。
-**注意与旧动态计费的差异**：小尺寸不再便宜（512² 由 V4.5 $50 / V5 $130 统一变为 $200 / $520），
-大尺寸不再加价（V5 1536×1024 由 $780 变为 $520）。`tiered_expr` 中 nai 条目已全部移除（GLM/Kimi 不受影响）。
+## 3. 档内 / 档外判定（Opus 免费额度边界）
 
-调价只需在 new-api 控制台「模型价格」里改对应条目，或改 `options` 表 `ModelPrice` 后重启 new-api。
+与 `-limit` 模型的硬限制同一套边界（网关 `_in_opus_free_envelope`），但**不拒绝请求，只影响价格**。档内需同时满足：
 
-### 历史方案（已被按次计费取代）
+- n_samples（n）= 1
+- steps ≤ 28
+- width×height ≤ 1024×1024（1048576 像素）
+- service_tier ≠ priority
+- 无 Precise Reference（`references`，每样本必扣 5 Anlas）
+- 参考图（`reference_image(s)` 及 `characters[].reference_image`）全部为**已编码 vibe**（原始图片要先编码、必扣费 → 档外）
+- action ∈ generate / img2img / infill；generate 不得携带 image（img2img / infill 携带 image 不影响）
+- upscale / Director 等工具端点一律档外
 
-网关仍按下列公式在响应 usage 中返回 token（仅供观测，不参与计费）：
+任一不满足 → 档外：请求照常执行并出图，按完整版原价计费。
 
-```text
-prompt_tokens = max(1, round(Anlas / 20 * 1000))
-```
+## 4. `-limit` 模型（保留）
 
-V4/V4.5 的 Anlas 即上游实际消耗；V5 非 `-limit` 模型按销售定价 = V4.5 × 2，网关在估算时已对最终 Anlas（含参考图附加费）整体乘 2，再套用上式换算 token（如 V5 base case = 40 销售 Anlas → 2000 token）。
+`-limit` 模型行为完全不变：档外请求直接 400 拒绝，价格走按次 ModelPrice。网关仍限制张数、步数、画面面积、参考图和 priority 等参数。该限制只能降低意外消耗风险，不能替代对 NovelAI 实际余额和上游规则变化的监控。V5 全部模型（含 `-limit`）还受网关侧每日/滚动周双限额约束（限额值以服务器 `.env` 的 `V5_DAILY_LIMIT` / `V5_WEEKLY_LIMIT` 为准）。
 
-## 3. `-limit` 模型
+两档计费上线后，完整版档内价与 `-limit` 价相同（V4.5 免费 / V5 $8），两者区别只剩：**完整版超界照常出图按原价计费，`-limit` 超界直接拒绝**。
 
-`-limit` 是 Opus 免费额度保护别名，不使用动态 Anlas 销售价，走固定按次价格（ModelPrice × 分组倍率）。
+## 5. 非标准图片操作
 
-- **V4.5 `-limit`：$0/张**（免费）
-- **V5 `-limit`：$8/次**（当前 new-api `ModelPrice` 实配值；早期文档写的 0.07 元/张已不适用）
+通过 `/v1/images/generations` 加 `novelai_operation` 调用的 Director 等操作，在两档计费下按完整版**档外价**计费（与按次计费时代的实收一致）。`upscale` 与 `annotate` 尚无经过验证的动态成本映射，因此统一入口会拒绝这两种操作；需要使用专用 Gateway 端点并在下游单独定价。
 
-网关会限制张数、步数、画面面积、参考图和 priority 等参数。该限制只能降低意外消耗风险，不能替代对 NovelAI 实际余额和上游规则变化的监控。V5 全部模型（含 `-limit`）还受网关侧每日/滚动周双限额约束（限额值以服务器 `.env` 的 `V5_DAILY_LIMIT` / `V5_WEEKLY_LIMIT` 为准）。
+## 6. 验证
 
-## 4. 非标准图片操作
+每次修改计费配置后，至少验证以下请求并检查响应 `usage` 与 NewAPI 账单：
 
-通过 `/v1/images/generations` 加 `novelai_operation` 调用的 Director 等操作，会由网关在响应 `usage` 中写入对应成本。`upscale` 与 `annotate` 尚无经过验证的动态成本映射，因此统一入口会拒绝这两种操作；需要使用专用 Gateway 端点并在下游单独定价。
-
-## 5. 验证
-
-每次修改 NewAPI 定价后，至少验证以下请求并检查响应 `usage` 与 NewAPI 账单：
-
-1. 512×512、28 steps、1 张。
-2. 1024×1024、50 steps、1 张。
-3. 1024×1024、28 steps、2 张，并确认响应 `data` 中确实有两张图。
-4. 一个 Precise Reference 或 Vibe Transfer 请求。
+1. 完整版 V4.5 档内（1024²、28 steps、1 张）→ 账单 0；完整版 V5 档内同参数 → 账单 8。
+2. 完整版 V5 档外：steps=50 / 1536×1024 / n=2 / priority 各一发 → 各 520。
+3. `-limit` 回归：V4.5 `-limit` 档内 → 0；V5 `-limit` 档内 → 8；V5 `-limit` steps=50 → 400 拒绝。
+4. 一个已编码 vibe 参考图请求 → 档内价；一个原始图片参考图请求 → 档外价。
+5. 一个 `novelai_operation` Director 请求 → 档外价。
 
 不要以本文示例代替真实上游扣费审计。NovelAI 可能调整私有接口和计费规则；生产环境应定期用测试账户对比请求前后的实际 Anlas 余额。

@@ -506,6 +506,56 @@ def _enforce_limit_model_for_encoded_vibe(
     # 复用 Opus 免费额度边界校验（n=1 / steps≤28 / ≤1024² / 非 priority）
     _enforce_limit_model(model, body)
 
+
+def _in_opus_free_envelope(body: dict[str, Any], action: str | None = None) -> bool:
+    """判断请求是否落在 Opus 免费额度档内（两档计费的档位判定）。
+
+    边界与 ``_enforce_limit_model`` 完全一致，但超界不抛异常而是返回 False：
+    非 -limit 的 V4.5/V5 模型按两档计费，档内按档内价、档外按完整版原价。
+    img2img / inpainting 等入口的 action 不在 body 里，用 action 参数显式传入。
+
+    Args:
+        body: 已吸收 extra_params 与 Header 覆盖的请求体
+        action: 显式 action；None 时读 body.action（默认 generate）
+
+    Returns:
+        True = 档内（Opus 免费额度可覆盖）；False = 档外
+    """
+    if action is None:
+        action = body.get("action", "generate")
+    # 参考图：仅已编码 vibe（复用不计编码费）可留在档内
+    for key in ("reference_image", "reference_images"):
+        value = body.get(key)
+        if not value:
+            continue
+        items = value if isinstance(value, list) else [value]
+        if not all(isinstance(item, str) and _is_encoded_vibe(item) for item in items):
+            return False
+        if len(items) > MAX_VIBE_REFERENCE_IMAGES:
+            return False
+    if body.get("references"):
+        return False
+    if action == "generate" and body.get("image"):
+        return False
+    if action not in {"generate", "img2img", "infill"}:
+        return False
+    n_samples = _safe_int(body.get("n_samples", body.get("n", 1)), 1)
+    if n_samples != 1:
+        return False
+    steps = _safe_int(body.get("steps", OPUS_FREE_MAX_STEPS), OPUS_FREE_MAX_STEPS)
+    if steps > OPUS_FREE_MAX_STEPS:
+        return False
+    size_str = body.get("size", "")
+    width, height = _parse_size(size_str, 1024, 1024)
+    width = _safe_int(body.get("width", width), width)
+    height = _safe_int(body.get("height", height), height)
+    if width * height > OPUS_FREE_MAX_PIXELS:
+        return False
+    if body.get("service_tier") == "priority":
+        return False
+    return True
+
+
 # NAI 请求头模板
 _NAI_HEADERS_TEMPLATE = {
     "Content-Type": "application/json",
@@ -921,6 +971,39 @@ def _anlas_to_tokens(anlas: int) -> int:
     return max(1, round(anlas / _BASE_ANLAS * _BASE_TOKENS))
 
 
+# ── 两档计费（-limit 模型已并入完整版模型）─────────────────────
+# 档内 = Opus 免费额度边界内（_in_opus_free_envelope）；档外 = 超出边界或付费操作。
+# 数值与 NewAPI ModelPrice 同单位；NewAPI 侧对 6 个完整版模型配置
+# tier("limit", p * 1000000) 把该值 1:1 映射为按次扣费（见 TIERED_PRICING.md）。
+# 调价须与 NewAPI 沟通后同步修改此处。
+_BILLING_UNITS_V45 = (0, 200)
+_BILLING_UNITS_V5 = (8, 520)
+
+
+def _tiered_billing_units(model_name: str) -> tuple[int, int] | None:
+    """按上游模型名或网关模型名返回 (档内价, 档外价)；不参与两档计费返回 None。"""
+    if "diffusion-5" in model_name or "nai-v5" in model_name:
+        return _BILLING_UNITS_V5
+    if "diffusion-4-5" in model_name or "nai-v4.5" in model_name:
+        return _BILLING_UNITS_V45
+    return None
+
+
+def _billing_prompt_tokens(model_name: str, body: dict[str, Any] | None = None) -> int | None:
+    """两档计费下写入响应 usage.prompt_tokens 的值（与 ModelPrice 同单位）。
+
+    body 非 None 时按 Opus 免费额度边界判档；body 为 None 表示工具端点等
+    必然超出免费额度的路径，直接取档外价。不参与两档计费的模型返回 None，
+    调用方沿用 Anlas 换算的旧口径。
+    """
+    units = _tiered_billing_units(model_name)
+    if units is None:
+        return None
+    if body is not None and _in_opus_free_envelope(body):
+        return units[0]
+    return units[1]
+
+
 def _build_image_response_v2(
     request: Request,
     content: bytes,
@@ -932,6 +1015,7 @@ def _build_image_response_v2(
     encoded_vibes: list[str] | None = None,
     reference_strengths: list[float] | None = None,
     reference_information_extracted: list[float] | None = None,
+    billing_prompt_tokens: int | None = None,
 ) -> Response:
     """
     统一图像响应构建，支持 4 种返回格式。
@@ -944,6 +1028,7 @@ def _build_image_response_v2(
 
     所有 JSON 响应都会附带 ``usage`` 字段，供 NewAPI tiered_expr 计费：
     - ``prompt_tokens`` = 根据 Anlas 消耗动态计算（base 17 Anlas → 1000 tokens → $4.8）
+    - ``billing_prompt_tokens`` 非空时直接作为 prompt_tokens（两档计费，见 TIERED_PRICING.md）
     - ``completion_tokens`` = 0
     - ``total_tokens`` = prompt_tokens
 
@@ -960,8 +1045,10 @@ def _build_image_response_v2(
     if not response_format or response_format == "auto":
         response_format = "b64_json"
 
-    # 根据 Anlas 消耗计算 prompt_tokens
-    if anlas_cost is not None and anlas_cost > 0:
+    # 根据 Anlas 消耗计算 prompt_tokens；两档计费模型直接取档位价
+    if billing_prompt_tokens is not None:
+        prompt_tokens = billing_prompt_tokens
+    elif anlas_cost is not None and anlas_cost > 0:
         prompt_tokens = _anlas_to_tokens(anlas_cost)
     else:
         prompt_tokens = _BASE_TOKENS
@@ -1048,12 +1135,16 @@ def _build_png_image_response(
     png_data: bytes,
     prompt: str,
     anlas_cost: int = 0,
+    billing_prompt_tokens: int | None = None,
 ) -> Response:
     """将工具端点的 PNG 结果包装为 OpenAI b64_json 图像响应。
 
     PNG 字节不会经过重新编码，因此 NovelAI 写入的图片元数据会随 Base64 一并保留。
     """
-    prompt_tokens = _anlas_to_tokens(anlas_cost) if anlas_cost > 0 else 0
+    if billing_prompt_tokens is not None:
+        prompt_tokens = billing_prompt_tokens
+    else:
+        prompt_tokens = _anlas_to_tokens(anlas_cost) if anlas_cost > 0 else 0
     result = {
         "created": int(time.time()),
         "data": [{
@@ -2109,6 +2200,7 @@ async def handle_openai_generations(request: Request) -> Response:
     return _build_image_response_v2(
         request, content, prompt, response_format,
         anlas_cost=anlas_cost,
+        billing_prompt_tokens=_billing_prompt_tokens(nai_model, body),
         encoded_vibes=encoded_vibes_for_response,
         reference_strengths=ref_strengths_for_response,
         reference_information_extracted=ref_infos_for_response,
@@ -2250,7 +2342,11 @@ async def handle_nai_inpainting(request: Request) -> Response:
     # V5 生成成功计数
     log_generation(nai_model, 1, params)
 
-    return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
+    return _build_image_response_v2(
+        request, content, prompt, response_format,
+        anlas_cost=anlas_cost,
+        billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "action": "infill"}),
+    )
 
 
 # ── /v1/images/edits (OpenAI 兼容格式) ────────────────────────
@@ -2446,7 +2542,11 @@ async def handle_openai_image_edits(request: Request) -> Response:
     # V5 生成成功计数
     log_generation(nai_model, 1, params)
 
-    return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
+    return _build_image_response_v2(
+        request, content, prompt, response_format,
+        anlas_cost=anlas_cost,
+        billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "action": "infill"}),
+    )
 
 
 # ── /v1/images/img2img ────────────────────────────────────────
@@ -2578,7 +2678,11 @@ async def handle_img2img(request: Request) -> Response:
     # V5 生成成功计数
     log_generation(nai_model, 1, params)
 
-    return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
+    return _build_image_response_v2(
+        request, content, prompt, response_format,
+        anlas_cost=anlas_cost,
+        billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "action": "img2img"}),
+    )
 
 
 # ── /v1/images/vibe-transfer ──────────────────────────────────
@@ -2727,6 +2831,7 @@ async def handle_vibe_transfer(request: Request) -> Response:
     return _build_image_response_v2(
         request, content, prompt, response_format,
         anlas_cost=anlas_cost,
+        billing_prompt_tokens=_billing_prompt_tokens(nai_model, body),
         encoded_vibes=encoded_vibes_for_response,
         reference_strengths=ref_strengths,
         reference_information_extracted=ref_infos,
@@ -2958,9 +3063,11 @@ async def handle_character_reference(request: Request) -> Response:
     # V5 生成成功计数
     log_generation(nai_model, 1, params)
 
+    # 参考图来自 characters[].reference_image，显式并入判档输入
     return _build_image_response_v2(
         request, content, prompt, response_format,
         anlas_cost=anlas_cost,
+        billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "reference_images": ref_images}),
         encoded_vibes=encoded_vibes_for_response,
         reference_strengths=ref_strengths,
         reference_information_extracted=ref_infos,
@@ -3168,7 +3275,12 @@ async def handle_precise_reference(request: Request) -> Response:
     # V5 生成成功计数
     log_generation(nai_model, 1, params)
 
-    return _build_image_response_v2(request, content, prompt, response_format, anlas_cost=anlas_cost)
+    # Precise Reference 每样本必扣 5 Anlas，必然档外
+    return _build_image_response_v2(
+        request, content, prompt, response_format,
+        anlas_cost=anlas_cost,
+        billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "references": ref_images}),
+    )
 
 
 # ── /v1/images/upscale ────────────────────────────────────────
@@ -3556,10 +3668,12 @@ async def _dispatch_image_operation(
     handler, anlas_cost = png_handler_info
     binary_response = await handler(request_copy)
     png_data = binary_response.body
+    # 工具端点必然超出 Opus 免费额度，两档计费下取档外价（body=None）
     return _build_png_image_response(
         png_data=png_data,
         prompt=str(body.get("prompt", "")),
         anlas_cost=anlas_cost,
+        billing_prompt_tokens=_billing_prompt_tokens(str(body.get("model", ""))),
     )
 
 

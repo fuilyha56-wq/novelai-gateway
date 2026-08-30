@@ -173,6 +173,8 @@ Authorization: Bearer <GATEWAY_PASSWORD>
 
 `-limit` 模型是禁止超出 Opus 免费额度的保护性别名，不是“仅文生图”模型。它支持单张、28 steps 以内、面积不超过 `1024x1024` 的文生图、图生图、局部重绘和 ControlNet 条件图生成；完整端点与模型对应关系见下表。会产生额外 Anlas 的参考图、放大或 Director 操作会被拒绝。
 
+> **完整版模型对照**：完整版（不带 `-limit` 后缀）不做上述硬限制，但按两档计费——满足同一边界时按档内价（与 `-limit` 价格相同），超出时照常出图并按完整版原价计费（见第 13 节）。
+
 | Gateway `-limit` 模型 | 支持的功能 | 可调用端点 | 不支持 |
 |---|---|---|---|
 | `nai-v5-full-limit` | 文生图、图生图、OpenAI/NAI 重绘、ControlNet 条件图生成 | `/v1/images/generations`、`/v1/images/img2img`、`/v1/images/inpainting`、`/v1/images/edits` | Vibe、Character/Precise Reference、upscale、Director Tools |
@@ -361,13 +363,9 @@ Authorization: Bearer <GATEWAY_PASSWORD>
 }
 ```
 
-NewAPI 必须按 Gateway 响应中的 `usage.prompt_tokens` 计费，不应按同一路径 `/v1/images/generations` 设固定单价。当前换算为：
+2026-08-30 起完整版 V4.5/V5 模型采用**两档计费**：网关按 Opus 免费额度边界判档，把档位价格直接写入 `usage.prompt_tokens`（V4.5 档内 0 / 档外 200，V5 档内 8 / 档外 520，与 NewAPI ModelPrice 同单位），NewAPI 用 `tier("limit", p * 1000000)` 把该值 1:1 映射为按次扣费。档内/档外边界与 `-limit` 模型限制一致（见第 2 节），规则明细见 `TIERED_PRICING.md`。
 
-$$
-\text{prompt\_tokens}=\max(1,\operatorname{round}(\frac{\text{Anlas}}{20}\times1000))
-$$
-
-例如：普通 `512x512`、28 steps 文生图为 5 Anlas，即 250 tokens；Director 去背景为 65 Anlas，即 3250 tokens。图生图、重绘、Vibe、Character Reference 和 Precise Reference 保留各自原有的动态 Anlas 计算，改用统一路径不会改变其计费结果。
+`-limit` 模型与其他模型的 `usage` 按 Anlas 换算返回观测值（`prompt_tokens = max(1, round(Anlas/20*1000))`，V5 ×2），例如普通 `512x512`、28 steps 文生图为 5 Anlas，即 250 tokens；Director 去背景为 65 Anlas，即 3250 tokens。
 
 `upscale` 和 `annotate` 目前没有已验证的 Gateway 成本映射。为避免它们在同一路径下被错误计为 0 token，统一入口会拒绝这两个 operation；请直连 `/v1/images/upscale` 或 `/v1/images/annotate`，直到配置了可审计的费用规则。
 
@@ -719,8 +717,8 @@ $$
 
 | operation 类别 | Gateway 返回的 `usage.prompt_tokens` | NewAPI 计费是否保持有效 |
 |---|---:|---|
-| 文生图、图生图、两种重绘、Vibe、Character Reference、Precise Reference | 按现有 Anlas 公式 | 是；NewAPI 应按 response `usage` 计费 |
-| 六个 Director Tools | 固定 5 或 65 Anlas 的 token 映射 | 是；例如 5 Anlas 返回 250 tokens，65 Anlas 返回 3250 tokens |
+| 文生图、图生图、两种重绘、Vibe、Character Reference、Precise Reference | 完整版 V4.5/V5：档位价（档内 0/8，档外 200/520）；`-limit` 及其他模型：按现有 Anlas 公式 | 是；完整版用 `tier("limit", p * 1000000)`，其余按 response `usage` 观测 |
+| 六个 Director Tools | 完整版 V4.5/V5：档外价（200/520）；其他模型：固定 5 或 65 Anlas 的 token 映射 | 是 |
 | `upscale` | 不返回 | 不适用；统一入口会拒绝，避免 0 token 漏计费 |
 | `annotate` | 不返回 | 不适用；统一入口会拒绝，避免 0 token 漏计费 |
 
@@ -994,13 +992,9 @@ Header 值优先级高于 body。
 
 ### 13.1 网关侧 Anlas 映射
 
-生成类 JSON 响应会包含 `usage.prompt_tokens`。当前映射为：
+生成类 JSON 响应会包含 `usage.prompt_tokens`。**完整版 V4.5/V5 模型（两档计费）**：该值即档位价格（V4.5 档内 0 / 档外 200，V5 档内 8 / 档外 520），由网关按 Opus 免费额度边界判档写入，NewAPI 用 `tier("limit", p * 1000000)` 1:1 落账（见 `TIERED_PRICING.md`）。
 
-$$
-\text{prompt\_tokens}=\max(1,\operatorname{round}(\frac{\text{Anlas}}{20}\times1000))
-$$
-
-**V5 非 limit 模型**的 Anlas 已是销售定价（V4.5 × 2），即先对最终 Anlas 整体乘 2 再代入上式：
+其余模型与 `-limit` 模型的 `usage` 仅为观测值，映射为（V5 销售价 = 上游 Anlas × 2）：
 
 | 请求 | 网关 Anlas | `prompt_tokens` |
 |---|---:|---:|
@@ -1012,9 +1006,9 @@ $$
 | **V5** 1024x1024、28 steps、单张文生图 | 40（销售价） | 2000 |
 | **V5** 1024x1024、50 steps、单张文生图 | 68（销售价） | 3400 |
 
-V5 `-limit` 模型走固定价（NewAPI `model_price = 0.07` 元/张），不返回动态 `usage`。
+`-limit` 模型按次计费（NewAPI `ModelPrice`），`usage` 按上表观测口径返回。
 
-直连 Director Tools 返回 `X-Anlas-Cost` 与 `X-Prompt-Tokens` 响应头；经统一图片入口调用时，Gateway 会把相同成本写入标准 `usage`：
+直连 Director Tools 返回 `X-Anlas-Cost` 与 `X-Prompt-Tokens` 响应头；经统一图片入口调用时，完整版 V4.5/V5 的标准 `usage` 写档外价，其他模型写入相同 Anlas 成本：
 
 ```http
 X-Anlas-Cost: 5
@@ -1025,17 +1019,17 @@ X-Prompt-Tokens: 250
 
 ### 13.2 tiered_expr 示例
 
-若 NewAPI 以 20 Anlas = 1000 prompt tokens 为计费基准，可使用类似表达式：
+完整版 V4.5/V5 模型在 NewAPI 配置（`p` 即档位按次价格）：
 
 ```text
-tier("base", p * 4800)
+tier("limit", p * 1000000)
 ```
 
-实际金额取决于你的 NewAPI token 价格、倍率与分组规则；此表达式仅说明网关返回 `usage` 的用途。
+实际金额取决于 NewAPI 的 QuotaPerUnit 与分组倍率；此表达式仅说明网关返回 `usage` 的用途。
 
 ### 13.3 条件计价建议
 
-只根据响应 `usage` 计费。网关在计算 `usage.prompt_tokens` 时已经考虑 `n`/`n_samples`、steps、尺寸、strength 和参考图等因素；NewAPI 不应再根据这些请求参数乘倍率，否则会重复收费。
+完整版模型的档位判定（判档所需的 `n`/`n_samples`、steps、尺寸、参考图等因素）全部在网关完成，结果直接体现为 `usage.prompt_tokens` 的档位价；NewAPI 不应再根据请求参数乘倍率，否则会重复收费。
 
 Director Tools 经统一入口调用时也会把固定成本写入 `usage`。`upscale`、`annotate` 不允许通过统一入口调用，需要在专用端点单独配置可审计价格。不要将 Chat/TTS 与图像 Anlas 规则混用；当前默认配置下这两个能力为禁用状态。
 
