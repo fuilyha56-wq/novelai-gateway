@@ -341,6 +341,22 @@ def _is_v4_family(nai_model: str) -> bool:
     return "diffusion-4" in nai_model or _is_v5_model(nai_model)
 
 
+def _resolve_infill_model(nai_model: str) -> str:
+    """重绘/局部编辑使用对应的 inpainting 上游模型。
+
+    对外 full/curated 模型理论上都应能走重绘能力，但 NovelAI 上游会拒绝
+    ``nai-diffusion-*-full`` + ``action=infill``。网关在重绘端点保持客户端模型名
+    不变，仅把上游模型切到同系列 full-inpainting 变体。
+    """
+    if nai_model.endswith("-inpainting"):
+        return nai_model
+    if _is_v5_model(nai_model):
+        return "nai-diffusion-5-full-inpainting"
+    if "diffusion-4-5" in nai_model:
+        return "nai-diffusion-4-5-full-inpainting"
+    return nai_model
+
+
 def _v5_price_multiplier(nai_model: str) -> float:
     """V5 非 limit 模型销售倍率。
 
@@ -2235,6 +2251,7 @@ async def handle_nai_inpainting(request: Request) -> Response:
         nai_model = registry.resolve_image_model(model)
     else:
         nai_model = model
+    nai_model = _resolve_infill_model(nai_model)
 
     width = _safe_int(body.get("width", 1024), 1024)
     height = _safe_int(body.get("height", 1024), 1024)
@@ -2430,6 +2447,7 @@ async def handle_openai_image_edits(request: Request) -> Response:
         nai_model = registry.resolve_image_model(model)
     else:
         nai_model = model
+    nai_model = _resolve_infill_model(nai_model)
 
     quality_tags = QUALITY_TAGS
     full_prompt = prompt + quality_tags if quality_tags else prompt
