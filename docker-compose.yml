@@ -23,6 +23,15 @@ services:
       - https_proxy=socks5h://172.29.0.1:20170
       - all_proxy=socks5h://172.29.0.1:20170
       - no_proxy=localhost,127.0.0.1,0.0.0.0
+    # 网关处理图片时会短暂占用较多内存；硬上限避免拖垮同机的 LFN。
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       novelai-net:
         ipv4_address: 172.29.0.2

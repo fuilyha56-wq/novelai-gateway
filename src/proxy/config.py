@@ -134,6 +134,8 @@ class Settings(BaseSettings):
     # 并发与冷却
     max_concurrent: int = 1
     queue_timeout: int = 300
+    # 有限排队避免突发请求在内存中无限堆积；满载时让客户端快速重试。
+    queue_max_waiters: int = 8
     cooldown_min: float = 0.5
     cooldown_max: float = 1.0
     upstream_timeout: float = 120.0

@@ -2166,17 +2166,16 @@ async def handle_openai_generations(request: Request) -> Response:
     ref_strengths_for_response: list[float] | None = None
     ref_infos_for_response: list[float] | None = None
     encoded_reuse_count = 0
+    pending_ref_multiple: list[str] | None = None
+    pending_ref_infos: list[float] | None = None
     if _is_v4_family(nai_model) and isinstance(params, dict):
         ref_multiple = params.get("reference_image_multiple", [])
         if isinstance(ref_multiple, list) and ref_multiple:
             ref_infos = params.get("reference_information_extracted_multiple", [1.0] * len(ref_multiple))
             ref_strengths_for_response = params.get("reference_strength_multiple", [0.6] * len(ref_multiple))
             ref_infos_for_response = ref_infos
-            encoded_vibes, encoded_reuse_count = await _encode_vibe_batch(
-                request, ref_multiple, nai_model, ref_infos
-            )
-            params["reference_image_multiple"] = encoded_vibes
-            encoded_vibes_for_response = encoded_vibes
+            pending_ref_multiple = ref_multiple
+            pending_ref_infos = ref_infos
 
     # 确定 accept_format
     accept_format = "json" if response_format == "nai_json" else "zip"
@@ -2189,6 +2188,14 @@ async def handle_openai_generations(request: Request) -> Response:
 
     # 走排队门控
     async with gate:
+        # 编码参考图同样是重负载上游请求，必须和生成共用门控，避免多个
+        # Vibe/角色参考请求在生成排队前同时占满 CPU、内存和上游连接。
+        if pending_ref_multiple is not None:
+            encoded_vibes, encoded_reuse_count = await _encode_vibe_batch(
+                request, pending_ref_multiple, nai_model, pending_ref_infos
+            )
+            params["reference_image_multiple"] = encoded_vibes
+            encoded_vibes_for_response = encoded_vibes
         content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
 
     # 记录统计
@@ -2746,12 +2753,6 @@ async def handle_vibe_transfer(request: Request) -> Response:
     is_v4_model = _is_v4_family(nai_model)
     encoded_reuse_count = 0
     encoded_vibes_for_response: list[str] | None = None
-    if is_v4_model:
-        encoded_vibes, encoded_reuse_count = await _encode_vibe_batch(
-            request, ref_images, nai_model, ref_infos
-        )
-        ref_images = encoded_vibes
-        encoded_vibes_for_response = encoded_vibes
 
     params = {
         "width": width,
@@ -2830,6 +2831,13 @@ async def handle_vibe_transfer(request: Request) -> Response:
         raise HTTPException(status_code=429, detail=str(e))
 
     async with gate:
+        if is_v4_model:
+            encoded_vibes, encoded_reuse_count = await _encode_vibe_batch(
+                request, ref_images, nai_model, ref_infos
+            )
+            params["reference_image_multiple"] = encoded_vibes
+            ref_images = encoded_vibes
+            encoded_vibes_for_response = encoded_vibes
         content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
 
     record_generation(content, "/ai/generate-image", width, height)
@@ -2964,12 +2972,6 @@ async def handle_character_reference(request: Request) -> Response:
     is_v4_model = _is_v4_family(nai_model)
     encoded_reuse_count = 0
     encoded_vibes_for_response: list[str] | None = None
-    if is_v4_model:
-        encoded_vibes, encoded_reuse_count = await _encode_vibe_batch(
-            request, ref_images, nai_model, ref_infos
-        )
-        ref_images = encoded_vibes
-        encoded_vibes_for_response = encoded_vibes
 
     params: dict[str, Any] = {
         "width": width,
@@ -3065,6 +3067,13 @@ async def handle_character_reference(request: Request) -> Response:
         raise HTTPException(status_code=429, detail=str(e))
 
     async with gate:
+        if is_v4_model:
+            encoded_vibes, encoded_reuse_count = await _encode_vibe_batch(
+                request, ref_images, nai_model, ref_infos
+            )
+            params["reference_image_multiple"] = encoded_vibes
+            ref_images = encoded_vibes
+            encoded_vibes_for_response = encoded_vibes
         content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
 
     record_generation(content, "/ai/generate-image", width, height)

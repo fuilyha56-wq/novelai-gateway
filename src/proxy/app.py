@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 
 from .config import settings
 from .forwarder import forward, build_response, close_client, _CORS_HEADERS
+from .queue import gate
 from .stats import record_generation
 from .openai import (
     handle_annotate,
@@ -349,6 +350,35 @@ def _cors_preflight():
 
 # ── NAI API 代理 ──────────────────────────────────────────────
 
+async def _proxy_buffered_response(
+    request: Request,
+    target_url: str,
+    api_path: str,
+) -> Response:
+    """读取并关闭透明代理响应，避免连接池长期保留未释放的响应。"""
+    upstream = await forward(request, target_url)
+    try:
+        # 读取响应（需要去 content-disposition，也便于统计图片大小）。
+        await upstream.aread()
+        headers = {
+            k: v for k, v in upstream.headers.items()
+            if k.lower() not in _DROP_HEADERS
+        }
+        headers.update(_CORS_HEADERS)
+
+        content_bytes = upstream.content
+        if settings.is_heavy(api_path):
+            record_generation(content_bytes, api_path)
+
+        return Response(
+            content=content_bytes,
+            status_code=upstream.status_code,
+            headers=headers,
+            media_type=upstream.headers.get("content-type", "application/octet-stream"),
+        )
+    finally:
+        await upstream.aclose()
+
 @app.api_route(
     "/_api/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
@@ -359,28 +389,14 @@ async def proxy_api(request: Request, path: str):
         return _cors_preflight()
 
     target_url = settings.get_upstream_url(f"/{path}")
+    api_path = f"/{path}"
     try:
-        upstream = await forward(request, target_url)
-        # 读取响应（需要去 content-disposition）
-        await upstream.aread()
-        headers = {
-            k: v for k, v in upstream.headers.items()
-            if k.lower() not in _DROP_HEADERS
-        }
-        headers.update(_CORS_HEADERS)
-
-        content_bytes = upstream.content
-
-        # 图像生成相关请求记录统计
-        if settings.is_heavy(f"/{path}"):
-            record_generation(content_bytes, f"/{path}")
-
-        return Response(
-            content=content_bytes,
-            status_code=upstream.status_code,
-            headers=headers,
-            media_type=upstream.headers.get("content-type", "application/octet-stream"),
-        )
+        # OpenAI 兼容入口已经在 openai.py 中门控；透明 API 入口也必须纳入
+        # 同一门控，否则网页端直连 /_api 会绕过并发限制。
+        if settings.is_heavy(api_path):
+            async with gate:
+                return await _proxy_buffered_response(request, target_url, api_path)
+        return await _proxy_buffered_response(request, target_url, api_path)
     except Exception as exc:
         if isinstance(exc, HTTPException):
             raise

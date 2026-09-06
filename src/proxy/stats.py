@@ -8,6 +8,7 @@
 import io
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import struct
 import zipfile
@@ -21,7 +22,12 @@ os.makedirs("logs", exist_ok=True)
 stats_logger = logging.getLogger("stats")
 stats_logger.setLevel(logging.INFO)
 if not stats_logger.handlers:
-    fh = logging.FileHandler("logs/stats.log", encoding="utf-8")
+    fh = RotatingFileHandler(
+        "logs/stats.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
     fh.setFormatter(
         logging.Formatter(
             "%(asctime)s | %(levelname)-7s | %(name)-10s | %(message)s",
@@ -75,7 +81,9 @@ def _detect_image_size(content: bytes) -> tuple[int, int]:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
             for name in zf.namelist():
                 if name.lower().endswith(".png"):
-                    w, h = _get_png_size(zf.read(name))
+                    # 只需 PNG 头 24 字节，不把整张图片再解压复制到内存。
+                    with zf.open(name) as image_file:
+                        w, h = _get_png_size(image_file.read(24))
                     if w > 0:
                         return w, h
     except (zipfile.BadZipFile, Exception):

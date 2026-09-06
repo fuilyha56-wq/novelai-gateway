@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import secrets
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -42,9 +43,27 @@ _log_handler = _AdminLogHandler()
 _log_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(message)s", "%H:%M:%S"))
 _logger.addHandler(_log_handler)
 _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-_file_handler = logging.FileHandler(_LOG_PATH, encoding="utf-8")
+_file_handler = RotatingFileHandler(
+    _LOG_PATH,
+    maxBytes=10 * 1024 * 1024,
+    backupCount=3,
+    encoding="utf-8",
+)
 _file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(message)s", "%Y-%m-%d %H:%M:%S"))
 logging.getLogger().addHandler(_file_handler)
+
+
+def _read_last_lines(path: Path, limit: int, max_bytes: int = 256 * 1024) -> list[str]:
+    """只读取日志尾部，避免控制台每 2 秒重复扫描整个日志文件。"""
+    with path.open("rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        size = stream.tell()
+        start = max(0, size - max_bytes)
+        stream.seek(start)
+        data = stream.read()
+    if start:
+        data = data.split(b"\n", 1)[-1]
+    return data.decode("utf-8", errors="replace").splitlines()[-limit:]
 
 
 def _authorized(request: Request) -> bool:
@@ -339,7 +358,8 @@ async def update_env(request: Request) -> dict[str, str]:
     await _require_auth(request)
     body = await request.json()
     allowed = {
-        "IMAGE_BASE_URL", "HOST", "PORT", "MAX_CONCURRENT", "COOLDOWN_MIN", "COOLDOWN_MAX",
+        "IMAGE_BASE_URL", "HOST", "PORT", "MAX_CONCURRENT", "QUEUE_MAX_WAITERS",
+        "COOLDOWN_MIN", "COOLDOWN_MAX",
         "V5_QUOTA_ENABLED", "V5_DAILY_LIMIT", "V5_WEEKLY_LIMIT", "SHARED_API_KEYS",
     }
     values = {key: str(value) for key, value in body.items() if key in allowed}
@@ -372,7 +392,7 @@ async def logs(request: Request, lines: int = 100) -> dict[str, list[str]]:
     await _require_auth(request)
     limit = max(1, min(lines, 500))
     if _LOG_PATH.exists():
-        return {"lines": _LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]}
+        return {"lines": _read_last_lines(_LOG_PATH, limit)}
     return {"lines": _LOG_BUFFER[-limit:]}
 
 

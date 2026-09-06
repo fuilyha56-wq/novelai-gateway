@@ -137,9 +137,12 @@ async def build_response(
 
     # HTML → 注入劫持脚本（传入共享 Token）
     if do_rewrite and "text/html" in content_type:
-        await upstream.aread()
-        logger.debug(f"🧬 [Rewrite HTML] Path: {request.url.path} | content-type: {content_type} | Shared token length: {len(settings.shared_token)}")
-        body = rewrite_html(upstream.content, prefix, settings.shared_token)
+        try:
+            await upstream.aread()
+            logger.debug(f"🧬 [Rewrite HTML] Path: {request.url.path} | content-type: {content_type} | Shared token length: {len(settings.shared_token)}")
+            body = rewrite_html(upstream.content, prefix, settings.shared_token)
+        finally:
+            await upstream.aclose()
         return Response(
             content=body, status_code=upstream.status_code,
             headers=headers, media_type=content_type,
@@ -147,8 +150,11 @@ async def build_response(
 
     # JS → 替换 API 域名
     if do_rewrite and "javascript" in content_type:
-        await upstream.aread()
-        body = rewrite_js(upstream.text, prefix)
+        try:
+            await upstream.aread()
+            body = rewrite_js(upstream.text, prefix)
+        finally:
+            await upstream.aclose()
         return Response(
             content=body, status_code=upstream.status_code,
             headers=headers, media_type=content_type,
@@ -156,15 +162,22 @@ async def build_response(
 
     # 已读取完毕的响应（如被 aread() 过的）
     if upstream.is_stream_consumed:
-        return Response(
-            content=upstream.content, status_code=upstream.status_code,
-            headers=headers, media_type=content_type,
-        )
+        try:
+            return Response(
+                content=upstream.content, status_code=upstream.status_code,
+                headers=headers, media_type=content_type,
+            )
+        finally:
+            await upstream.aclose()
 
     # 默认：流式透传
     async def _stream():
-        async for chunk in upstream.aiter_bytes():
-            yield chunk
+        try:
+            async for chunk in upstream.aiter_bytes():
+                yield chunk
+        finally:
+            # 客户端中断下载时也要释放上游连接，否则连接池会逐步耗尽。
+            await upstream.aclose()
 
     return StreamingResponse(
         _stream(), status_code=upstream.status_code,

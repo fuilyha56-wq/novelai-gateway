@@ -1472,6 +1472,10 @@
               <input id="MAX_CONCURRENT" type="number" placeholder="默认 1">
             </div>
             <div class="form-field">
+              <label class="form-label">最大排队数 (QUEUE_MAX_WAITERS)</label>
+              <input id="QUEUE_MAX_WAITERS" type="number" placeholder="默认 8">
+            </div>
+            <div class="form-field">
               <label class="form-label">最小请求冷却 (COOLDOWN_MIN 秒)</label>
               <input id="COOLDOWN_MIN" placeholder="默认 0.5">
             </div>
@@ -2425,7 +2429,7 @@
     }
 
     async function saveSettings() {
-      const keys = ['MAX_CONCURRENT', 'COOLDOWN_MIN', 'COOLDOWN_MAX', 'V5_QUOTA_ENABLED', 'V5_DAILY_LIMIT', 'V5_WEEKLY_LIMIT', 'IMAGE_BASE_URL'];
+      const keys = ['MAX_CONCURRENT', 'QUEUE_MAX_WAITERS', 'COOLDOWN_MIN', 'COOLDOWN_MAX', 'V5_QUOTA_ENABLED', 'V5_DAILY_LIMIT', 'V5_WEEKLY_LIMIT', 'IMAGE_BASE_URL'];
       const payload = {};
       keys.forEach(k => {
         const el = document.getElementById(k);

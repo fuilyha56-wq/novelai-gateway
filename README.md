@@ -57,6 +57,8 @@ PORT=31555
 
 # 并发与冷却
 MAX_CONCURRENT=1
+# 最多允许等待的重负载请求数，满载时快速返回 429
+QUEUE_MAX_WAITERS=8
 COOLDOWN_MIN=0.5
 COOLDOWN_MAX=1.0
 ```
