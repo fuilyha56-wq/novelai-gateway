@@ -33,6 +33,7 @@ class GatewayRegressionTests(unittest.TestCase):
             "shared_api_keys": settings.shared_api_keys,
             "shared_token": settings.shared_token,
             "gateway_password": settings.gateway_password,
+            "gateway_auth_token": settings.gateway_auth_token,
             "allow_unauthenticated_access": settings.allow_unauthenticated_access,
         }
 
@@ -45,6 +46,7 @@ class GatewayRegressionTests(unittest.TestCase):
         settings.shared_api_keys = ""
         settings.shared_token = ""
         settings.gateway_password = "downstream-secret"
+        settings.gateway_auth_token = "downstream-secret"
         settings.allow_unauthenticated_access = False
 
         with TestClient(app) as client:
@@ -54,11 +56,54 @@ class GatewayRegressionTests(unittest.TestCase):
                     "/v1/models",
                     headers={"Authorization": "Bearer wrong-secret"},
                 ).status_code,
-                401,
+                403,
             )
             response = client.get(
                 "/v1/models",
                 headers={"Authorization": "Bearer downstream-secret"},
+            )
+            self.assertEqual(response.status_code, 200)
+
+    def test_native_user_and_ai_paths_require_gateway_token(self) -> None:
+        settings.shared_api_key = "upstream-secret"
+        settings.shared_api_keys = ""
+        settings.shared_token = ""
+        settings.gateway_password = "downstream-secret"
+        settings.gateway_auth_token = "downstream-secret"
+        settings.allow_unauthenticated_access = False
+
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/user/subscription").status_code, 401)
+            self.assertEqual(
+                client.get(
+                    "/user/account",
+                    headers={"Authorization": "Bearer user-novelai-token"},
+                ).status_code,
+                403,
+            )
+            self.assertEqual(
+                client.post(
+                    "/ai/generate-image",
+                    headers={"Authorization": "Bearer user-novelai-token"},
+                    json={"input": "1girl", "model": "nai-diffusion-3"},
+                ).status_code,
+                403,
+            )
+            self.assertEqual(client.options("/ai/encode-vibe").status_code, 204)
+            self.assertEqual(client.options("/user/subscription").status_code, 204)
+
+    def test_gateway_auth_token_alias_is_accepted(self) -> None:
+        settings.shared_api_key = "upstream-secret"
+        settings.shared_api_keys = ""
+        settings.shared_token = ""
+        settings.gateway_password = ""
+        settings.gateway_auth_token = "service-token"
+        settings.allow_unauthenticated_access = False
+
+        with TestClient(app) as client:
+            response = client.get(
+                "/v1/models",
+                headers={"Authorization": "Bearer service-token"},
             )
             self.assertEqual(response.status_code, 200)
 
@@ -67,6 +112,7 @@ class GatewayRegressionTests(unittest.TestCase):
         settings.shared_api_keys = ""
         settings.shared_token = ""
         settings.gateway_password = ""
+        settings.gateway_auth_token = ""
         settings.allow_unauthenticated_access = False
 
         with TestClient(app) as client:
@@ -77,6 +123,7 @@ class GatewayRegressionTests(unittest.TestCase):
         settings.shared_api_keys = ""
         settings.shared_token = ""
         settings.gateway_password = "downstream-secret"
+        settings.gateway_auth_token = "downstream-secret"
         settings.allow_unauthenticated_access = False
 
         with TestClient(app) as client:
@@ -129,9 +176,25 @@ class GatewayRegressionTests(unittest.TestCase):
 
     def test_settings_routing_helpers_are_available(self) -> None:
         self.assertTrue(settings.is_heavy("/ai/generate-image"))
+        self.assertTrue(settings.is_heavy("/ai/generate-image-stream"))
+        self.assertTrue(settings.is_native_api_path("/ai/encode-vibe"))
+        self.assertTrue(settings.is_native_api_path("/user/subscription"))
+        self.assertFalse(settings.is_native_api_path("/v1/models"))
         self.assertEqual(
             settings.get_upstream_url("/ai/generate-image"),
             "https://image.novelai.net/ai/generate-image",
+        )
+        self.assertEqual(
+            settings.get_upstream_url("/ai/generate-image-stream"),
+            "https://image.novelai.net/ai/generate-image-stream",
+        )
+        self.assertEqual(
+            settings.get_upstream_url("/ai/annotate-image"),
+            "https://api.novelai.net/ai/annotate-image",
+        )
+        self.assertEqual(
+            settings.get_upstream_url("/user/account"),
+            "https://api.novelai.net/user/account",
         )
 
     def test_cfg_rescale_passed_through_generation_payload(self) -> None:

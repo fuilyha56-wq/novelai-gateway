@@ -109,7 +109,9 @@ class Settings(BaseSettings):
     # 多个持久 API Key。配置后优先于 SHARED_API_KEY，按请求轮询。
     shared_api_keys: str = ""
 
-    # 网页端访问密码保护（留空则不开启密码拦截）
+    # 服务间访问密钥。LFN / NewAPI 等受信任下游必须携带
+    # Authorization: Bearer <此值>。兼容旧环境变量 GATEWAY_PASSWORD。
+    gateway_auth_token: str = ""
     gateway_password: str = ""
 
     # 显式允许在配置共享 NovelAI 凭据时关闭下游鉴权。
@@ -125,6 +127,7 @@ class Settings(BaseSettings):
     # 需要排队的重负载 API 路径前缀
     heavy_prefixes: Set[str] = {
         "/ai/generate-image",
+        "/ai/generate-image-stream",
         "/ai/upscale",
         "/ai/generate-voice",
         "/ai/augment-image",
@@ -147,6 +150,11 @@ class Settings(BaseSettings):
 
     def model_post_init(self, __context: Any) -> None:
         """初始化不参与配置序列化的 Key 轮询状态。"""
+        # GATEWAY_AUTH_TOKEN 优先；未配置时回落到旧变量 GATEWAY_PASSWORD。
+        if not self.gateway_auth_token.strip() and self.gateway_password.strip():
+            self.gateway_auth_token = self.gateway_password
+        elif self.gateway_auth_token.strip() and not self.gateway_password.strip():
+            self.gateway_password = self.gateway_auth_token
         self._api_key_lock = Lock()
         self._api_key_index = 0
         if _ACCOUNTS_PATH.exists():
@@ -197,6 +205,16 @@ class Settings(BaseSettings):
             or _normalize_credential(self.shared_token)
         )
 
+    def gateway_token(self) -> str:
+        """下游访问 Gateway 所需的服务间密钥。"""
+        return _normalize_credential(self.gateway_auth_token) or _normalize_credential(
+            self.gateway_password
+        )
+
+    def is_native_api_path(self, path: str) -> bool:
+        """是否为 NovelAI 原生 API 路径，必须走服务间鉴权。"""
+        return path.startswith("/ai/") or path.startswith("/user/")
+
     def is_heavy(self, path: str) -> bool:
         """判断路径是否为重负载请求。"""
         return any(path.startswith(p) for p in self.heavy_prefixes)
@@ -204,6 +222,7 @@ class Settings(BaseSettings):
     # 映射到 image.novelai.net 的 API 路径前缀（参考 Swagger doc.json）
     _IMAGE_PATH_PREFIXES: tuple[str, ...] = (
         "/ai/generate-image",
+        "/ai/generate-image-stream",
         "/ai/augment-image",
         "/ai/encode-vibe",
         "/ai/upscale",

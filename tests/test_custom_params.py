@@ -342,9 +342,11 @@ class HandlerIntegrationTests(unittest.TestCase):
         # 本地 .env 可能配置了共享凭据，测试需放行下游鉴权（沿用 test_gateway 模式）
         self._settings = {
             "gateway_password": settings.gateway_password,
+            "gateway_auth_token": settings.gateway_auth_token,
             "allow_unauthenticated_access": settings.allow_unauthenticated_access,
         }
         settings.gateway_password = ""
+        settings.gateway_auth_token = ""
         settings.allow_unauthenticated_access = True
 
         self.captured: list[dict] = []

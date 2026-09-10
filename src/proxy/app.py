@@ -12,7 +12,7 @@ import subprocess
 from urllib.parse import unquote
 
 from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from contextlib import asynccontextmanager
 
 from .config import settings
@@ -61,11 +61,11 @@ _DROP_HEADERS = frozenset({
 async def lifespan(_app: FastAPI):
     settings.image_dir.mkdir(parents=True, exist_ok=True)
 
-    if settings.has_shared_credentials() and not settings.gateway_password:
+    if settings.has_shared_credentials() and not settings.gateway_token():
         if settings.allow_unauthenticated_access:
             logger.warning("⚠️ 已显式允许无鉴权使用共享 NovelAI 凭据；请勿暴露到公网")
         else:
-            logger.warning("⚠️ 已配置共享 NovelAI 凭据但未设置 GATEWAY_PASSWORD；受保护 API 将返回 503")
+            logger.warning("⚠️ 已配置共享 NovelAI 凭据但未设置 GATEWAY_AUTH_TOKEN；受保护 API 将返回 503")
 
     # 加载模型注册表
     try:
@@ -127,31 +127,49 @@ def _safe_compare(a: str, b: str) -> bool:
         return secrets.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
-def _gateway_auth_error(request: Request) -> Response | None:
-    """校验下游访问权限；返回 None 表示允许访问。"""
-    password = settings.gateway_password
+def _extract_bearer(request: Request) -> str:
+    """提取 Authorization Bearer 值；格式不正确时返回空字符串。"""
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return ""
+
+
+def _gateway_auth_error(request: Request, *, allow_cookie: bool = True) -> Response | None:
+    """校验下游访问权限；返回 None 表示允许访问。
+
+    原生 ``/ai/*``、``/user/*`` 与 ``/_api/*``、``/v1/*`` 一律只接受
+    服务间 Gateway Token，不把下游用户 Token 当作上游 NovelAI 凭据。
+    """
+    password = settings.gateway_token()
     if password:
-        authorization = request.headers.get("authorization", "")
-        bearer = authorization[7:] if authorization.lower().startswith("bearer ") else ""
-        cookie = unquote(request.cookies.get("gw_pass", ""))
-        if not (
-            (bearer and _safe_compare(bearer, password))
-            or (cookie and _safe_compare(cookie, password))
-        ):
+        bearer = _extract_bearer(request)
+        cookie = unquote(request.cookies.get("gw_pass", "")) if allow_cookie else ""
+        if bearer and _safe_compare(bearer, password):
+            return None
+        if cookie and _safe_compare(cookie, password):
+            return None
+        if not bearer:
             return Response(
-                content='{"detail":"Unauthorized"}',
+                content='{"detail":"Gateway authentication required"}',
                 status_code=401,
                 media_type="application/json",
                 headers={**_CORS_HEADERS, "WWW-Authenticate": "Bearer"},
             )
-        return None
+        return Response(
+            content='{"detail":"Forbidden"}',
+            status_code=403,
+            media_type="application/json",
+            headers=_CORS_HEADERS,
+        )
 
     if settings.has_shared_credentials() and not settings.allow_unauthenticated_access:
         return Response(
             content=(
                 '{"detail":"Gateway authentication is required when shared NovelAI '
-                'credentials are configured. Set GATEWAY_PASSWORD, or explicitly set '
-                'ALLOW_UNAUTHENTICATED_ACCESS=true only for a trusted private network."}'
+                'credentials are configured. Set GATEWAY_AUTH_TOKEN or GATEWAY_PASSWORD, '
+                'or explicitly set ALLOW_UNAUTHENTICATED_ACCESS=true only for a trusted '
+                'private network."}'
             ),
             status_code=503,
             media_type="application/json",
@@ -162,13 +180,16 @@ def _gateway_auth_error(request: Request) -> Response | None:
 
 @app.middleware("http")
 async def protect_api_routes(request: Request, call_next):
-    """保护会使用 NovelAI 凭据的 OpenAI 与透明 API 入口。"""
+    """保护会使用 NovelAI 凭据的 OpenAI、透明 API 与原生 NAI 入口。"""
     path = request.url.path
     # CORS 预检本身不会使用上游凭据，也通常不会携带 Authorization。
     if request.method != "OPTIONS" and (
-        path.startswith("/v1/") or path.startswith("/_api/")
+        path.startswith("/v1/")
+        or path.startswith("/_api/")
+        or settings.is_native_api_path(path)
     ):
-        error = _gateway_auth_error(request)
+        # 原生 API 与 OpenAI 兼容入口一律要求服务间 Token，不允许网页 cookie 绕过。
+        error = _gateway_auth_error(request, allow_cookie=False)
         if error is not None:
             return error
     return await call_next(request)
@@ -333,11 +354,9 @@ async def openai_chat(request: Request):
 @app.post("/admin/refresh-upstream-models")
 async def refresh_models(request: Request):
     """抓取 NAI 网页端 JS，解析模型 ID，写入 models_suggested.toml。需要网关密码认证。"""
-    # 简单密码保护（复用 gateway_password）
-    if settings.gateway_password:
-        auth = request.headers.get("authorization", "")
-        if auth != f"Bearer {settings.gateway_password}":
-            raise HTTPException(status_code=401, detail="Unauthorized")
+    auth_error = _gateway_auth_error(request, allow_cookie=False)
+    if auth_error is not None:
+        return auth_error
     return await handle_refresh_upstream_models(request)
 
 
@@ -347,7 +366,106 @@ def _cors_preflight():
     return Response(status_code=204, headers=_CORS_HEADERS)
 
 
-# ── NAI API 代理 ──────────────────────────────────────────────
+# ── NAI 原生兼容层 ─────────────────────────────────────────────
+
+_NATIVE_DROP_HEADERS = frozenset({
+    "content-encoding", "transfer-encoding", "connection",
+    "content-security-policy", "content-security-policy-report-only",
+    "strict-transport-security", "x-frame-options",
+})
+
+
+def _native_response_headers(upstream) -> dict[str, str]:
+    """透传上游响应头，去掉 hop-by-hop 与安全策略，并补 CORS。"""
+    headers = {
+        k: v for k, v in upstream.headers.items()
+        if k.lower() not in _NATIVE_DROP_HEADERS
+    }
+    headers.update(_CORS_HEADERS)
+    return headers
+
+
+async def _proxy_native_nai(request: Request, api_path: str) -> Response:
+    """按官方路径转发到对应上游，并保持 ZIP / Msgpack Stream 原样返回。"""
+    from contextlib import AsyncExitStack
+
+    from .queue import gate
+
+    target_url = settings.get_upstream_url(api_path)
+    try:
+        async with AsyncExitStack() as stack:
+            if settings.is_heavy(api_path):
+                await stack.enter_async_context(gate)
+            upstream = await forward(request, target_url)
+
+            content_type = (upstream.headers.get("content-type") or "").lower()
+            streaming = (
+                "octet-stream" in content_type
+                or "msgpack" in content_type
+                or "event-stream" in content_type
+                or "ndjson" in content_type
+            )
+            if streaming and not upstream.is_stream_consumed:
+                headers = _native_response_headers(upstream)
+                hold_gate = stack.pop_all()
+
+                async def _stream():
+                    try:
+                        async for chunk in upstream.aiter_bytes():
+                            yield chunk
+                    finally:
+                        await upstream.aclose()
+                        await hold_gate.aclose()
+
+                return StreamingResponse(
+                    _stream(),
+                    status_code=upstream.status_code,
+                    headers=headers,
+                    media_type=upstream.headers.get(
+                        "content-type", "application/octet-stream"
+                    ),
+                )
+
+            await upstream.aread()
+            headers = _native_response_headers(upstream)
+            content_bytes = upstream.content
+            if settings.is_heavy(api_path) and upstream.status_code == 200:
+                record_generation(content_bytes, api_path)
+            return Response(
+                content=content_bytes,
+                status_code=upstream.status_code,
+                headers=headers,
+                media_type=upstream.headers.get("content-type", "application/octet-stream"),
+            )
+    except Exception as exc:
+        if isinstance(exc, HTTPException):
+            raise
+        logger.error(f"❌ 原生 API 代理失败 ({api_path}): {exc}")
+        logger.debug("详细错误堆栈:", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"上游连接失败: {exc}")
+
+
+@app.api_route(
+    "/ai/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+)
+async def native_ai(request: Request, path: str):
+    """NovelAI 原生 ``/ai/*`` 兼容入口。必须携带 Gateway Token。"""
+    if request.method == "OPTIONS":
+        return _cors_preflight()
+    return await _proxy_native_nai(request, f"/ai/{path}")
+
+
+@app.api_route(
+    "/user/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+)
+async def native_user(request: Request, path: str):
+    """NovelAI 原生 ``/user/*`` 账户接口。必须携带 Gateway Token。"""
+    if request.method == "OPTIONS":
+        return _cors_preflight()
+    return await _proxy_native_nai(request, f"/user/{path}")
+
 
 @app.api_route(
     "/_api/{path:path}",
@@ -400,9 +518,9 @@ async def proxy_site(request: Request, path: str):
 
     # 网页访问安全校验（只在开启了密码且为 GET HTML 请求时做拦截保护）
     # 注意：/admin/api 前缀由独立管理路由处理，不应落入此兜底代理。
-    if settings.gateway_password and request.method == "GET" and not path.startswith("admin/api/"):
+    if settings.gateway_token() and request.method == "GET" and not path.startswith("admin/api/"):
         gw_pass = request.cookies.get("gw_pass", "")
-        if unquote(gw_pass) != settings.gateway_password:
+        if unquote(gw_pass) != settings.gateway_token():
             from pathlib import Path as _Path
             lock_template = _Path(__file__).parent / "templates" / "lock.html"
             if lock_template.exists():
@@ -410,7 +528,7 @@ async def proxy_site(request: Request, path: str):
             return Response(content="Gateway Locked. Please set correct gw_pass cookie.", status_code=403)
 
     # 非 GET 请求无法展示登录页；无密码但配置共享凭据时也必须默认拒绝。
-    if request.method != "GET" or not settings.gateway_password:
+    if request.method != "GET" or not settings.gateway_token():
         auth_error = _gateway_auth_error(request)
         if auth_error is not None:
             return auth_error

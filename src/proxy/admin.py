@@ -49,17 +49,21 @@ logging.getLogger().addHandler(_file_handler)
 
 def _authorized(request: Request) -> bool:
     """校验控制台使用的网关密码。"""
-    if not settings.gateway_password:
+    password = settings.gateway_token()
+    if not password:
         return False
     auth = request.headers.get("authorization", "")
     token = auth[7:] if auth.lower().startswith("bearer ") else ""
-    return secrets.compare_digest(token, settings.gateway_password)
+    try:
+        return secrets.compare_digest(token, password)
+    except TypeError:
+        return secrets.compare_digest(token.encode("utf-8"), password.encode("utf-8"))
 
 
 async def _require_auth(request: Request) -> None:
     """拒绝未认证管理请求。"""
     if not _authorized(request):
-        raise HTTPException(status_code=401, detail="管理控制台需要 GATEWAY_PASSWORD")
+        raise HTTPException(status_code=401, detail="管理控制台需要 GATEWAY_AUTH_TOKEN")
 
 
 def _env_values() -> dict[str, str]:
