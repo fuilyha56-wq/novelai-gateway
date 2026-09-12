@@ -445,6 +445,47 @@ async def _proxy_native_nai(request: Request, api_path: str) -> Response:
         raise HTTPException(status_code=502, detail=f"上游连接失败: {exc}")
 
 
+@app.post("/ai/upscale")
+async def native_upscale(request: Request):
+    """原生超分专用入口：整包缓冲后返回。
+
+    /ai/upscale 属于 heavy 路径但响应是小体积 ZIP，走通用流式分支会把
+    门控锁一直持有到流结束（客户端断连/上游不关流时泄漏），导致后续
+    heavy 请求全部排队超时。这里改为确定性整包转发，用完立刻还锁。
+    """
+    auth_error = _gateway_auth_error(request)
+    if auth_error is not None:
+        return auth_error
+    body = await request.body()
+    target_url = settings.get_upstream_url("/ai/upscale")
+    from .forwarder import _build_upstream_headers, get_client
+    from .queue import gate
+
+    try:
+        async with gate:
+            client = await get_client()
+            upstream = await client.post(
+                target_url,
+                content=body,
+                headers=_build_upstream_headers(request, target_url),
+            )
+            await upstream.aread()
+        headers = _native_response_headers(upstream)
+        if settings.is_heavy("/ai/upscale") and upstream.status_code == 200:
+            record_generation(upstream.content, "/ai/upscale")
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            headers=headers,
+            media_type=upstream.headers.get("content-type", "application/octet-stream"),
+        )
+    except Exception as exc:
+        if isinstance(exc, HTTPException):
+            raise
+        logger.error(f"❌ 原生超分代理失败: {exc}")
+        raise HTTPException(status_code=502, detail=f"上游连接失败: {exc}")
+
+
 @app.api_route(
     "/ai/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
