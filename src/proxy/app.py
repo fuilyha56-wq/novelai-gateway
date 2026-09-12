@@ -379,6 +379,149 @@ async def _proxy_buffered_response(
     finally:
         await upstream.aclose()
 
+
+# ── NAI 原生兼容层 ─────────────────────────────────────────────
+
+_NATIVE_DROP_HEADERS = frozenset({
+    "content-encoding", "transfer-encoding", "connection",
+    "content-security-policy", "content-security-policy-report-only",
+    "strict-transport-security", "x-frame-options",
+})
+
+
+def _native_response_headers(upstream) -> dict[str, str]:
+    """透传上游响应头，去掉 hop-by-hop 与安全策略，并补 CORS。"""
+    headers = {
+        k: v for k, v in upstream.headers.items()
+        if k.lower() not in _NATIVE_DROP_HEADERS
+    }
+    headers.update(_CORS_HEADERS)
+    return headers
+
+
+async def _proxy_native_nai(request: Request, api_path: str) -> Response:
+    """按官方路径转发到对应上游，并保持 ZIP / Msgpack Stream 原样返回。"""
+    from contextlib import AsyncExitStack
+
+    from .queue import gate
+
+    target_url = settings.get_upstream_url(api_path)
+    try:
+        async with AsyncExitStack() as stack:
+            if settings.is_heavy(api_path):
+                await stack.enter_async_context(gate)
+            upstream = await forward(request, target_url)
+
+            content_type = (upstream.headers.get("content-type") or "").lower()
+            streaming = (
+                "octet-stream" in content_type
+                or "msgpack" in content_type
+                or "event-stream" in content_type
+                or "ndjson" in content_type
+            )
+            if streaming and not upstream.is_stream_consumed:
+                headers = _native_response_headers(upstream)
+                hold_gate = stack.pop_all()
+
+                async def _stream():
+                    try:
+                        async for chunk in upstream.aiter_bytes():
+                            yield chunk
+                    finally:
+                        await upstream.aclose()
+                        await hold_gate.aclose()
+
+                return StreamingResponse(
+                    _stream(),
+                    status_code=upstream.status_code,
+                    headers=headers,
+                    media_type=upstream.headers.get(
+                        "content-type", "application/octet-stream"
+                    ),
+                )
+
+            await upstream.aread()
+            headers = _native_response_headers(upstream)
+            content_bytes = upstream.content
+            if settings.is_heavy(api_path) and upstream.status_code == 200:
+                record_generation(content_bytes, api_path)
+            return Response(
+                content=content_bytes,
+                status_code=upstream.status_code,
+                headers=headers,
+                media_type=upstream.headers.get("content-type", "application/octet-stream"),
+            )
+    except Exception as exc:
+        if isinstance(exc, HTTPException):
+            raise
+        logger.error(f"❌ 原生 API 代理失败 ({api_path}): {exc}")
+        logger.debug("详细错误堆栈:", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"上游连接失败: {exc}")
+
+
+@app.post("/ai/upscale")
+async def native_upscale(request: Request):
+    """原生超分专用入口：整包缓冲后返回。
+
+    /ai/upscale 属于 heavy 路径但响应是小体积 ZIP，走通用流式分支会把
+    门控锁一直持有到流结束（客户端断连/上游不关流时泄漏），导致后续
+    heavy 请求全部排队超时。这里改为确定性整包转发，用完立刻还锁。
+    """
+    auth_error = _gateway_auth_error(request)
+    if auth_error is not None:
+        return auth_error
+    body = await request.body()
+    target_url = settings.get_upstream_url("/ai/upscale")
+    from .forwarder import _build_upstream_headers, get_client
+    from .queue import gate
+
+    try:
+        async with gate:
+            client = await get_client()
+            upstream = await client.post(
+                target_url,
+                content=body,
+                headers=_build_upstream_headers(request, target_url),
+            )
+            await upstream.aread()
+        headers = _native_response_headers(upstream)
+        if settings.is_heavy("/ai/upscale") and upstream.status_code == 200:
+            record_generation(upstream.content, "/ai/upscale")
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            headers=headers,
+            media_type=upstream.headers.get("content-type", "application/octet-stream"),
+        )
+    except Exception as exc:
+        if isinstance(exc, HTTPException):
+            raise
+        logger.error(f"❌ 原生超分代理失败: {exc}")
+        raise HTTPException(status_code=502, detail=f"上游连接失败: {exc}")
+
+
+@app.api_route(
+    "/ai/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+)
+async def native_ai(request: Request, path: str):
+    """NovelAI 原生 ``/ai/*`` 兼容入口。必须携带 Gateway Token。"""
+    if request.method == "OPTIONS":
+        return _cors_preflight()
+    return await _proxy_native_nai(request, f"/ai/{path}")
+
+
+@app.api_route(
+    "/user/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+)
+async def native_user(request: Request, path: str):
+    """NovelAI 原生 ``/user/*`` 账户接口。必须携带 Gateway Token。"""
+    if request.method == "OPTIONS":
+        return _cors_preflight()
+    return await _proxy_native_nai(request, f"/user/{path}")
+
+
 @app.api_route(
     "/_api/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],

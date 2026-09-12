@@ -3316,25 +3316,52 @@ async def handle_precise_reference(request: Request) -> Response:
 
 # ── /v1/images/upscale ────────────────────────────────────────
 
-async def handle_upscale(request: Request) -> Response:
-    """处理图像放大请求 (2x/4x)。"""
-    body = await request.json()
-    _reject_limit_model_for_paid_endpoint(body.get("model", ""))
+# NAI 独立超分仅支持 V5 双模型（webui 硬编码 curated；4.5 及以下实测 400）
+_UPSCALE_VALID_MODELS = {"nai-diffusion-5-full", "nai-diffusion-5-curated"}
 
+
+def _build_upscale_payload(body: dict) -> dict:
+    """构造 NAI V5 扩散超分请求体；旧 ESRGAN 参数与非法模型在此拒绝。"""
     image = body.get("image", "")
     if not image:
         raise HTTPException(status_code=400, detail="image (base64) is required")
 
-    width = _safe_int(body.get("width", 1024), 1024)
-    height = _safe_int(body.get("height", 1024), 1024)
-    scale = _safe_int(body.get("scale", 4), 4)
+    legacy_fields = [f for f in ("scale", "width", "height", "defry") if f in body]
+    if legacy_fields:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "NAI upscale 已切换为 V5 扩散超分格式（image/model/declared_blur_sigma），"
+                f"不再接受旧参数: {', '.join(legacy_fields)}"
+            ),
+        )
 
-    payload = {
+    model = body.get("model") or "nai-diffusion-5-curated"
+    if model not in _UPSCALE_VALID_MODELS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid model '{model}'. Standalone upscaling supports: "
+                f"{sorted(_UPSCALE_VALID_MODELS)}"
+            ),
+        )
+
+    return {
         "image": image,
-        "width": width,
-        "height": height,
-        "scale": scale,
+        "model": model,
+        "declared_blur_sigma": max(0, _safe_int(body.get("declared_blur_sigma", 0), 0)),
     }
+
+
+async def handle_upscale(request: Request) -> Response:
+    """处理图像超分请求（V5 扩散超分，输出固定为输入 2 倍）。
+
+    NAI 已于 2026-09 下线旧 ESRGAN 参数（width/height/scale → 400 "model doesn't exist"），
+    新格式按输入面积扣 1-4 Anlas，输入面积上限 3145728 px（1536x2048）。
+    """
+    body = await request.json()
+    _reject_limit_model_for_paid_endpoint(body.get("model", ""))
+    payload = _build_upscale_payload(body)
 
     target_url = settings.get_upstream_url("/ai/upscale")
 

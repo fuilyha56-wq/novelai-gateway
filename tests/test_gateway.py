@@ -333,3 +333,51 @@ class GatewayRegressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UpscalePayloadTests(unittest.TestCase):
+    """NAI V5 扩散超分 payload 构造（2026-09 上游切换后的新格式）。"""
+
+    def test_defaults_to_curated_model_and_zero_sigma(self) -> None:
+        from src.proxy.openai import _build_upscale_payload
+
+        payload = _build_upscale_payload({"image": "aW1n"})
+        self.assertEqual(payload["model"], "nai-diffusion-5-curated")
+        self.assertEqual(payload["declared_blur_sigma"], 0)
+        self.assertEqual(payload["image"], "aW1n")
+
+    def test_full_model_and_sigma_accepted(self) -> None:
+        from src.proxy.openai import _build_upscale_payload
+
+        payload = _build_upscale_payload(
+            {"image": "aW1n", "model": "nai-diffusion-5-full", "declared_blur_sigma": 2}
+        )
+        self.assertEqual(payload["model"], "nai-diffusion-5-full")
+        self.assertEqual(payload["declared_blur_sigma"], 2)
+
+    def test_legacy_esrgan_params_rejected(self) -> None:
+        from src.proxy.openai import _build_upscale_payload
+
+        with self.assertRaises(HTTPException) as raised:
+            _build_upscale_payload({"image": "aW1n", "width": 832, "height": 1216, "scale": 2})
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("旧参数", str(raised.exception.detail))
+
+    def test_non_v5_model_rejected(self) -> None:
+        from src.proxy.openai import _build_upscale_payload
+
+        with self.assertRaises(HTTPException) as raised:
+            _build_upscale_payload({"image": "aW1n", "model": "nai-diffusion-4-5-full"})
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("nai-diffusion-4-5-full", str(raised.exception.detail))
+
+    def test_native_upscale_route_registered_before_catch_all(self) -> None:
+        """/ai/upscale 必须先于 /ai/{path} 命中，保证缓冲式转发而非流式持锁。"""
+        from src.proxy.app import app
+
+        paths = [getattr(route, "path", "") for route in app.routes]
+        self.assertLess(
+            paths.index("/ai/upscale"),
+            paths.index("/ai/{path:path}"),
+            "/ai/upscale 必须注册在 catch-all 之前",
+        )
