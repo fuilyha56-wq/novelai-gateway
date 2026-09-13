@@ -245,6 +245,14 @@ class AccountPool:
             account.status = "ready" if enabled else "disabled"
             return True
 
+    def enabled_count(self) -> int:
+        """当前启用且配置了凭据的账号数量，用于并发容量计算。"""
+        with self._lock:
+            return sum(
+                1 for account in self._accounts.values()
+                if account.enabled and account.key
+            )
+
     def public(self) -> list[dict[str, Any]]:
         """返回脱敏账号列表。"""
         with self._lock:
