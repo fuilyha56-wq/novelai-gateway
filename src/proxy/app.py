@@ -12,7 +12,7 @@ import subprocess
 from urllib.parse import unquote
 
 from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from contextlib import asynccontextmanager
 
 from .config import settings
