@@ -363,7 +363,7 @@ Authorization: Bearer <GATEWAY_PASSWORD>
 }
 ```
 
-2026-08-30 起完整版 V4.5/V5 模型采用**两档计费**：网关按 Opus 免费额度边界判档——档内把固定档内价写入 `usage.prompt_tokens`（V4.5 = 0 / V5 = 8，即原 `-limit` 价），NewAPI 表达式 `p < 100` 分支 1:1 落账；档外不改写 usage，按 Anlas 换算的动态 token 计费（V5 = p × 130000、V4.5 = p × 100000）。档内/档外边界与 `-limit` 模型限制一致（见第 2 节），规则明细见 `TIERED_PRICING.md`。
+2026-08-30 起完整版 V4.5/V5 模型采用**两档计费**（2026-09-17 调价）：网关按 Opus 免费额度边界判档——档内把固定档内价写入 `usage.prompt_tokens`（V4.5 = 0 / V5 = 25，对应扣费 $0 / $6，与 `-limit` ModelPrice 平价）；档外不改写 usage，按 Anlas 换算的动态 token 计费（quota = p × 240,000 ÷ 2 [V5] / p × 160,000 ÷ 2 [V4.5]）。档内/档外边界与 `-limit` 模型限制一致（见第 2 节），规则明细见 `TIERED_PRICING.md`。
 
 `-limit` 模型与其他模型的 `usage` 按 Anlas 换算返回观测值（`prompt_tokens = max(1, round(Anlas/20*1000))`，V5 ×2），例如普通 `512x512`、28 steps 文生图为 5 Anlas，即 250 tokens；Director 去背景为 65 Anlas，即 3250 tokens。
 
@@ -992,7 +992,7 @@ Header 值优先级高于 body。
 
 ### 13.1 网关侧 Anlas 映射
 
-生成类 JSON 响应会包含 `usage.prompt_tokens`。**完整版 V4.5/V5 模型（两档计费）**：档内该值为固定档内价（V4.5 = 0 / V5 = 8），档外为 Anlas 换算的动态 token；NewAPI 用 `p < 100 ? tier("limit", ...) : tier("full", ...)` 两档表达式落账（见 `TIERED_PRICING.md`）。
+生成类 JSON 响应会包含 `usage.prompt_tokens`。**完整版 V4.5/V5 模型（两档计费）**：档内该值为固定档内价（V4.5 = 0 / V5 = 25，扣费 $0 / $6），档外为 Anlas 换算的动态 token；NewAPI 表达式与扣费换算见 `TIERED_PRICING.md`。
 
 其余模型与 `-limit` 模型的 `usage` 仅为观测值，映射为（V5 销售价 = 上游 Anlas × 2）：
 
@@ -1019,11 +1019,11 @@ X-Prompt-Tokens: 250
 
 ### 13.2 tiered_expr 示例
 
-完整版 V4.5/V5 模型在 NewAPI 配置（`p` 为网关 usage tokens；档内 0/1/8 走固定价分支，动态档恒 ≥ 250）：
+完整版 V4.5/V5 模型在 NewAPI 配置（`p` 为网关 usage tokens；档内 V4.5 钳位为 1、V5 固定 25，动态档恒 ≥ 250；实际扣费 quota = p × 系数 ÷ 2）：
 
 ```text
-V5:   p < 100 ? tier("limit", p * 1000000) : tier("full", p * 130000)
-V4.5: p < 100 ? tier("limit", p * 0)        : tier("full", p * 100000)
+V5:   tier("base", p * 240000 + c * 0)                                    # 档内 25 token = $6，与 limit 平价
+V4.5: p < 100 ? tier("limit", p * 0 + c * 0) : tier("full", p * 160000 + c * 0)  # 档内归零（0 被钳位成 1）
 ```
 
 实际金额取决于 NewAPI 的 QuotaPerUnit 与分组倍率；分支必须经 tier() 返回浮点表达式，不能写整数字面量（结算时会因 int→float64 断言失败回退预扣额度）。

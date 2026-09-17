@@ -2,8 +2,11 @@
 
 > 本文只描述当前代码实际返回的计费数据。
 >
-> **2026-08-30（最终版）**：6 个完整版 V4.5/V5 模型改为**两档计费**——请求落在 Opus 免费额度档内按**固定档内价**（即原 `-limit` 价：V4.5 免费 / V5 $8）；超出档按**原动态口径**按 token 计费（V5 = p × 130000 / V4.5 = p × 100000，p 为网关 Anlas 换算的 usage tokens）。`-limit` 模型保留不变。
-> **2026-08-30（中途方案，已废弃）**：全部 NAI 模型改按次计费（ModelPrice × 分组倍率）、以及"档外一口价 200/520"的两档变体——均不再使用。
+> **2026-09-17（现行版）**：NewAPI 侧表达式已改为**单档线性**（V5 = `p × 240000`、V4.5 = `p × 160000`），实际扣费 **quota = prompt_tokens × 系数 ÷ 2**（Draw 分组倍率 1.0），即 V5 每 token = $0.24、V4.5 每 token = $0.16。`-limit` 按次价降为 **V4.5 $0 / V5 $6**。为保持平价：
+> - 网关 V5 档内返回 **25 tokens**（25 × $0.24 = **$6.00**，与 limit ModelPrice 一致）；
+> - V4.5 档内返回 0，NewAPI 会把 0 钳位成 1，因此 V4.5 表达式必须保留 `p < 100` 归零分支，否则每张收 $0.16。
+>
+> **2026-08-30（历史）**：6 个完整版 V4.5/V5 模型改为**两档计费**——档内固定价（V4.5 免费 / V5 $8）、档外动态（V5 = p × 130000 / V4.5 = p × 100000）。该版表达式已被上述单档版取代。
 > 旧配置备份在 new-api 数据库 `options_backup_20260830`、`options_backup_two_tier_20260830` 表。
 
 ## 1. 计费数据来源
@@ -13,16 +16,16 @@
 ```json
 {
   "usage": {
-    "prompt_tokens": 8,
+    "prompt_tokens": 25,
     "completion_tokens": 0,
-    "total_tokens": 8
+    "total_tokens": 25
   }
 }
 ```
 
-- **完整版 V4.5/V5 模型，档内**：`prompt_tokens` = 固定档内价（V4.5 = 0，V5 = 8），由网关判档写入（`_billing_prompt_tokens`）。NewAPI 表达式的 `p < 100` 分支把它 1:1 落账。
-- **完整版 V4.5/V5 模型，档外**：网关不改写 usage，返回按 Anlas 换算的动态 token（`prompt_tokens = max(1, round(Anlas/20*1000))`，V5 销售价 ×2），NewAPI 按 `p × 130000`（V5）/ `p × 100000`（V4.5）动态计费。
-- **`-limit` 模型**：按次 ModelPrice（V4.5 免费 / V5 $8），不读 usage；usage 同动态口径仅供观测。
+- **完整版 V4.5/V5 模型，档内**：`prompt_tokens` = 固定档内价（V4.5 = 0，V5 = 25），由网关判档写入（`_billing_prompt_tokens`）。NewAPI 扣费：V5 = 25 × $0.24 = **$6**（与 limit 平价）；V4.5 = 0 被钳位成 1，靠表达式 `p < 100` 分支归 **$0**。
+- **完整版 V4.5/V5 模型，档外**：网关不改写 usage，返回按 Anlas 换算的动态 token（`prompt_tokens = max(1, round(Anlas/20*1000))`，V5 销售价 ×2），NewAPI 按 quota = p × 240,000 ÷ 2（V5）/ p × 160,000 ÷ 2（V4.5）动态计费。
+- **`-limit` 模型**：按次 ModelPrice（V4.5 免费 / V5 $6），不读 usage；usage 同动态口径仅供观测。
 
 ## 2. NewAPI 配置（tiered_expr）
 
@@ -30,21 +33,22 @@ options 表 `billing_setting.billing_mode`：6 个完整版模型 → `"tiered_e
 `billing_setting.billing_expr`：
 
 ```text
-V5 三兄弟:   p < 100 ? tier("limit", p * 1000000) : tier("full", p * 130000)
-V4.5 三兄弟: p < 100 ? tier("limit", p * 0)        : tier("full", p * 100000)
+V5 三兄弟:   tier("base", p * 240000 + c * 0)
+V4.5 三兄弟: p < 100 ? tier("limit", p * 0 + c * 0) : tier("full", p * 160000 + c * 0)
 ```
 
-- `p < 100` 分支 = 档内固定价（档内 usage 只有 0/1[钳位]/8，动态档 usage 恒 ≥ 250，边界安全）；
-- 档外分支 = 原动态口径：base case V4.5（20 Anlas → 1000 token）= 100 单位；V5（40 销售 Anlas → 2000 token）= 260 单位。
-- **为什么分支必须返回 `p * 0` / `p * 1000000`（经 tier() 包装的浮点表达式）而不是整数字面量 `0`**：表达式引擎要求结果为 float64，三元 else 分支写整数字面量会在运行时返回 int，类型断言失败 → 结算报错 → 回退预扣额度，导致错误扣费。
-- 档内价调整：改网关 `_BILLING_LIMIT_UNITS_*` 常量 + NewAPI 表达式 limit 分支；动态价调整：改 NewAPI 表达式 full 分支系数。
+- 实际扣费 **quota = p × 系数 ÷ 2**（实测：V5 p=8 → 960,000、p=25 → 3,000,000；V4.5 p=1250 → 100,000,000；Draw 倍率 1.0）；
+- V4.5 的 `p < 100` 分支 = 档内归零：档内 usage 被 NewAPI 从 0 钳位成 1（图片链路 `PromptTokens == 0 → 1`），没有这个分支档内每张会收 1 × $0.16 = $0.16；
+- V5 无需分支：档内固定返回 25（$6），动态档 usage 恒 ≥ 250（$60+），不冲突；
+- **为什么归零分支必须写 `p * 0 + c * 0`（经 tier() 包装的浮点表达式）而不是整数字面量 `0`**：表达式引擎要求结果为 float64，三元分支写整数字面量会在运行时返回 int，类型断言失败 → 结算报错 → 回退预扣额度，导致错误扣费。
+- 档内价调整：改网关 `_BILLING_LIMIT_UNITS_*` 常量（换算：目标价 ÷ $0.24[V5]）；动态价调整：改 NewAPI 表达式系数。
 
 ### 2.2 `-limit` 模型（按次，未变）
 
 | 模型 | 按次价格 |
 |---|---:|
 | `nai-v4.5-*-limit` | $0（免费） |
-| `nai-v5-*-limit` | $8 |
+| `nai-v5-*-limit` | $6（2026-09-17 降价，原 $8） |
 
 ## 3. 档内 / 档外判定（Opus 免费额度边界）
 

@@ -119,11 +119,12 @@ class GatewayRegressionTests(unittest.TestCase):
             self.assertTrue(base64.b64decode(item["b64_json"]).startswith(b"\x89PNG"))
 
     def test_openai_n_cannot_bypass_sample_limit(self) -> None:
+        # MAX_N_SAMPLES 已放宽到 8（2026-09-14 批量张数改动），n 用 9 保持"超上限必须 400"语义
         with self.assertRaises(HTTPException) as raised:
             _build_generation_payload({
                 "model": "nai-diffusion-4-5-full",
                 "prompt": "test",
-                "n": 7,
+                "n": 9,
             })
         self.assertEqual(raised.exception.status_code, 400)
 

@@ -56,7 +56,7 @@ MAX_IMAGE_DIM = 1600
 MIN_STEPS = 1
 MAX_STEPS = 50
 MIN_N_SAMPLES = 1
-MAX_N_SAMPLES = 6
+MAX_N_SAMPLES = 8
 
 # Opus 免费额度边界（超出任一即消耗 Anlas）
 OPUS_FREE_MAX_STEPS = 28
@@ -990,12 +990,13 @@ def _anlas_to_tokens(anlas: int) -> int:
 # ── 两档计费（-limit 模型已并入完整版模型的档内定价）───────────
 # 档内 = Opus 免费额度边界内（_in_opus_free_envelope）→ 固定档内价（即原 -limit 价）；
 # 档外 = 超出边界或付费操作 → 不改写 usage，沿用 Anlas 动态换算旧口径，
-#        由 NewAPI 按 token 动态计费（V5: p * 130000 / V4.5: p * 100000，见 TIERED_PRICING.md）。
-# NewAPI 侧表达式形如 p < 100 ? tier("limit", p * 1000000) : tier("full", p * 130000)，
-# 其中 p < 100 的分支承载档内固定价（档内 usage 即价格单位；动态档 usage 恒 ≥ 250）。
+#        由 NewAPI 按 token 动态计费（V5: p * 240000 / V4.5: p * 160000，见 TIERED_PRICING.md）。
+# NewAPI 实际扣费 quota = prompt_tokens × 表达式系数 ÷ 2（Draw 分组倍率 1.0）：
+#   V5 档内 25 tokens × 240000 / 2 = 3,000,000 quota = $6，与 nai-v5-*-limit ModelPrice 平价；
+#   V4.5 档内返回 0，NewAPI 钳位为 1，表达式需 p < 100 分支归零（p * 0，不能写字面量 0）。
 # 调价须与 NewAPI 表达式同步修改。
-_BILLING_LIMIT_UNITS_V45 = 0  # V4.5 档内免费（= 原 nai-v4.5-*-limit 价格）
-_BILLING_LIMIT_UNITS_V5 = 8   # V5 档内固定价（= 原 nai-v5-*-limit 价格）
+_BILLING_LIMIT_UNITS_V45 = 0   # V4.5 档内免费（= 原 nai-v4.5-*-limit 价格）
+_BILLING_LIMIT_UNITS_V5 = 25   # V5 档内固定价：25 tokens × $0.24 = $6（= nai-v5-*-limit ModelPrice）
 
 
 def _tiered_billing_units(model_name: str) -> int | None:
