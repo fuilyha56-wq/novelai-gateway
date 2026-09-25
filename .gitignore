@@ -5,13 +5,16 @@ __pycache__/
 env/
 venv/
 ENV/
-.env
+# 环境变量文件可能含数据库/上游密钥，一律忽略，仅放行示例
+.env*
+!.env.example
 images/*.png
 images/*.jpg
 images/*.jpeg
 logs/*.log
 logs/*.json
 .claude/
+.mimosa/
 .vscode/
 .idea/
 *.swp
@@ -27,8 +30,8 @@ DESIGN.md
 _*.html
 inpaint_*_result.png
 *_result.png
-.rsh.py
-.rsh_run.py
+# 远程命令执行脚本（.rsh2.py / .rsh_price.py 等变体），内含明文服务器凭据，绝不入库
+.rsh*.py
 _test_*.py
 .test_*.py
 newapi-pricing.md
@@ -65,7 +68,14 @@ _test_*.png
 
 # 临时导出文件
 _tree.json
-.upload.py
+# 上传脚本（.upload2.py 等变体），内含明文服务器凭据，绝不入库
+.upload*.py
 
-# 服务器连接指南（含敏感IP信息）
+# ===== 敏感内容（凭据 / 密钥 / 服务器信息），绝不入库 =====
+# 远程探针与运维脚本：_probe_*.py、_cleanup_sessions.py、_matrix*.py、_acct_probe.py 等
+# 其中多个脚本硬编码生产服务器地址、用户名与明文密码
+_*.py
+# 数据库改价/配置脚本（.fix_*.sql、.set_*.sql）
+.*.sql
+# 服务器连接指南（含敏感 IP 信息）
 SERVER_CONNECTION_GUIDE.md
