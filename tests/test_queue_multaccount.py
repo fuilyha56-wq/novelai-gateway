@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from proxy.account_pool import account_pool
-from proxy.queue import ConcurrencyGate
+from proxy.queue import ConcurrencyGate, account_generation_gate
 
 
 def _configure_accounts(count: int) -> None:
@@ -131,3 +131,47 @@ def test_enabled_count_counts_only_enabled_with_keys():
     assert account_pool.enabled_count() == 2
     account_pool.set_enabled("acc-3", True)
     assert account_pool.enabled_count() == 3
+
+
+def test_same_account_generation_is_serialized():
+    _configure_accounts(2)
+
+    async def scenario():
+        inside = 0
+        peak = 0
+
+        async def worker():
+            nonlocal inside, peak
+            request = type("Request", (), {"state": type("State", (), {"gateway_account_id": "acc-1"})()})()
+            async with account_generation_gate(request):
+                inside += 1
+                peak = max(peak, inside)
+                await asyncio.sleep(0.02)
+                inside -= 1
+
+        await asyncio.gather(worker(), worker())
+        return peak
+
+    assert asyncio.run(scenario()) == 1
+
+
+def test_different_accounts_can_generate_in_parallel():
+    _configure_accounts(2)
+
+    async def scenario():
+        inside = 0
+        peak = 0
+
+        async def worker(account_id):
+            nonlocal inside, peak
+            request = type("Request", (), {"state": type("State", (), {"gateway_account_id": account_id})()})()
+            async with account_generation_gate(request):
+                inside += 1
+                peak = max(peak, inside)
+                await asyncio.sleep(0.02)
+                inside -= 1
+
+        await asyncio.gather(worker("acc-1"), worker("acc-2"))
+        return peak
+
+    assert asyncio.run(scenario()) == 2

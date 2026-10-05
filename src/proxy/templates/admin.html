@@ -1,2501 +1,323 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NovelAI Gateway Hub</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      color-scheme: dark;
-      --primary: #00ffff;
-      --primary-rgb: 0, 255, 255;
-      --primary-dim: rgba(0, 255, 255, 0.12);
-      --primary-glow: rgba(0, 255, 255, 0.45);
-      --primary-container: #003840;
-      --on-primary: #001f24;
-      
-      --surface-bg: #060a12;
-      --surface-1: rgba(13, 21, 39, var(--card-opacity, 0.88));
-      --surface-2: rgba(18, 30, 56, var(--card-opacity, 0.92));
-      --surface-3: rgba(24, 40, 74, 0.95);
-      --surface-elevated: rgba(18, 30, 56, var(--card-opacity, 0.85));
-      --surface-outline: #22375f;
-      --surface-outline-dim: rgba(34, 55, 95, 0.6);
-      --surface-hover: rgba(0, 255, 255, 0.06);
-      
-      --sidebar-bg: rgba(9, 15, 27, var(--sidebar-opacity, 0.92));
-      --card-blur: 16px;
-      --bg-dim-opacity: 0.75;
-      --wallpaper-blur: 0px;
-      
-      --text-main: #f0f6fc;
-      --text-muted: #8fa5c9;
-      --text-subtle: #5c7499;
-      
-      --accent-tier: #ffd166;
-      --accent-green: #06d6a0;
-      --accent-green-dim: rgba(6, 214, 160, 0.16);
-      --accent-red: #ff4d6d;
-      --accent-red-dim: rgba(255, 77, 109, 0.16);
-      --accent-purple: #c77dff;
-      --accent-blue: #4cc9f0;
-      
-      --radius-xs: 6px;
-      --radius-sm: 10px;
-      --radius-md: 16px;
-      --radius-lg: 24px;
-      --radius-full: 9999px;
-      
-      --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
-      --font-mono: 'Fira Code', ui-monospace, monospace;
-      --shadow-subtle: 0 10px 36px rgba(0, 0, 0, 0.55);
-      --shadow-cyan: 0 0 24px -4px rgba(0, 255, 255, 0.35);
-      --shadow-dropdown: 0 16px 40px rgba(0, 0, 0, 0.7), 0 0 20px rgba(0, 255, 255, 0.15);
-    }
-
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    
-    body {
-      background-color: var(--surface-bg);
-      color: var(--text-main);
-      font-family: var(--font-sans);
-      font-size: 14px;
-      line-height: 1.5;
-      min-height: 100vh;
-      display: flex;
-      position: relative;
-      overflow-x: hidden;
-    }
-
-    /* Custom Wallpaper & Backdrop System */
-    #wallpaperBackdrop {
-      position: fixed;
-      inset: 0;
-      z-index: -2;
-      background-size: cover;
-      background-position: center;
-      background-repeat: no-repeat;
-      filter: blur(var(--wallpaper-blur));
-      transform: scale(1.04);
-      transition: background-image 0.4s ease, filter 0.3s ease;
-    }
-    #wallpaperOverlay {
-      position: fixed;
-      inset: 0;
-      z-index: -1;
-      background-color: rgba(6, 10, 18, var(--bg-dim-opacity));
-      background-image: 
-        radial-gradient(circle at 10% 0%, rgba(0, 255, 255, 0.12) 0%, transparent 45%),
-        radial-gradient(circle at 90% 15%, rgba(199, 125, 255, 0.08) 0%, transparent 40%),
-        radial-gradient(circle at 50% 100%, rgba(6, 214, 160, 0.06) 0%, transparent 50%);
-      pointer-events: none;
-      transition: background-color 0.3s ease;
-    }
-
-    /* Layout Shell */
-    .app-shell {
-      display: grid;
-      grid-template-columns: 260px 1fr;
-      width: 100%;
-      min-height: 100vh;
-      position: relative;
-      z-index: 1;
-    }
-
-    /* Sidebar Navigation Rail */
-    aside {
-      background: var(--sidebar-bg);
-      backdrop-filter: blur(var(--card-blur));
-      -webkit-backdrop-filter: blur(var(--card-blur));
-      border-right: 1px solid var(--surface-outline-dim);
-      padding: 24px 16px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      position: sticky;
-      top: 0;
-      height: 100vh;
-      user-select: none;
-      z-index: 20;
-    }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      padding: 6px 12px 24px;
-      border-bottom: 1px solid var(--surface-outline-dim);
-    }
-    .brand-icon {
-      width: 42px;
-      height: 42px;
-      border-radius: var(--radius-md);
-      background: linear-gradient(135deg, rgba(0, 255, 255, 0.25), rgba(199, 125, 255, 0.25));
-      border: 1px solid var(--primary);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      box-shadow: var(--shadow-cyan);
-      flex-shrink: 0;
-    }
-    .brand-icon svg { width: 22px; height: 22px; color: var(--primary); }
-    .brand-text h1 {
-      font-size: 16px;
-      font-weight: 800;
-      letter-spacing: -0.3px;
-      color: #fff;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .brand-text h1 span {
-      color: var(--primary);
-      font-size: 11px;
-      padding: 1px 6px;
-      background: var(--primary-dim);
-      border-radius: var(--radius-full);
-      border: 1px solid rgba(0, 255, 255, 0.4);
-      font-family: var(--font-mono);
-      font-weight: 600;
-    }
-    .brand-text p {
-      font-size: 11.5px;
-      color: var(--text-muted);
-      margin-top: 2px;
-    }
-
-    /* Nav Item */
-    nav {
-      margin-top: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      flex-grow: 1;
-    }
-    nav button {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 12px 14px;
-      background: transparent;
-      border: 1px solid transparent;
-      border-radius: var(--radius-sm);
-      color: var(--text-muted);
-      font-family: inherit;
-      font-size: 13.5px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      text-align: left;
-      width: 100%;
-    }
-    nav button svg {
-      width: 18px;
-      height: 18px;
-      opacity: 0.75;
-      transition: transform 0.2s, color 0.2s, opacity 0.2s;
-      flex-shrink: 0;
-    }
-    nav button:hover {
-      background: var(--surface-2);
-      color: var(--text-main);
-      border-color: var(--surface-outline-dim);
-    }
-    nav button:hover svg { transform: scale(1.1); opacity: 1; color: var(--primary); }
-    nav button.active {
-      background: var(--primary-dim);
-      color: var(--primary);
-      border-color: rgba(0, 255, 255, 0.4);
-      box-shadow: 0 0 18px -4px var(--primary-dim);
-    }
-    nav button.active svg { opacity: 1; color: var(--primary); }
-
-    .sidebar-footer {
-      padding-top: 16px;
-      border-top: 1px solid var(--surface-outline-dim);
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .status-pill {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 8px 12px;
-      background: var(--surface-2);
-      border-radius: var(--radius-sm);
-      font-size: 11.5px;
-      color: var(--text-muted);
-      border: 1px solid var(--surface-outline-dim);
-    }
-    .dot-live {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--accent-green);
-      box-shadow: 0 0 8px var(--accent-green);
-      animation: pulse-dot 2s infinite;
-    }
-    @keyframes pulse-dot { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
-
-    /* Main Container */
-    main {
-      padding: 32px clamp(20px, 4vw, 56px);
-      max-width: 1560px;
-      width: 100%;
-    }
-
-    header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-end;
-      margin-bottom: 28px;
-      gap: 20px;
-    }
-    .header-title h2 {
-      font-size: 26px;
-      font-weight: 800;
-      letter-spacing: -0.5px;
-      color: #fff;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .header-title p {
-      color: var(--text-muted);
-      font-size: 13.5px;
-      margin-top: 4px;
-    }
-    .header-actions {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-
-    /* MD3 Cyber Buttons */
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      padding: 10px 18px;
-      border-radius: var(--radius-full);
-      font-family: inherit;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      border: 1px solid var(--surface-outline);
-      background: var(--surface-2);
-      color: var(--text-main);
-      backdrop-filter: blur(10px);
-      text-decoration: none;
-      user-select: none;
-    }
-    .btn:hover {
-      background: var(--surface-3);
-      border-color: rgba(0, 255, 255, 0.4);
-      color: #fff;
-      transform: translateY(-1px);
-    }
-    .btn:active { transform: translateY(0); }
-    .btn svg { width: 15px; height: 15px; }
-
-    .btn-primary {
-      background: var(--primary);
-      color: var(--on-primary);
-      border-color: var(--primary);
-      font-weight: 700;
-      box-shadow: 0 0 16px -2px rgba(0, 255, 255, 0.4);
-    }
-    .btn-primary:hover {
-      background: #33ffff;
-      border-color: #33ffff;
-      color: var(--on-primary);
-      box-shadow: 0 0 24px 0 rgba(0, 255, 255, 0.6);
-    }
-
-    .btn-outline-primary {
-      background: var(--primary-dim);
-      color: var(--primary);
-      border-color: rgba(0, 255, 255, 0.45);
-    }
-    .btn-outline-primary:hover {
-      background: rgba(0, 255, 255, 0.22);
-      border-color: var(--primary);
-      box-shadow: 0 0 16px -2px var(--primary-dim);
-    }
-
-    .btn-danger {
-      background: var(--accent-red-dim);
-      color: var(--accent-red);
-      border-color: rgba(255, 77, 109, 0.4);
-    }
-    .btn-danger:hover {
-      background: var(--accent-red);
-      color: #fff;
-      border-color: var(--accent-red);
-      box-shadow: 0 0 18px rgba(255, 77, 109, 0.4);
-    }
-
-    .btn-sm {
-      padding: 7px 13px;
-      font-size: 12px;
-      border-radius: var(--radius-sm);
-    }
-    .btn-icon {
-      width: 36px;
-      height: 36px;
-      padding: 0;
-      border-radius: var(--radius-full);
-    }
-
-    /* Cards & Containers */
-    .card {
-      background: var(--surface-elevated);
-      backdrop-filter: blur(var(--card-blur));
-      -webkit-backdrop-filter: blur(var(--card-blur));
-      border: 1px solid var(--surface-outline-dim);
-      border-radius: var(--radius-lg);
-      padding: 24px;
-      box-shadow: var(--shadow-subtle);
-      margin-bottom: 24px;
-      position: relative;
-      overflow: hidden;
-      transition: border-color 0.25s, box-shadow 0.25s;
-    }
-    .card:hover {
-      border-color: rgba(0, 255, 255, 0.25);
-    }
-    .card::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 1px;
-      background: linear-gradient(90deg, transparent, rgba(0, 255, 255, 0.35), transparent);
-    }
-
-    .card-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 20px;
-      padding-bottom: 14px;
-      border-bottom: 1px solid var(--surface-outline-dim);
-    }
-    .card-title {
-      font-size: 16.5px;
-      font-weight: 700;
-      color: #fff;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .card-title-icon {
-      width: 32px;
-      height: 32px;
-      border-radius: var(--radius-sm);
-      background: var(--primary-dim);
-      border: 1px solid rgba(0, 255, 255, 0.3);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--primary);
-    }
-    .card-title-icon svg { width: 17px; height: 17px; }
-    .card-subtitle {
-      font-size: 12px;
-      color: var(--text-muted);
-      font-weight: normal;
-    }
-
-    /* Metric Grid (MD3 Stat Cards) */
-    .metrics-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-      gap: 16px;
-      margin-bottom: 24px;
-    }
-    .metric-card {
-      background: var(--surface-elevated);
-      backdrop-filter: blur(var(--card-blur));
-      -webkit-backdrop-filter: blur(var(--card-blur));
-      border: 1px solid var(--surface-outline-dim);
-      border-radius: var(--radius-md);
-      padding: 18px 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      position: relative;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    .metric-card:hover {
-      transform: translateY(-2px);
-      border-color: rgba(0, 255, 255, 0.4);
-      box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.6), var(--shadow-cyan);
-    }
-    .metric-top {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .metric-label {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.6px;
-    }
-    .metric-icon-badge {
-      width: 28px;
-      height: 28px;
-      border-radius: 8px;
-      background: var(--primary-dim);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--primary);
-    }
-    .metric-icon-badge svg { width: 15px; height: 15px; }
-    .metric-value {
-      font-size: 26px;
-      font-weight: 800;
-      font-family: var(--font-mono);
-      color: #fff;
-      letter-spacing: -0.5px;
-      margin: 4px 0 2px;
-    }
-    .metric-desc {
-      font-size: 11.5px;
-      color: var(--text-subtle);
-    }
-
-    /* Progress bar */
-    .progress-track {
-      width: 100%;
-      height: 6px;
-      background: var(--surface-3);
-      border-radius: var(--radius-full);
-      overflow: hidden;
-      margin-top: 8px;
-    }
-    .progress-fill {
-      height: 100%;
-      background: linear-gradient(90deg, var(--primary), #33ffff);
-      border-radius: var(--radius-full);
-      box-shadow: 0 0 10px var(--primary);
-      transition: width 0.4s ease;
-    }
-
-    /* Account Switcher Bar */
-    .account-picker-bar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      background: var(--surface-1);
-      border: 1px solid var(--surface-outline-dim);
-      border-radius: var(--radius-md);
-      padding: 12px 18px;
-      margin-bottom: 20px;
-      flex-wrap: wrap;
-    }
-    .account-picker-chips {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-    .account-chip {
-      padding: 6px 14px;
-      border-radius: var(--radius-full);
-      background: var(--surface-2);
-      border: 1px solid var(--surface-outline);
-      color: var(--text-muted);
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .account-chip:hover {
-      background: var(--surface-3);
-      color: #fff;
-      border-color: rgba(0, 255, 255, 0.35);
-    }
-    .account-chip.active {
-      background: var(--primary);
-      color: var(--on-primary);
-      border-color: var(--primary);
-      font-weight: 700;
-      box-shadow: 0 0 14px rgba(0, 255, 255, 0.4);
-    }
-
-    /* Upstream Data Cards Grid */
-    .upstream-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 18px;
-    }
-    .upstream-card {
-      background: var(--surface-2);
-      border: 1px solid var(--surface-outline-dim);
-      border-radius: var(--radius-md);
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-      position: relative;
-    }
-    .upstream-card-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .upstream-card-title {
-      font-size: 13.5px;
-      font-weight: 700;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .upstream-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 7px 0;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-      font-size: 13px;
-    }
-    .upstream-row:last-child { border-bottom: none; }
-    .upstream-label { color: var(--text-muted); }
-    .upstream-val {
-      font-weight: 600;
-      font-family: var(--font-mono);
-      color: #fff;
-      text-align: right;
-    }
-    .upstream-val.highlight {
-      color: var(--primary);
-      text-shadow: 0 0 10px rgba(0, 255, 255, 0.4);
-    }
-
-    /* Badges */
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 3px 9px;
-      border-radius: var(--radius-full);
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.3px;
-      text-transform: uppercase;
-    }
-    .badge-tier {
-      background: rgba(255, 209, 102, 0.16);
-      color: var(--accent-tier);
-      border: 1px solid rgba(255, 209, 102, 0.35);
-    }
-    .badge-green {
-      background: var(--accent-green-dim);
-      color: var(--accent-green);
-      border: 1px solid rgba(6, 214, 160, 0.3);
-    }
-    .badge-red {
-      background: var(--accent-red-dim);
-      color: var(--accent-red);
-      border: 1px solid rgba(255, 77, 109, 0.3);
-    }
-    .badge-cyan {
-      background: var(--primary-dim);
-      color: var(--primary);
-      border: 1px solid rgba(0, 255, 255, 0.3);
-    }
-
-    /* =========================================================
-       TRUE MD3 CUSTOM DROPDOWN SELECT & INTERACTIVE CONTROLS
-       ========================================================= */
-    .md3-select-wrapper {
-      position: relative;
-      display: inline-block;
-      min-width: 180px;
-      user-select: none;
-    }
-    .md3-select-wrapper.full {
-      width: 100%;
-    }
-    .md3-select-trigger {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      background: var(--surface-1);
-      border: 1px solid var(--surface-outline);
-      border-radius: var(--radius-sm);
-      padding: 10px 14px;
-      color: var(--text-main);
-      font-family: inherit;
-      font-size: 13px;
-      cursor: pointer;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-    }
-    .md3-select-trigger:hover {
-      background: var(--surface-2);
-      border-color: rgba(0, 255, 255, 0.4);
-    }
-    .md3-select-wrapper.open .md3-select-trigger {
-      border-color: var(--primary);
-      box-shadow: 0 0 14px -2px var(--primary-glow);
-      background: var(--surface-2);
-    }
-    .md3-select-text {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      font-weight: 500;
-    }
-    .md3-select-arrow {
-      color: var(--primary);
-      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-      flex-shrink: 0;
-      display: flex;
-      align-items: center;
-    }
-    .md3-select-arrow svg { width: 16px; height: 16px; }
-    .md3-select-wrapper.open .md3-select-arrow {
-      transform: rotate(180deg);
-    }
-    .md3-select-dropdown {
-      position: absolute;
-      top: calc(100% + 6px);
-      left: 0;
-      right: 0;
-      background: var(--surface-2);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border: 1px solid rgba(0, 255, 255, 0.3);
-      border-radius: var(--radius-md);
-      box-shadow: var(--shadow-dropdown);
-      padding: 6px;
-      z-index: 150;
-      max-height: 260px;
-      overflow-y: auto;
-      opacity: 0;
-      transform: translateY(-8px) scale(0.98);
-      pointer-events: none;
-      transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1), transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    .md3-select-wrapper.open .md3-select-dropdown {
-      opacity: 1;
-      transform: translateY(0) scale(1);
-      pointer-events: auto;
-    }
-    .md3-option {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 10px 12px;
-      border-radius: var(--radius-xs);
-      color: var(--text-main);
-      font-size: 13px;
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-    .md3-option:hover {
-      background: rgba(0, 255, 255, 0.12);
-      color: var(--primary);
-    }
-    .md3-option.selected {
-      background: var(--primary-dim);
-      color: var(--primary);
-      font-weight: 700;
-      border-left: 3px solid var(--primary);
-    }
-    .md3-option code {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      opacity: 0.75;
-    }
-
-    /* Fallback and styled native select */
-    select {
-      appearance: none;
-      -webkit-appearance: none;
-      background: var(--surface-1);
-      border: 1px solid var(--surface-outline);
-      border-radius: var(--radius-sm);
-      padding: 11px 36px 11px 14px;
-      color: var(--text-main);
-      font-family: inherit;
-      font-size: 13px;
-      outline: none;
-      cursor: pointer;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2300ffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 14px center;
-      background-size: 15px;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    select:focus {
-      border-color: var(--primary);
-      box-shadow: 0 0 12px -2px var(--primary-glow);
-      background-color: var(--surface-2);
-    }
-    select option {
-      background-color: #121e38;
-      color: #f0f6fc;
-      padding: 10px;
-    }
-
-    /* Form Fields & MD3 Floating-style Inputs */
-    .form-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 16px;
-    }
-    .form-field {
-      display: flex;
-      flex-direction: column;
-      gap: 7px;
-    }
-    .form-field.full { grid-column: 1 / -1; }
-    .form-label {
-      font-size: 12.5px;
-      font-weight: 600;
-      color: var(--text-muted);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    
-    input[type="text"], input[type="number"], input[type="password"], textarea {
-      width: 100%;
-      background: var(--surface-1);
-      border: 1px solid var(--surface-outline);
-      border-radius: var(--radius-sm);
-      padding: 11px 14px;
-      color: var(--text-main);
-      font-family: inherit;
-      font-size: 13px;
-      outline: none;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    input:focus, textarea:focus {
-      border-color: var(--primary);
-      box-shadow: 0 0 14px -2px var(--primary-glow);
-      background: var(--surface-2);
-    }
-    textarea {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      min-height: 180px;
-      line-height: 1.6;
-    }
-
-    /* Range slider customized MD3 cyan */
-    input[type="range"] {
-      -webkit-appearance: none;
-      width: 100%;
-      height: 6px;
-      border-radius: var(--radius-full);
-      background: var(--surface-3);
-      outline: none;
-      border: none;
-      padding: 0;
-      cursor: pointer;
-    }
-    input[type="range"]::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      background: var(--primary);
-      cursor: pointer;
-      box-shadow: 0 0 10px var(--primary);
-      transition: transform 0.15s;
-    }
-    input[type="range"]::-webkit-slider-thumb:hover {
-      transform: scale(1.2);
-    }
-
-    /* Switch Component */
-    .switch-container {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      cursor: pointer;
-      user-select: none;
-    }
-    .switch {
-      position: relative;
-      width: 44px;
-      height: 24px;
-      background: var(--surface-3);
-      border-radius: var(--radius-full);
-      transition: background 0.2s;
-      border: 1px solid var(--surface-outline);
-    }
-    .switch::after {
-      content: '';
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      width: 18px;
-      height: 18px;
-      background: #fff;
-      border-radius: 50%;
-      transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    input[type="checkbox"]:checked + .switch {
-      background: var(--primary);
-      border-color: var(--primary);
-    }
-    input[type="checkbox"]:checked + .switch::after {
-      transform: translateX(20px);
-      background: var(--on-primary);
-    }
-
-    /* MD3 Modal Dialog Overlay */
-    .modal-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(3, 6, 12, 0.82);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 200;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    .modal-overlay.active {
-      opacity: 1;
-      pointer-events: auto;
-    }
-    .modal-card {
-      background: var(--surface-2);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
-      border: 1px solid var(--primary);
-      box-shadow: var(--shadow-cyan), 0 24px 48px rgba(0, 0, 0, 0.8);
-      border-radius: var(--radius-lg);
-      width: 90%;
-      max-width: 540px;
-      padding: 28px;
-      transform: scale(0.92);
-      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-      max-height: 90vh;
-      overflow-y: auto;
-    }
-    .modal-overlay.active .modal-card { transform: scale(1); }
-    .modal-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 20px;
-    }
-    .modal-header h3 {
-      font-size: 19px;
-      font-weight: 700;
-      color: #fff;
-    }
-
-    /* Live Log Viewport */
-    .log-viewport {
-      background: #04070e;
-      border: 1px solid var(--surface-outline);
-      border-radius: var(--radius-md);
-      padding: 16px;
-      font-family: var(--font-mono);
-      font-size: 12px;
-      line-height: 1.65;
-      color: #cad5e8;
-      max-height: 580px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      box-shadow: inset 0 2px 10px rgba(0,0,0,0.5);
-    }
-    .log-line-info { color: #62c6ff; }
-    .log-line-warn { color: #ffd166; }
-    .log-line-error { color: #ff4d6d; }
-
-    /* Tables */
-    .table-container {
-      border-radius: var(--radius-md);
-      border: 1px solid var(--surface-outline-dim);
-      background: var(--surface-1);
-      overflow: hidden;
-      overflow-x: auto;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      text-align: left;
-      font-size: 13px;
-    }
-    th {
-      background: var(--surface-2);
-      padding: 14px 16px;
-      color: var(--text-muted);
-      font-weight: 700;
-      border-bottom: 1px solid var(--surface-outline-dim);
-      text-transform: uppercase;
-      font-size: 11.5px;
-      letter-spacing: 0.5px;
-    }
-    td {
-      padding: 14px 16px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-      color: var(--text-main);
-    }
-    tr:hover td { background: var(--surface-hover); }
-
-    /* Toast Notification */
-    .toast {
-      position: fixed;
-      bottom: 24px;
-      right: 24px;
-      background: rgba(18, 30, 56, 0.95);
-      backdrop-filter: blur(16px);
-      border: 1px solid var(--primary);
-      box-shadow: var(--shadow-cyan), 0 10px 30px rgba(0,0,0,0.5);
-      border-radius: var(--radius-sm);
-      padding: 12px 20px;
-      color: #fff;
-      font-size: 13.5px;
-      font-weight: 600;
-      z-index: 999;
-      opacity: 0;
-      transform: translateY(20px);
-      pointer-events: none;
-      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    .toast.show {
-      opacity: 1;
-      transform: translateY(0);
-      pointer-events: auto;
-    }
-
-    /* Details Drawer */
-    .raw-drawer {
-      margin-top: 14px;
-      border: 1px solid var(--surface-outline-dim);
-      border-radius: var(--radius-md);
-      overflow: hidden;
-      background: var(--surface-1);
-    }
-    .raw-drawer summary {
-      padding: 10px 16px;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-muted);
-      cursor: pointer;
-      user-select: none;
-      background: var(--surface-2);
-      transition: all 0.2s;
-    }
-    .raw-drawer summary:hover { color: var(--primary); background: var(--surface-3); }
-    .raw-drawer pre {
-      padding: 14px;
-      font-family: var(--font-mono);
-      font-size: 11px;
-      max-height: 220px;
-      overflow-y: auto;
-      color: #79c0ff;
-    }
-
-    /* Wallpaper Thumbnails */
-    .wallpaper-preset-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 10px;
-      margin-top: 8px;
-    }
-    .wallpaper-thumb {
-      height: 60px;
-      border-radius: var(--radius-sm);
-      background-size: cover;
-      background-position: center;
-      border: 2px solid var(--surface-outline);
-      cursor: pointer;
-      transition: all 0.2s;
-      position: relative;
-    }
-    .wallpaper-thumb:hover {
-      border-color: var(--primary);
-      transform: scale(1.04);
-    }
-    .wallpaper-thumb.active {
-      border-color: var(--primary);
-      box-shadow: 0 0 12px var(--primary);
-    }
-
-    .hidden { display: none !important; }
-    
-    @media (max-width: 900px) {
-      .app-shell { grid-template-columns: 1fr; }
-      aside { height: auto; position: static; }
-      .wallpaper-preset-grid { grid-template-columns: repeat(2, 1fr); }
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NAI Gateway</title>
+<style>
+:root{--wall:linear-gradient(120deg,#2b1055,#0f1a2e 50%,#03323f);--blur:18px;--alpha:.5;--dim:.2;--fg:#f1f3f8;--sub:#a3abc2;--acc:#8b7bff;--ok:#43d17a;--warn:#f0b43c;--err:#ff6370;--edge:rgba(255,255,255,.14)}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;color:var(--fg);font:14px/1.55 system-ui,"Microsoft YaHei",sans-serif;background:#0b0f19 var(--wall) center/cover fixed no-repeat}
+body::before{content:"";position:fixed;inset:0;background:rgba(0,0,0,var(--dim));z-index:-1}
+.glass{background:rgba(18,22,36,var(--alpha));border:1px solid var(--edge);border-radius:16px;backdrop-filter:blur(var(--blur)) saturate(150%);-webkit-backdrop-filter:blur(var(--blur)) saturate(150%);box-shadow:0 10px 40px rgba(0,0,0,.3)}
+aside{width:220px;margin:16px 0 16px 16px;padding:20px 12px;display:flex;flex-direction:column;gap:4px;position:sticky;top:16px;height:calc(100vh - 32px)}
+aside .logo{font-weight:800;font-size:18px;padding:0 10px 18px}aside .logo b{color:var(--acc)}
+aside button{all:unset;cursor:pointer;padding:9px 12px;border-radius:10px;color:var(--sub)}
+aside button:hover,aside button[aria-current=page]{background:rgba(255,255,255,.09);color:var(--fg)}
+aside button:focus-visible,.btn:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+aside .foot{margin-top:auto;display:flex;flex-direction:column;gap:6px}
+main{flex:1;padding:16px 24px;min-width:0}
+.page{display:none}.page.on{display:block;animation:in .25s ease}
+@keyframes in{from{opacity:0;transform:translateY(6px)}}
+h1{font-size:22px;margin:6px 0 18px}h3{margin:0 0 10px;font-size:13px;color:var(--sub);font-weight:600}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));margin-bottom:16px}
+.grid.wide{grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+.box{padding:18px}.big{font-size:32px;font-weight:800}.big small{font-size:13px;color:var(--sub);font-weight:400}
+.meter{height:6px;border-radius:3px;background:rgba(255,255,255,.1);margin-top:10px;overflow:hidden}
+.meter i{display:block;height:100%;background:var(--acc);transition:width .6s}.meter i.w{background:var(--warn)}.meter i.e{background:var(--err)}
+table{width:100%;border-collapse:collapse}th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--edge)}
+th{font-size:12px;color:var(--sub);font-weight:500}tr:last-child td{border-bottom:0}
+.kv td:first-child{color:var(--sub);width:40%}
+.btn{border:0;border-radius:10px;padding:8px 14px;font:inherit;color:#fff;background:var(--acc);cursor:pointer}
+.btn.g{background:rgba(255,255,255,.1)}.btn.r{background:var(--err)}.btn:disabled{opacity:.5;cursor:wait}
+.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}.bar .fill{flex:1}
+input,select,textarea{width:100%;font:inherit;color:var(--fg);background:rgba(0,0,0,.3);border:1px solid var(--edge);border-radius:10px;padding:8px 10px}
+textarea{font:13px/1.5 Consolas,monospace}label{display:block;font-size:12px;color:var(--sub);margin:12px 0 4px}
+.pill{display:inline-block;font-size:12px;padding:1px 9px;border-radius:20px;background:rgba(255,255,255,.1)}
+.pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}.pill.err{color:var(--err)}
+.chip{border:1px solid var(--edge);background:rgba(255,255,255,.06);color:var(--fg);border-radius:20px;padding:5px 12px;cursor:pointer;font:inherit}
+.chip[aria-pressed=true]{background:var(--acc);border-color:var(--acc)}
+#logBox{height:68vh;overflow:auto;padding:14px;font:12.5px/1.65 Consolas,monospace;white-space:pre-wrap}
+.L-INFO{color:var(--ok)}.L-WARNING{color:var(--warn)}.L-ERROR,.L-CRITICAL{color:var(--err);font-weight:700}.L-DEBUG{color:#6cb6ff}.t{color:var(--sub)}
+pre{margin:0;white-space:pre-wrap;word-break:break-all;font:12px Consolas,monospace;max-height:420px;overflow:auto}
+#gate{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9}
+#gate form{width:340px;padding:26px}
+#toast{position:fixed;right:20px;bottom:20px;padding:10px 16px;opacity:0;transition:.3s;pointer-events:none;z-index:10}#toast.on{opacity:1}#toast.bad{border-color:var(--err)}
+#editBox{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.5);z-index:8;padding:20px}
+#editBox.on{display:flex}#editBox form{width:min(460px,100%);padding:24px}.edit-flags{display:flex;gap:18px;flex-wrap:wrap;margin:12px 0}.edit-flags label{display:flex;align-items:center;gap:8px;margin:0;color:var(--fg)}.edit-flags input{width:auto}
+.acc{padding:0;overflow:hidden}.acc .hd{display:flex;gap:12px;align-items:center;padding:16px 18px;background:linear-gradient(120deg,rgba(139,123,255,.28),rgba(67,209,122,.08))}
+.acc .av{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;font-weight:800;font-size:18px;background:var(--acc);flex:0 0 auto}
+.acc .nm{flex:1;min-width:0}.acc .nm b{display:block;font-size:16px}.acc .nm small{color:var(--sub)}
+.kpi{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--edge)}.kpi div{background:rgba(18,22,36,.35);padding:12px 18px}
+.kpi span{display:block;font-size:12px;color:var(--sub)}.kpi b{font-size:18px}.acc details{padding:10px 18px 14px}.acc summary{cursor:pointer;color:var(--sub);font-size:13px}
+.acc .all{max-height:380px;overflow:auto;margin-top:8px}.acc .all td{font-size:12.5px;padding:6px 8px;word-break:break-all}.acc .all td:first-child{color:var(--sub);font-family:Consolas,monospace;width:46%}
+.sec td{color:var(--acc)!important;font-weight:700;font-family:inherit!important;padding-top:12px!important}
+.tg{position:relative;display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+.tg input{position:absolute;opacity:0;pointer-events:none}
+.tg i{width:34px;height:19px;border-radius:10px;background:rgba(255,255,255,.16);position:relative;transition:.2s;flex:0 0 auto}
+.tg i::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:.2s}
+.tg.on i{background:var(--ok)}.tg.on i::after{left:17px}
+.tg:focus-within i{outline:2px solid var(--acc);outline-offset:2px}
+.sw{display:flex;gap:10px;align-items:center;padding:10px 18px 0;font-size:12px;color:var(--sub)}
+.tgrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.tgrow>span{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--sub)}
+@media(max-width:760px){body{flex-direction:column}aside{width:auto;height:auto;position:static;margin:12px;flex-direction:row;flex-wrap:wrap}aside .foot{margin:0;flex-direction:row}main{padding:12px}}
+</style>
 </head>
 <body>
+<div id="gate"><form class="glass" id="gateForm"><h1>NAI <b style="color:var(--acc)">Gateway</b></h1>
+<label for="pw">管理密码</label><input id="pw" type="password" autocomplete="current-password" required>
+<div class="bar" style="margin:16px 0 0"><span class="fill"></span><button class="btn">进入控制台</button></div></form></div>
+<aside class="glass" aria-label="导航"><div class="logo">NAI <b>Gateway</b></div>
+<button data-p="dash" aria-current="page">总览</button><button data-p="acct">账号池</button>
+<button data-p="model">模型</button><button data-p="env">配置</button><button data-p="log">日志</button><button data-p="look">外观</button>
+<div class="foot"><button id="restart">重启网关</button><button id="logout">退出登录</button></div></aside>
+<main>
+<section class="page on" id="dash"><h1>总览</h1><div class="grid" id="cnt"></div>
+<div class="bar"><h2 class="fill" style="margin:8px 0 0;font-size:17px">NovelAI 账号</h2><span class="pill" id="upT">加载中...</span><button class="btn" id="upGo">刷新</button></div>
+<div class="grid wide" id="upList"></div>
+<div class="glass box"><h3>按模型统计</h3><table><thead><tr><th>模型</th><th>今日</th><th>近 7 天</th></tr></thead><tbody id="perm"></tbody></table></div></section>
+<section class="page" id="acct"><div class="bar"><h1 class="fill">账号池</h1><button class="btn" id="addA">新增账号</button></div>
+<div class="glass box"><table><thead><tr><th>名称</th><th>密钥</th><th>权重</th><th>状态</th><th>成功/失败</th><th>能力与操作</th></tr></thead><tbody id="accs"></tbody></table></div></section>
+<section class="page" id="model"><div class="bar"><h1 class="fill">models.toml</h1><button class="btn g" id="mFetch">抓取上游模型</button><button class="btn" id="mSave">保存</button></div>
+<textarea id="mTxt" rows="28" class="glass" aria-label="模型配置"></textarea></section>
+<section class="page" id="env"><h1>环境配置</h1><form class="glass box" id="envF"></form></section>
+<section class="page" id="log"><div class="bar"><h1 class="fill">日志</h1><label class="bar" style="margin:0"><input type="checkbox" id="lAuto" checked style="width:auto"> 实时</label>
+<select id="lLv" style="width:130px" aria-label="级别"><option value="">全部级别</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select></div>
+<div class="glass" id="logBox" role="log" aria-live="polite"></div></section>
+<section class="page" id="look"><h1>外观</h1><div class="glass box" style="max-width:560px">
+<label for="wU">壁纸 URL（http/https）</label><div class="bar" style="margin:0"><input id="wU" class="fill" placeholder="https://..."><button class="btn" id="wSet">应用</button></div>
+<label for="wF">本地图片</label><input id="wF" type="file" accept="image/*">
+<label for="sB">模糊 <span id="vB"></span></label><input id="sB" type="range" min="0" max="40">
+<label for="sA">面板不透明度 <span id="vA"></span></label><input id="sA" type="range" min="0" max="100">
+<label for="sD">壁纸暗化 <span id="vD"></span></label><input id="sD" type="range" min="0" max="90">
+<div class="bar" style="margin:16px 0 0"><span class="fill"></span><button class="btn g" id="wReset">恢复默认</button></div></div></section>
+</main>
+<div id="toast" class="glass" role="status"></div>
+<div id="editBox"><form class="glass" id="editForm"><div class="bar"><h2 class="fill" style="margin:0">编辑账号</h2><button type="button" class="btn g" id="editClose">关闭</button></div>
+<input type="hidden" id="editId"><label for="editName">账号名称</label><input id="editName" required>
+<label for="editKey">NovelAI Token（留空保持不变）</label><input id="editKey" type="password" autocomplete="new-password" placeholder="pst-...">
+<label for="editWeight">权重</label><input id="editWeight" type="number" min="1" max="100" required>
+<div class="edit-flags"><label><input id="editEnabled" type="checkbox"> 启用账号</label><label><input id="editV5" type="checkbox"> 承接 V5</label><label><input id="editAnlas" type="checkbox"> 允许消耗 Anlas</label></div>
+<div class="bar" style="margin:16px 0 0"><span class="fill"></span><button type="submit" class="btn">保存修改</button></div></form></div>
+<script>
+const $ = id => document.getElementById(id);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let tok = localStorage.getItem('gw_admin_token') || '', logT = null, logCur = 0, logFull = false, accountRows = [];
 
-  <!-- Dynamic Wallpaper Layer -->
-  <div id="wallpaperBackdrop"></div>
-  <div id="wallpaperOverlay"></div>
+function toast(m, bad) { const t = $('toast'); t.textContent = m; t.className = 'glass on' + (bad ? ' bad' : ''); setTimeout(() => t.className = 'glass', 2800); }
+async function api(p, o = {}) {
+  o.headers = { ...(o.headers || {}), Authorization: 'Bearer ' + tok };
+  if (typeof o.body === 'string') o.headers['Content-Type'] = 'application/json';
+  const r = await fetch('/admin/api' + p, o);
+  if (r.status === 401) { gate(true); throw new Error('未授权'); }
+  if (!r.ok) throw new Error((await r.text()) || 'HTTP ' + r.status);
+  return r.json();
+}
+const run = fn => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message, true); } };
+function gate(show) { $('gate').style.display = show ? 'flex' : 'none'; if (show) $('pw').focus(); }
+$('gateForm').onsubmit = run(async e => { e.preventDefault(); tok = $('pw').value; await api('/session'); localStorage.setItem('gw_admin_token', tok); gate(false); go('dash'); });
+$('logout').onclick = () => { localStorage.removeItem('gw_admin_token'); location.reload(); };
+$('restart').onclick = run(async () => { if (!confirm('确认重启网关？')) return; toast((await api('/restart', { method: 'POST' })).message); setTimeout(() => location.reload(), 3500); });
 
-  <div class="app-shell">
-    <!-- Sidebar Navigation -->
-    <aside>
-      <div>
-        <div class="brand">
-          <div class="brand-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
-              <path d="M2 17l10 5 10-5"></path>
-              <path d="M2 12l10 5 10-5"></path>
-            </svg>
-          </div>
-          <div class="brand-text">
-            <h1>NovelAI GW <span>MD3</span></h1>
-            <p>High-Perf Proxy & Cluster</p>
-          </div>
-        </div>
+const loaders = { dash: () => Promise.all([loadDash(), loadUps()]), acct: loadAcct, model: loadModel, env: loadEnv, log: startLog, look: () => {} };
+function go(p) {
+  document.querySelectorAll('aside [data-p]').forEach(b => b.dataset.p === p ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current'));
+  document.querySelectorAll('.page').forEach(s => s.classList.toggle('on', s.id === p));
+  clearInterval(logT); run(loaders[p])();
+}
+document.querySelectorAll('aside [data-p]').forEach(b => b.onclick = () => go(b.dataset.p));
 
-        <nav>
-          <button class="active" data-tab="overview">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-            控制台总览
-          </button>
-          <button data-tab="models">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-            模型与映射
-          </button>
-          <button data-tab="accounts">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
-            多账号矩阵
-          </button>
-          <button data-tab="settings">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
-            网关环境配置
-          </button>
-          <button data-tab="logs">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
-            实时日志流
-          </button>
-        </nav>
-      </div>
+function stat(t, v, lim) {
+  const p = lim ? Math.min(v / lim * 100, 100) : 0, c = p >= 90 ? 'e' : p >= 70 ? 'w' : '';
+  return `<div class="glass box"><h3>${esc(t)}</h3><div class="big">${v}${lim ? ` <small>/ ${lim}</small>` : ''}</div>` +
+    (lim ? `<div class="meter" role="progressbar" aria-label="${esc(t)}" aria-valuenow="${p.toFixed(0)}" aria-valuemin="0" aria-valuemax="100"><i class="${c}" style="width:${p}%"></i></div>` : '') + '</div>';
+}
+async function loadDash() {
+  const u = (await api('/overview')).usage || {}, c = u.counters || {};
+  $('cnt').innerHTML = stat('今日 · 全部模型', c.daily_all ?? 0) + stat('今日 · V4.5', c.daily_v45 ?? 0) +
+    stat('今日 · V5', c.daily_v5 ?? 0, u.daily_limit) + stat('近 7 天 · V5', c.weekly_v5 ?? 0, u.weekly_limit) + stat('本月 · V5', c.monthly_v5 ?? 0);
+  const rows = Object.entries(u.per_model || {}).sort((a, b) => b[1].used_today - a[1].used_today);
+  $('perm').innerHTML = rows.map(([m, v]) => `<tr><td>${esc(m)}</td><td>${v.used_today}</td><td>${v.used_this_week}</td></tr>`).join('') || '<tr><td colspan="3">暂无数据</td></tr>';
+}
 
-      <div class="sidebar-footer">
-        <button class="btn btn-sm btn-outline-primary" style="width: 100%;" onclick="openAppearanceModal()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 10 10 0 0 0 0-20"></path></svg>
-          个性化外观 / 壁纸
-        </button>
-        <div class="status-pill">
-          <span>Gateway Status</span>
-          <span style="display: flex; align-items: center; gap: 6px; color: var(--accent-green); font-weight: 700;">
-            <div class="dot-live"></div> ONLINE
-          </span>
-        </div>
-      </div>
-    </aside>
+const pill = s => `<span class="pill ${/^(active|ok|healthy)$/.test(s) ? 'ok' : s === 'disabled' ? '' : 'warn'}">${esc(s)}</span>`;
+const tgl = (a, k, id, on) => `<label class="tg${on ? ' on' : ''}" title="${esc(a)}"><input type="checkbox" data-k="${k}" data-id="${esc(id)}" ${on ? 'checked' : ''}><i></i></label>`;
+async function loadAcct() {
+  const l = (await api('/accounts')).accounts || [];
+  accountRows = l;
+  $('accs').innerHTML = l.map(a => `<tr><td>${esc(a.name)}</td><td><code>${esc(a.masked_key)}</code></td><td>${esc(a.weight)}</td><td>${pill(a.status)}</td>` +
+    `<td>${a.success_count}/${a.failure_count}</td><td class="tgrow"><span title="账号是否参与请求">启用${tgl('停用后保留账号配置，不再参与请求', 'enabled', a.id, a.enabled !== false)}</span><span title="承接 V5 模型请求">V5${tgl('是否允许该账号使用 V5 模型', 'v5', a.id, a.allow_v5 !== false)}</span>` +
+    `<span title="是否允许消耗 Anlas">Anlas${tgl('是否允许该账号消耗 Anlas', 'anlas', a.id, a.allow_anlas !== false)}</span>` +
+    `<div class="bar" style="margin:0">` +
+    ['view:查看上游:g', 'edit:编辑:g', 'test:测试:g', 'reset:重置:g', 'del:删除:r'].map(x => { const [k, n, c] = x.split(':'); return `<button class="btn ${c}" data-k="${k}" data-id="${esc(a.id)}">${n}</button>`; }).join('') +
+    '</div></td></tr>').join('') || '<tr><td colspan="6">暂无账号</td></tr>';
+}
+$('accs').onclick = run(async e => {
+  const t = e.target.closest('.tg input');
+  if (t) {
+    const ep = t.dataset.k === 'v5' ? 'allow-v5' : t.dataset.k === 'anlas' ? 'allow-anlas' : 'enabled';
+    const field = ep === 'enabled' ? 'enabled' : ep.replace('-', '_');
+    const r = await api(`/accounts/${encodeURIComponent(t.dataset.id)}/${ep}`, { method: 'PUT', body: JSON.stringify({ [field]: t.checked }) });
+    toast(r.message); return loadAcct();
+  }
+  const b = e.target.closest('button'); if (!b) return;
+  const id = encodeURIComponent(b.dataset.id);
+  if (b.dataset.k === 'view') { go('dash'); return setTimeout(() => document.getElementById('up_' + b.dataset.id)?.scrollIntoView({ behavior: 'smooth' }), 1200); }
+  if (b.dataset.k === 'edit') { openEdit(accountRows.find(a => a.id === b.dataset.id)); return; }
+  if (b.dataset.k === 'test') { const r = await api(`/accounts/${id}/test`, { method: 'POST' }); toast(r.message, !r.ok); }
+  if (b.dataset.k === 'reset') toast((await api(`/accounts/${id}/reset`, { method: 'POST' })).message);
+  if (b.dataset.k === 'del') { if (!confirm('确认删除该账号？')) return; toast((await api(`/accounts/${id}`, { method: 'DELETE' })).message); }
+  loadAcct();
+});
+function openEdit(a) {
+  if (!a) return toast('账号不存在，请刷新列表', true);
+  $('editId').value = a.id; $('editName').value = a.name || ''; $('editKey').value = '';
+  $('editWeight').value = a.weight || 1; $('editEnabled').checked = a.enabled !== false;
+  $('editV5').checked = a.allow_v5 !== false; $('editAnlas').checked = a.allow_anlas !== false;
+  $('editBox').classList.add('on'); $('editName').focus();
+}
+function closeEdit() { $('editBox').classList.remove('on'); }
+$('editClose').onclick = closeEdit;
+$('editBox').onclick = e => { if (e.target === $('editBox')) closeEdit(); };
+$('editForm').onsubmit = run(async e => {
+  e.preventDefault();
+  const id = encodeURIComponent($('editId').value), body = {
+    name: $('editName').value.trim(), weight: Number($('editWeight').value),
+    enabled: $('editEnabled').checked, allow_v5: $('editV5').checked, allow_anlas: $('editAnlas').checked,
+  };
+  const key = $('editKey').value.trim(); if (key) body.key = key;
+  await api(`/accounts/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+  closeEdit(); toast('账号已更新'); loadAcct();
+});
+$('addA').onclick = run(async () => {
+  const name = prompt('账号名称'); if (!name) return;
+  const key = prompt('NovelAI 持久化 Token'); if (!key) return;
+  await api('/accounts', { method: 'POST', body: JSON.stringify({ name, key }) }); toast('已添加'); loadAcct();
+});
+const ts = t => { if (!t) return '--'; const d = new Date(t > 1e12 ? t : t * 1000); return isNaN(d) ? '--' : d.toLocaleString('zh-CN'); };
+const yes = (ok, a, b) => `<span class="pill ${ok ? 'ok' : 'err'}">${ok ? a : b}</span>`;
+const kv = r => r.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('');
+const TIER = { 0: 'Free', 1: 'Tablet', 2: 'Scroll', 3: 'Opus' };
+const isTsKey = k => /(At|Time|Date|expires)$/i.test(k);
+function flat(o, p = '', out = []) {
+  for (const [k, v] of Object.entries(o ?? {})) {
+    const key = p ? `${p}.${k}` : k;
+    if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length) flat(v, key, out);
+    else out.push([key, v]);
+  }
+  return out;
+}
+const show = (k, v) => v === null || v === undefined || v === '' ? '<span class="t">--</span>'
+  : typeof v === 'boolean' ? yes(v, '是', '否')
+  : typeof v === 'number' && isTsKey(k) && v > 1e9 ? `${esc(ts(v))} <small class="t">${v}</small>`
+  : Array.isArray(v) ? `<code>${esc(JSON.stringify(v))}</code>` : esc(v);
+const allRows = (title, obj) => `<tr class="sec"><td colspan="2">${esc(title)}</td></tr>` + flat(obj).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${show(k, v)}</td></tr>`).join('');
 
-    <!-- Main Content View -->
-    <main>
-      <header>
-        <div class="header-title">
-          <h2 id="pageTitle">控制台总览</h2>
-          <p id="pageSubtitle">网关运行状态、NovelAI 上游账号实时看板与配额管理</p>
-        </div>
-        <div class="header-actions">
-          <button class="btn btn-outline-primary" onclick="openAppearanceModal()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
-            主题与壁纸
-          </button>
-          <button class="btn" onclick="refreshAll()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-            刷新数据
-          </button>
-          <button class="btn btn-primary" onclick="openAccountForm()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-            添加账号
-          </button>
-          <button class="btn btn-danger" title="重启网关服务" onclick="restartGateway()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-            重启网关
-          </button>
-          <button class="btn btn-danger btn-icon" title="退出管理登录" onclick="logout()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
-          </button>
-        </div>
-      </header>
+function accCard(a, r, err, duplicate = false) {
+  const duplicateTip = duplicate ? '<span class="pill warn" title="多个账号使用同一个 Token，上游返回的数据会相同">重复凭据</span>' : '';
+  const head = `<div class="hd"><div class="av" aria-hidden="true">${esc((a.name || '?')[0].toUpperCase())}</div><div class="nm"><b>${esc(a.name)}</b><small><code>${esc(a.masked_key)}</code></small></div>${duplicateTip}${pill(a.status)}</div>`;
+  const sw = `<div class="sw">${tgl('停用后保留账号配置，不再参与请求', 'enabled', a.id, a.enabled !== false)}<span>启用</span>${tgl('是否允许该账号使用 V5 模型', 'v5', a.id, a.allow_v5 !== false)}<span>V5</span>${tgl('是否允许该账号消耗 Anlas', 'anlas', a.id, a.allow_anlas !== false)}<span>Anlas</span></div>`;
+  if (err) return `<article class="glass acc" id="up_${esc(a.id)}">${head}${sw}<div class="box"><span class="pill err">拉取失败</span> <small>${esc(err)}</small></div></article>`;
+  const s = r.subscription || {}, d = r.user_data || {}, pk = s.perks || {}, pr = d.priority || {}, inf = d.information || {}, st = s.trainingStepsLeft || {};
+  const tier = s.tier ?? 0, u = s.usage || {}, pct = Number(u.percent), has = Number.isFinite(pct), rem = has ? Math.max(0, pct) : 0, sec = Number(u.timeUntilNextPercent);
+  const anlas = (st.fixedTrainingStepsLeft ?? 0) + (st.purchasedTrainingSteps ?? 0);
+  const k = (n, v) => `<div><span>${n}</span><b>${v}</b></div>`;
+  return `<article class="glass acc" id="up_${esc(a.id)}">${head}${sw}
+<div class="kpi">${k('订阅', `${esc(TIER[tier] || 'Tier ' + tier)} ${yes(s.active !== false, '有效', '失效')}`)}${k('Anlas', anlas.toLocaleString())}
+${k('V5 剩余', has ? `${u.isNegative ? '-' : ''}${rem}% <small class="t">≈${Math.round(rem * 17.3)} 张</small>` : '--')}
+${k('V5 补充', !has ? '--' : sec > 0 ? `${Math.ceil(sec / 60)} 分钟/1%` : '暂停')}
+${k('到期', esc(ts(s.expiresAt)))}${k('封禁', yes(!inf.banStatus || inf.banStatus === 'not_banned', '正常', esc(inf.banStatus)))}
+${k('任务优先级', esc(pr.taskPriority ?? pk.startPriority ?? '--'))}${k('下次刷新', esc(ts(pr.nextRefillAt)))}</div>
+${has ? `<div style="padding:0 18px"><div class="meter"><i class="${rem < 10 ? 'e' : rem < 30 ? 'w' : ''}" style="width:${Math.min(rem, 100)}%"></i></div></div>` : ''}
+<details><summary>全部上游字段（${flat(s).length + flat(d).length} 项）</summary><div class="all"><table><tbody>${allRows('subscription', s)}${allRows('user_data', d)}</tbody></table></div></details></article>`;
+}
 
-      <!-- TAB 1: OVERVIEW -->
-      <section id="overview" class="tab-view">
-        <!-- Upstream Account Picker Bar -->
-        <div class="account-picker-bar">
-          <div style="display: flex; align-items: center; gap: 10px;">
-            <span style="font-size: 13px; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 6px;">
-              <svg style="width: 16px; height: 16px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="10" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
-              上游监控目标:
-            </span>
-            <div id="upstreamChips" class="account-picker-chips">
-              <button class="account-chip active">⚡ 自动选择</button>
-            </div>
-          </div>
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <!-- MD3 Custom Select Container -->
-            <div id="upstreamDropdownContainer" class="md3-select-wrapper">
-              <!-- populated dynamically -->
-            </div>
-            <button id="upstreamFetchBtn" class="btn btn-sm btn-outline-primary" onclick="loadUpstreamData()">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-              拉取上游
-            </button>
-          </div>
-        </div>
-
-        <!-- 4-Stat Core Metric Ribbon -->
-        <div class="metrics-grid">
-          <div class="metric-card">
-            <div class="metric-top">
-              <span class="metric-label">订阅状态 / Tier</span>
-              <div class="metric-icon-badge">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
-              </div>
-            </div>
-            <div id="statTier" class="metric-value" style="color: var(--accent-tier);">Opus Tier 3</div>
-            <div id="statTierSub" class="metric-desc">有效至: 加载中...</div>
-          </div>
-
-          <div class="metric-card">
-            <div class="metric-top">
-              <span class="metric-label">Anlas 点数余额</span>
-              <div class="metric-icon-badge">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v8M8 12h8"></path></svg>
-              </div>
-            </div>
-            <div id="statAnlas" class="metric-value" style="color: var(--primary);">--</div>
-            <div id="statAnlasSub" class="metric-desc">包含赠送与购买余额</div>
-          </div>
-
-          <div class="metric-card">
-            <div class="metric-top">
-              <span class="metric-label">V5 / 今日调用限额</span>
-              <div class="metric-icon-badge">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
-              </div>
-            </div>
-            <div id="statDailyQuota" class="metric-value">-- / --</div>
-            <div class="progress-track"><div id="statDailyProgress" class="progress-fill" style="width: 0%;"></div></div>
-            <div id="statDailySub" class="metric-desc">重置于: 08:00 (UTC+8)</div>
-          </div>
-
-          <div class="metric-card">
-            <div class="metric-top">
-              <span class="metric-label">V5 / 本周累计调用</span>
-              <div class="metric-icon-badge">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
-              </div>
-            </div>
-            <div id="statWeeklyQuota" class="metric-value">-- / --</div>
-            <div class="progress-track"><div id="statWeeklyProgress" class="progress-fill" style="width: 0%;"></div></div>
-            <div id="statWeeklySub" class="metric-desc">本周累计消耗</div>
-          </div>
-        </div>
-
-        <!-- Structured NovelAI Upstream Profile Visualization Cards -->
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <div class="card-title-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
-              </div>
-              <div>
-                <span>NovelAI 上游账号专属特权与额度看板</span>
-                <span class="card-subtitle" style="display: block;">实时自 NovelAI 官方集群 <code>/user/data</code> & <code>/user/subscription</code> 解析</span>
-              </div>
-            </div>
-            <span id="upstreamLastSync" class="badge badge-cyan">实时同步</span>
-          </div>
-
-          <div class="upstream-grid">
-            <!-- Card 1: Subscription Details -->
-            <div class="upstream-card">
-              <div class="upstream-card-header">
-                <span class="upstream-card-title">
-                  <svg style="width: 16px; height: 16px; color: var(--accent-tier);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
-                  订阅套餐与周期
-                </span>
-                <span id="uCardTierBadge" class="badge badge-tier">Opus</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">套餐级别 (Tier)</span>
-                <span id="uCardTierName" class="upstream-val highlight">Opus (Tier 3)</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">订阅状态</span>
-                <span id="uCardSubActive" class="upstream-val"><span class="badge badge-green">活跃有效</span></span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">到期时间</span>
-                <span id="uCardExpiresAt" class="upstream-val">--</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">支付通道 (Provider)</span>
-                <span id="uCardPaymentProcessor" class="upstream-val">Paddle</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">自动扣费 / 续订中</span>
-                <span id="uCardAutoRenew" class="upstream-val">是</span>
-              </div>
-            </div>
-
-            <!-- Card 2: Perks & Token Capacity -->
-            <div class="upstream-card">
-              <div class="upstream-card-header">
-                <span class="upstream-card-title">
-                  <svg style="width: 16px; height: 16px; color: var(--primary);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
-                  点数容量与上下文
-                </span>
-                <span class="badge badge-cyan">PERKS</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">Anlas 充值点数</span>
-                <span id="uCardAnlasPaid" class="upstream-val highlight">--</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">Context 最大上下文</span>
-                <span id="uCardContextTokens" class="upstream-val">8,192 Tokens</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">免费无限生成特权</span>
-                <span id="uCardUnlimitedGen" class="upstream-val"><span class="badge badge-green">无限畅享</span></span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">模块训练步数 (Steps)</span>
-                <span id="uCardTrainingSteps" class="upstream-val">--</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">点数刷新时间 (Refill)</span>
-                <span id="uCardRefillAt" class="upstream-val">实时可用 / 无需重置</span>
-              </div>
-            </div>
-
-            <!-- Card 3: Priority & Account Meta -->
-            <div class="upstream-card">
-              <div class="upstream-card-header">
-                <span class="upstream-card-title">
-                  <svg style="width: 16px; height: 16px; color: var(--accent-purple);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
-                  任务优先级与账户元信息
-                </span>
-                <span class="badge badge-cyan">STATUS</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">任务执行优先级</span>
-                <span id="uCardTaskPriority" class="upstream-val highlight">--</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">最大优先并发动作</span>
-                <span id="uCardMaxActions" class="upstream-val">--</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">账号注册时间</span>
-                <span id="uCardCreatedAt" class="upstream-val">--</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">账号安全 / 封禁状态</span>
-                <span id="uCardAccountBanned" class="upstream-val"><span class="badge badge-green">正常运行</span></span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">优先消耗免费特权</span>
-                <span id="uCardPrioritySetting" class="upstream-val">开启</span>
-              </div>
-            </div>
-
-            <!-- Card 4: Official Opus V5 Generation Usage -->
-            <div class="upstream-card">
-              <div class="upstream-card-header">
-                <span class="upstream-card-title">
-                  <svg style="width: 16px; height: 16px; color: var(--primary);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
-                  Opus V5 官方生成额度
-                </span>
-                <span class="badge badge-cyan">V5 USAGE</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">剩余额度百分比</span>
-                <span id="uCardV5Percent" class="upstream-val highlight">--</span>
-              </div>
-              <div class="progress-track"><div id="uCardV5Progress" class="progress-fill" style="width: 0%;"></div></div>
-              <div class="upstream-row">
-                <span class="upstream-label">预计可生成图片</span>
-                <span id="uCardV5Images" class="upstream-val">--</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">自动补充状态</span>
-                <span id="uCardV5Refill" class="upstream-val">--</span>
-              </div>
-              <div class="upstream-row">
-                <span class="upstream-label">免费生成条件</span>
-                <span class="upstream-val">标准分辨率 / 最多 28 Steps</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Raw Upstream JSON Expandable Drawer -->
-          <details class="raw-drawer">
-            <summary>查看原始上游返回报文 (Raw JSON Inspect)</summary>
-            <pre id="upstreamRawJson">{"status": "waiting for fetch..."}</pre>
-          </details>
-        </div>
-
-        <!-- Quick Quota Configuration -->
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <div class="card-title-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-              </div>
-              <div>
-                <span>V5 / 全局配额与流控阈值</span>
-                <span class="card-subtitle" style="display: block;">控制网关每日与每周请求调用上限</span>
-              </div>
-            </div>
-          </div>
-          <div class="form-grid">
-            <div class="form-field">
-              <label class="form-label">配额系统开关</label>
-              <!-- MD3 Custom Select Wrapper -->
-              <div id="overviewQuotaEnabledWrapper" class="md3-select-wrapper full"></div>
-            </div>
-            <div class="form-field">
-              <label class="form-label">日限额 (Daily Limit)</label>
-              <input id="overviewDailyLimit" type="number" min="1" placeholder="默认 190">
-            </div>
-            <div class="form-field">
-              <label class="form-label">周限额 (Weekly Limit)</label>
-              <input id="overviewWeeklyLimit" type="number" min="1" placeholder="默认 1730">
-            </div>
-            <div class="form-field" style="justify-content: flex-end;">
-              <button class="btn btn-primary" style="height: 42px;" onclick="saveOverviewQuota()">保存配额设置</button>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- TAB 2: MODELS -->
-      <section id="models" class="tab-view hidden">
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <div class="card-title-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-              </div>
-              <div>
-                <span>models.toml 模型与别名映射配置</span>
-                <span class="card-subtitle" style="display: block;">定义对上游 NovelAI 调用的 model 路由及默认生成参数</span>
-              </div>
-            </div>
-            <div class="header-actions">
-              <button class="btn btn-sm" onclick="loadModelConfig()">重载配置</button>
-              <button class="btn btn-sm btn-primary" onclick="saveModelConfig()">保存并生效</button>
-            </div>
-          </div>
-          <div class="form-field full">
-            <textarea id="modelsTomlEditor" spellcheck="false" placeholder="正在读取 models.toml..."></textarea>
-          </div>
-        </div>
-      </section>
-
-      <!-- TAB 3: ACCOUNTS -->
-      <section id="accounts" class="tab-view hidden">
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <div class="card-title-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
-              </div>
-              <div>
-                <span>多账号轮询池矩阵</span>
-                <span class="card-subtitle" style="display: block;">加权轮询调度、自动故障隔离与探活探测</span>
-              </div>
-            </div>
-            <div class="header-actions">
-              <button class="btn btn-sm btn-primary" onclick="openAccountForm()">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                添加账号
-              </button>
-            </div>
-          </div>
-          <div id="accountsTableContainer" class="table-container">正在加载账号矩阵...</div>
-        </div>
-      </section>
-
-      <!-- TAB 4: SETTINGS -->
-      <section id="settings" class="tab-view hidden">
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <div class="card-title-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
-              </div>
-              <div>
-                <span>网关环境变量 (.env)</span>
-                <span class="card-subtitle" style="display: block;">调整并发限流、冷却延迟与反代基地址</span>
-              </div>
-            </div>
-            <button class="btn btn-sm btn-primary" onclick="saveSettings()">保存环境配置</button>
-          </div>
-          <div class="form-grid">
-            <div class="form-field">
-              <label class="form-label">最大并发限制 (MAX_CONCURRENT)</label>
-              <input id="MAX_CONCURRENT" type="number" placeholder="默认 1">
-            </div>
-            <div class="form-field">
-              <label class="form-label">最大排队数 (QUEUE_MAX_WAITERS)</label>
-              <input id="QUEUE_MAX_WAITERS" type="number" placeholder="默认 8">
-            </div>
-            <div class="form-field">
-              <label class="form-label">最小请求冷却 (COOLDOWN_MIN 秒)</label>
-              <input id="COOLDOWN_MIN" placeholder="默认 0.5">
-            </div>
-            <div class="form-field">
-              <label class="form-label">最大请求冷却 (COOLDOWN_MAX 秒)</label>
-              <input id="COOLDOWN_MAX" placeholder="默认 1.0">
-            </div>
-            <div class="form-field">
-              <label class="form-label">V5 配额限制启用 (V5_QUOTA_ENABLED)</label>
-              <input id="V5_QUOTA_ENABLED" placeholder="true / false">
-            </div>
-            <div class="form-field">
-              <label class="form-label">V5 日额度 (V5_DAILY_LIMIT)</label>
-              <input id="V5_DAILY_LIMIT" type="number" placeholder="190">
-            </div>
-            <div class="form-field">
-              <label class="form-label">V5 周额度 (V5_WEEKLY_LIMIT)</label>
-              <input id="V5_WEEKLY_LIMIT" type="number" placeholder="1730">
-            </div>
-            <div class="form-field full">
-              <label class="form-label">图床公网基础 URL (IMAGE_BASE_URL)</label>
-              <input id="IMAGE_BASE_URL" placeholder="https://your-domain.com">
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- TAB 5: LOGS -->
-      <section id="logs" class="tab-view hidden">
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <div class="card-title-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
-              </div>
-              <div>
-                <span>实时网关日志流</span>
-                <span id="logStatus" class="card-subtitle" style="display: block;">自动刷新已启动 (2s)</span>
-              </div>
-            </div>
-            <div class="header-actions">
-              <button id="logFollowBtn" class="btn btn-sm" onclick="toggleLogFollow()">暂停跟随</button>
-              <button class="btn btn-sm btn-primary" onclick="loadLogs()">立即拉取</button>
-            </div>
-          </div>
-          <div id="logsBox" class="log-viewport">正在加载网关实时日志...</div>
-        </div>
-      </section>
-    </main>
-  </div>
-
-  <!-- Custom MD3 Account Modal Dialog -->
-  <div id="accountModal" class="modal-overlay">
-    <div class="modal-card">
-      <div class="modal-header">
-        <h3 id="accountModalTitle">添加 NovelAI 账号</h3>
-        <button class="btn btn-sm btn-icon" onclick="closeAccountForm()">✕</button>
-      </div>
-      <div class="form-grid">
-        <div class="form-field">
-          <label class="form-label">账号唯一标识 (ID)</label>
-          <input id="modalAccountId" placeholder="e.g. account-main">
-        </div>
-        <div class="form-field">
-          <label class="form-label">显示名称</label>
-          <input id="modalAccountName" placeholder="e.g. 主账号 Opus">
-        </div>
-        <div class="form-field full">
-          <label class="form-label">API Key / Persistent Token</label>
-          <input id="modalAccountKey" type="password" placeholder="pst-••••••••（编辑时留空表示不修改）">
-        </div>
-        <div class="form-field">
-          <label class="form-label">轮询权重 (1-100)</label>
-          <input id="modalAccountWeight" type="number" min="1" max="100" value="1">
-        </div>
-        <div class="form-field" style="justify-content: center;">
-          <label class="switch-container">
-            <input id="modalAccountEnabled" type="checkbox" checked style="display: none;">
-            <div class="switch"></div>
-            <span style="font-size: 13px; font-weight: 600;">启用此账号</span>
-          </label>
-        </div>
-      </div>
-      <div style="margin-top: 24px; display: flex; justify-content: flex-end; gap: 10px;">
-        <button class="btn" onclick="closeAccountForm()">取消</button>
-        <button class="btn btn-primary" onclick="saveAccount()">保存账号</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Custom MD3 Appearance & Wallpaper Modal Dialog -->
-  <div id="appearanceModal" class="modal-overlay">
-    <div class="modal-card" style="max-width: 520px;">
-      <div class="modal-header">
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <svg style="width: 20px; height: 20px; color: var(--primary);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 10 10 0 0 0 0-20"></path></svg>
-          <h3>个性化外观与壁纸设定</h3>
-        </div>
-        <button class="btn btn-sm btn-icon" onclick="closeAppearanceModal()">✕</button>
-      </div>
-      <div class="form-grid">
-        <div class="form-field full">
-          <label class="form-label">
-            <span>上传自定义背景壁纸</span>
-            <span style="font-size: 11px; color: var(--text-subtle);">支持 PNG, JPG, WebP</span>
-          </label>
-          <div style="display: flex; gap: 10px; align-items: center;">
-            <input type="file" id="wallpaperFileInput" accept="image/*" style="display: none;" onchange="handleWallpaperUpload(this)">
-            <button class="btn btn-outline-primary" style="flex: 1;" onclick="document.getElementById('wallpaperFileInput').click()">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-              从本地选择图片上传
-            </button>
-            <button class="btn btn-danger btn-sm" onclick="clearWallpaper()">清除壁纸</button>
-          </div>
-        </div>
-
-        <div class="form-field full">
-          <label class="form-label">或者输入壁纸图片在线 URL</label>
-          <div style="display: flex; gap: 8px;">
-            <input id="wallpaperUrlInput" placeholder="https://example.com/wallpaper.jpg">
-            <button class="btn btn-sm btn-primary" onclick="setWallpaperFromUrl()">应用</button>
-          </div>
-        </div>
-
-        <div class="form-field full">
-          <label class="form-label">预设赛博精选壁纸</label>
-          <div class="wallpaper-preset-grid">
-            <div class="wallpaper-thumb" style="background-image: url('https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=600&auto=format&fit=crop&q=80');" onclick="applyPresetWallpaper('https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=1920&auto=format&fit=crop&q=85')"></div>
-            <div class="wallpaper-thumb" style="background-image: url('https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&auto=format&fit=crop&q=80');" onclick="applyPresetWallpaper('https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1920&auto=format&fit=crop&q=85')"></div>
-            <div class="wallpaper-thumb" style="background-image: url('https://images.unsplash.com/photo-1550684848-fac1c5b4e853?w=600&auto=format&fit=crop&q=80');" onclick="applyPresetWallpaper('https://images.unsplash.com/photo-1550684848-fac1c5b4e853?w=1920&auto=format&fit=crop&q=85')"></div>
-            <div class="wallpaper-thumb" style="background-image: url('https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=600&auto=format&fit=crop&q=80');" onclick="applyPresetWallpaper('https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=1920&auto=format&fit=crop&q=85')"></div>
-          </div>
-        </div>
-
-        <div class="form-field full">
-          <label class="form-label">
-            <span>背景遮罩暗度 (Overlay Darkness)</span>
-            <span id="labelBgDim" style="color: var(--primary); font-family: var(--font-mono);">75%</span>
-          </label>
-          <input type="range" id="sliderBgDim" min="0" max="95" value="75" oninput="updateAppearanceConfig()">
-        </div>
-
-        <div class="form-field">
-          <label class="form-label">
-            <span>卡片透明度 (Card Opacity)</span>
-            <span id="labelCardOpacity" style="color: var(--primary); font-family: var(--font-mono);">88%</span>
-          </label>
-          <input type="range" id="sliderCardOpacity" min="30" max="100" value="88" oninput="updateAppearanceConfig()">
-        </div>
-
-        <div class="form-field">
-          <label class="form-label">
-            <span>壁纸模糊度 (Blur)</span>
-            <span id="labelWallpaperBlur" style="color: var(--primary); font-family: var(--font-mono);">0px</span>
-          </label>
-          <input type="range" id="sliderWallpaperBlur" min="0" max="25" value="0" oninput="updateAppearanceConfig()">
-        </div>
-      </div>
-      <div style="margin-top: 24px; display: flex; justify-content: space-between; align-items: center;">
-        <button class="btn btn-sm" onclick="resetAppearance()">恢复默认</button>
-        <button class="btn btn-primary" onclick="closeAppearanceModal()">完成</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Custom MD3 Prompt / Auth Modal Dialog -->
-  <div id="authModal" class="modal-overlay">
-    <div class="modal-card" style="max-width: 440px;">
-      <div class="modal-header">
-        <h3 id="authModalTitle">管理鉴权</h3>
-      </div>
-      <p id="authModalMsg" style="color: var(--text-muted); font-size: 13.5px; margin-bottom: 16px;">请输入网关管理密钥 (X-Admin-Token)：</p>
-      <div class="form-field full">
-        <input id="authModalInput" type="password" placeholder="输入密码并按回车" onkeydown="if(event.key==='Enter') submitAuthModal()">
-      </div>
-      <div style="margin-top: 20px; display: flex; justify-content: flex-end; gap: 10px;">
-        <button class="btn" onclick="closeAuthModal(false)">取消</button>
-        <button class="btn btn-primary" onclick="submitAuthModal()">确认</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Custom MD3 Confirm Modal Dialog -->
-  <div id="confirmModal" class="modal-overlay">
-    <div class="modal-card" style="max-width: 440px;">
-      <div class="modal-header">
-        <h3 id="confirmModalTitle">操作确认</h3>
-      </div>
-      <p id="confirmModalMsg" style="color: var(--text-muted); font-size: 13.5px; line-height: 1.6; margin-bottom: 20px;"></p>
-      <div style="display: flex; justify-content: flex-end; gap: 10px;">
-        <button class="btn" onclick="resolveConfirmModal(false)">取消</button>
-        <button id="confirmModalOkBtn" class="btn btn-danger" onclick="resolveConfirmModal(true)">确认</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Toast Notification System -->
-  <div id="toast" class="toast"></div>
-
-  <script>
-    // --- Custom MD3 Dropdown Component Helper ---
-    class MD3Select {
-      constructor(container, options = {}) {
-        this.container = typeof container === 'string' ? document.getElementById(container) : container;
-        this.options = options.options || [];
-        this.value = options.value || '';
-        this.onChange = options.onChange || (() => {});
-        this.render();
-      }
-
-      setOptions(opts, val) {
-        this.options = opts;
-        if (val !== undefined) this.value = val;
-        this.render();
-      }
-
-      setValue(val) {
-        this.value = val;
-        this.render();
-      }
-
-      render() {
-        if (!this.container) return;
-        const current = this.options.find(o => String(o.value) === String(this.value)) || this.options[0] || { label: '请选择', value: '' };
-        
-        this.container.className = 'md3-select-wrapper' + (this.container.classList.contains('full') ? ' full' : '');
-        this.container.innerHTML = `
-          <div class="md3-select-trigger">
-            <span class="md3-select-text">${current.icon || ''} ${current.label}</span>
-            <span class="md3-select-arrow">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
-            </span>
-          </div>
-          <div class="md3-select-dropdown">
-            ${this.options.map(opt => `
-              <div class="md3-option ${String(opt.value) === String(this.value) ? 'selected' : ''}" data-val="${opt.value}">
-                <span>${opt.icon || ''} ${opt.label}</span>
-                ${opt.sub ? `<code>${opt.sub}</code>` : ''}
-              </div>
-            `).join('')}
-          </div>
-        `;
-
-        const trigger = this.container.querySelector('.md3-select-trigger');
-        trigger.onclick = (e) => {
-          e.stopPropagation();
-          const isOpen = this.container.classList.contains('open');
-          document.querySelectorAll('.md3-select-wrapper.open').forEach(el => el.classList.remove('open'));
-          if (!isOpen) this.container.classList.add('open');
-        };
-
-        this.container.querySelectorAll('.md3-option').forEach(optEl => {
-          optEl.onclick = (e) => {
-            e.stopPropagation();
-            const val = optEl.dataset.val;
-            this.setValue(val);
-            this.container.classList.remove('open');
-            this.onChange(val);
-          };
-        });
-      }
-    }
-
-    // Global document click closes open custom selects
-    document.addEventListener('click', () => {
-      document.querySelectorAll('.md3-select-wrapper.open').forEach(el => el.classList.remove('open'));
-    });
-
-    // --- State Management ---
-    let token = localStorage.getItem('gw_admin_token') || '';
-    let isLogFollowing = true;
-    let logInterval = null;
-    let editingAccountId = null;
-
-    // --- Appearance & Wallpaper Settings System ---
-    const defaultAppearance = {
-      wallpaper: '',
-      bgDim: 75,
-      cardOpacity: 88,
-      wallpaperBlur: 0
-    };
-
-    function loadAppearance() {
+async function loadUps() {
+  const btn = $('upGo'); btn.disabled = true; $('upT').textContent = '同步中...';
+  try {
+    const list = (await api('/accounts')).accounts || [];
+    const seenKeys = new Map();
+    list.forEach(a => seenKeys.set(a.masked_key, (seenKeys.get(a.masked_key) || 0) + 1));
+    if (!list.length) { $('upList').innerHTML = '<div class="glass box">尚未配置账号</div>'; $('upT').textContent = '无账号'; return; }
+    $('upList').innerHTML = list.map(a => `<article class="glass acc" id="up_${esc(a.id)}"><div class="box">正在拉取 ${esc(a.name)}...</div></article>`).join('');
+    await Promise.all(list.map(async a => {
+      let html;
       try {
-        const raw = localStorage.getItem('gw_appearance');
-        const cfg = raw ? JSON.parse(raw) : defaultAppearance;
-        applyAppearanceToDOM(cfg);
-      } catch (e) {
-        applyAppearanceToDOM(defaultAppearance);
+        const duplicate = seenKeys.get(a.masked_key) > 1;
+        const upstream = await api('/upstream/account-data?account_id=' + encodeURIComponent(a.id));
+        html = accCard(a, upstream, null, duplicate);
       }
-    }
-
-    function applyAppearanceToDOM(cfg) {
-      const backdrop = document.getElementById('wallpaperBackdrop');
-      const root = document.documentElement;
-
-      if (cfg.wallpaper) {
-        backdrop.style.backgroundImage = `url("${cfg.wallpaper}")`;
-      } else {
-        backdrop.style.backgroundImage = 'none';
-      }
-
-      root.style.setProperty('--bg-dim-opacity', (cfg.bgDim / 100).toString());
-      root.style.setProperty('--card-opacity', (cfg.cardOpacity / 100).toString());
-      root.style.setProperty('--sidebar-opacity', Math.min(0.95, (cfg.cardOpacity / 100) + 0.05).toString());
-      root.style.setProperty('--wallpaper-blur', `${cfg.wallpaperBlur}px`);
-
-      // Update modal inputs if exists
-      const sBgDim = document.getElementById('sliderBgDim');
-      const sCardOp = document.getElementById('sliderCardOpacity');
-      const sBlur = document.getElementById('sliderWallpaperBlur');
-      if (sBgDim) sBgDim.value = cfg.bgDim;
-      if (sCardOp) sCardOp.value = cfg.cardOpacity;
-      if (sBlur) sBlur.value = cfg.wallpaperBlur;
-
-      const lBgDim = document.getElementById('labelBgDim');
-      const lCardOp = document.getElementById('labelCardOpacity');
-      const lBlur = document.getElementById('labelWallpaperBlur');
-      if (lBgDim) lBgDim.textContent = `${cfg.bgDim}%`;
-      if (lCardOp) lCardOp.textContent = `${cfg.cardOpacity}%`;
-      if (lBlur) lBlur.textContent = `${cfg.wallpaperBlur}px`;
-    }
-
-    function saveAppearance(cfg) {
-      localStorage.setItem('gw_appearance', JSON.stringify(cfg));
-      applyAppearanceToDOM(cfg);
-    }
-
-    function getAppearanceFromInputs() {
-      const raw = localStorage.getItem('gw_appearance');
-      const current = raw ? JSON.parse(raw) : { ...defaultAppearance };
-      current.bgDim = Number(document.getElementById('sliderBgDim').value);
-      current.cardOpacity = Number(document.getElementById('sliderCardOpacity').value);
-      current.wallpaperBlur = Number(document.getElementById('sliderWallpaperBlur').value);
-      return current;
-    }
-
-    function updateAppearanceConfig() {
-      const cfg = getAppearanceFromInputs();
-      saveAppearance(cfg);
-    }
-
-    function openAppearanceModal() {
-      loadAppearance();
-      document.getElementById('appearanceModal').classList.add('active');
-    }
-
-    function closeAppearanceModal() {
-      document.getElementById('appearanceModal').classList.remove('active');
-    }
-
-    function handleWallpaperUpload(input) {
-      const file = input.files[0];
-      if (!file) return;
-      if (file.size > 8 * 1024 * 1024) {
-        toast('壁纸文件体积过大 (需小于 8MB)', true);
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const cfg = getAppearanceFromInputs();
-        cfg.wallpaper = e.target.result;
-        saveAppearance(cfg);
-        toast('背景壁纸已成功应用并保存');
-      };
-      reader.readAsDataURL(file);
-    }
-
-    function setWallpaperFromUrl() {
-      const url = document.getElementById('wallpaperUrlInput').value.trim();
-      if (!url) return;
-      const cfg = getAppearanceFromInputs();
-      cfg.wallpaper = url;
-      saveAppearance(cfg);
-      toast('网络壁纸已应用');
-    }
-
-    function applyPresetWallpaper(url) {
-      const cfg = getAppearanceFromInputs();
-      cfg.wallpaper = url;
-      saveAppearance(cfg);
-      toast('已应用精选赛博壁纸');
-    }
-
-    function clearWallpaper() {
-      const cfg = getAppearanceFromInputs();
-      cfg.wallpaper = '';
-      saveAppearance(cfg);
-      toast('背景壁纸已清除');
-    }
-
-    function resetAppearance() {
-      saveAppearance(defaultAppearance);
-      toast('外观设置已重置为默认');
-    }
-
-    // --- Custom Modal Promises ---
-    let authModalResolver = null;
-    let authPromptPromise = null;
-    function promptAuth() {
-      if (authPromptPromise) return authPromptPromise;
-      authPromptPromise = new Promise(resolve => {
-        authModalResolver = value => {
-          authPromptPromise = null;
-          resolve(value);
-        };
-        document.getElementById('authModalInput').value = '';
-        document.getElementById('authModal').classList.add('active');
-        setTimeout(() => document.getElementById('authModalInput').focus(), 150);
-      });
-      return authPromptPromise;
-    }
-    function submitAuthModal() {
-      const val = document.getElementById('authModalInput').value.trim();
-      document.getElementById('authModal').classList.remove('active');
-      if (authModalResolver) {
-        authModalResolver(val);
-        authModalResolver = null;
-      }
-    }
-    function closeAuthModal() {
-      document.getElementById('authModal').classList.remove('active');
-      if (authModalResolver) {
-        authModalResolver('');
-        authModalResolver = null;
-      }
-    }
-
-    let confirmModalResolver = null;
-    function showConfirm(title, msg, isDanger = false) {
-      return new Promise(resolve => {
-        confirmModalResolver = resolve;
-        document.getElementById('confirmModalTitle').textContent = title;
-        document.getElementById('confirmModalMsg').textContent = msg;
-        const okBtn = document.getElementById('confirmModalOkBtn');
-        okBtn.className = isDanger ? 'btn btn-danger' : 'btn btn-primary';
-        document.getElementById('confirmModal').classList.add('active');
-      });
-    }
-    function resolveConfirmModal(result) {
-      document.getElementById('confirmModal').classList.remove('active');
-      if (confirmModalResolver) {
-        confirmModalResolver(result);
-        confirmModalResolver = null;
-      }
-    }
-
-    // --- Toast & Base API ---
-    function toast(msg, isError = false) {
-      const el = document.getElementById('toast');
-      el.textContent = msg;
-      el.style.borderColor = isError ? 'var(--accent-red)' : 'var(--primary)';
-      el.classList.add('show');
-      setTimeout(() => el.classList.remove('show'), 2800);
-    }
-
-    function logout() {
-      localStorage.removeItem('gw_admin_token');
-      location.reload();
-    }
-
-    async function restartGateway() {
-      const ok = await showConfirm('重启网关', '确认立即重启 NovelAI Gateway 服务？容器将自动重新启动，期间服务短暂不可用。', true);
-      if (!ok) return;
-      try {
-        const res = await api('/restart', { method: 'POST' });
-        toast(res.message || '网关正在重启');
-        setTimeout(() => location.reload(), 3500);
-      } catch (err) {
-        toast('重启请求失败: ' + err.message, true);
-      }
-    }
-
-    async function api(path, options = {}) {
-      options.headers = options.headers || {};
-      if (token) options.headers['Authorization'] = 'Bearer ' + token;
-      if (options.body && typeof options.body === 'string') {
-        options.headers['Content-Type'] = 'application/json';
-      }
-
-      const res = await fetch('/admin/api' + path, options);
-      if (res.status === 401) {
-        const inputToken = await promptAuth();
-        if (!inputToken) throw new Error('鉴权未通过');
-        token = inputToken;
-        localStorage.setItem('gw_admin_token', token);
-        return api(path, options);
-      }
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || `HTTP ${res.status}`);
-      }
-      return res.json();
-    }
-
-    // --- Tab Navigation ---
-    const tabs = {
-      overview: { title: '控制台总览', sub: '网关运行状态、NovelAI 上游账号实时看板与配额管理' },
-      models: { title: '模型与别名映射', sub: '管理对外暴露的 model_identifier 及其在 models.toml 中的配置' },
-      accounts: { title: '多账号矩阵', sub: '管理共享 NovelAI 账号池，支持平滑加权轮询与故障冷却' },
-      settings: { title: '网关环境配置', sub: '实时调整 .env 环境变量与全局限流参数' },
-      logs: { title: '实时日志流', sub: '网关运行时输出跟踪与错误监控' }
-    };
-
-    document.querySelectorAll('nav button').forEach(btn => {
-      btn.onclick = () => {
-        document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        const target = btn.dataset.tab;
-        document.querySelectorAll('.tab-view').forEach(view => view.classList.add('hidden'));
-        document.getElementById(target).classList.remove('hidden');
-        document.getElementById('pageTitle').textContent = tabs[target].title;
-        document.getElementById('pageSubtitle').textContent = tabs[target].sub;
-
-        if (target === 'logs') loadLogs();
-        if (target === 'models') loadModelConfig();
-        if (target === 'accounts') loadAccounts();
-      };
-    });
-
-    // --- Upstream NovelAI Data Renderer ---
-    let cachedAccounts = [];
-    let selectedUpstreamAccountId = '';
-    let upstreamSelectInstance = null;
-    let overviewQuotaSelectInstance = null;
-
-    function formatTimestamp(sec) {
-      if (!sec || sec <= 0 || sec < 100000000) return '实时可用 / 无需重置';
-      const d = new Date(sec * 1000);
-      return d.getFullYear() + '-' + 
-             String(d.getMonth() + 1).padStart(2, '0') + '-' + 
-             String(d.getDate()).padStart(2, '0') + ' ' + 
-             String(d.getHours()).padStart(2, '0') + ':' + 
-             String(d.getMinutes()).padStart(2, '0');
-    }
-
-    function renderUpstreamControls(accounts) {
-      cachedAccounts = accounts || [];
-      
-      // Render MD3 Custom Select Options
-      const selectOpts = [
-        { label: '⚡ 自动轮询选择账号', value: '', sub: 'Default' },
-        ...cachedAccounts.map(a => ({
-          label: a.name || a.id,
-          value: a.id,
-          sub: a.masked_key || ''
-        }))
-      ];
-
-      if (!upstreamSelectInstance) {
-        upstreamSelectInstance = new MD3Select('upstreamDropdownContainer', {
-          options: selectOpts,
-          value: selectedUpstreamAccountId,
-          onChange: (val) => selectUpstreamAccount(val)
-        });
-      } else {
-        upstreamSelectInstance.setOptions(selectOpts, selectedUpstreamAccountId);
-      }
-
-      // Render Top Quick Chips
-      let html = `<button class="account-chip ${!selectedUpstreamAccountId ? 'active' : ''}" onclick="selectUpstreamAccount('')">⚡ 自动选择</button>`;
-      html += cachedAccounts.map(a => {
-        const isAct = selectedUpstreamAccountId === a.id;
-        return `<button class="account-chip ${isAct ? 'active' : ''}" onclick="selectUpstreamAccount('${a.id}')">${a.name} <code style="font-size:10px;">${a.masked_key}</code></button>`;
-      }).join('');
-      document.getElementById('upstreamChips').innerHTML = html;
-    }
-
-    function selectUpstreamAccount(id) {
-      selectedUpstreamAccountId = id;
-      if (upstreamSelectInstance) upstreamSelectInstance.setValue(id);
-      renderUpstreamControls(cachedAccounts);
-      loadUpstreamData();
-    }
-
-    async function loadUpstreamData() {
-      const fetchButton = document.getElementById('upstreamFetchBtn');
-      const originalButtonContent = fetchButton.innerHTML;
-      fetchButton.disabled = true;
-      fetchButton.textContent = '正在拉取...';
-      document.getElementById('upstreamLastSync').textContent = '正在同步...';
-
-      try {
-        const qs = selectedUpstreamAccountId ? `?account_id=${encodeURIComponent(selectedUpstreamAccountId)}` : '';
-        const response = await api('/upstream/account-data' + qs);
-        const subRes = response.subscription;
-        const dataRes = response.user_data;
-
-        const rawObj = {
-          account_id: response.account_id,
-          subscription: subRes,
-          user_data: dataRes
-        };
-        document.getElementById('upstreamRawJson').textContent = JSON.stringify(rawObj, null, 2);
-
-        // 1. Render Tier & Subscription info
-        const tierMap = { 0: 'Free (Tier 0)', 1: 'Tablet (Tier 1)', 2: 'Scroll (Tier 2)', 3: 'Opus (Tier 3)' };
-        const tierNum = subRes.tier ?? 3;
-        const tierName = tierMap[tierNum] || `Tier ${tierNum}`;
-        document.getElementById('statTier').textContent = tierName;
-        document.getElementById('uCardTierName').textContent = tierName;
-        document.getElementById('uCardTierBadge').textContent = tierNum === 3 ? 'Opus' : `Tier ${tierNum}`;
-
-        const isAct = subRes.active !== false;
-        document.getElementById('uCardSubActive').innerHTML = isAct 
-          ? `<span class="badge badge-green">活跃有效</span>` 
-          : `<span class="badge badge-red">已停用 / 过期</span>`;
-
-        const expStr = formatTimestamp(subRes.expiresAt);
-        document.getElementById('statTierSub').textContent = `有效至: ${expStr}`;
-        document.getElementById('uCardExpiresAt').textContent = expStr;
-
-        document.getElementById('uCardPaymentProcessor').textContent = subRes.paymentProcessor || 'Paddle / Official';
-        document.getElementById('uCardAutoRenew').textContent = (subRes.isSubscriptionActive || !subRes.isCanceled) ? '是 (自动续期)' : '否 (已取消自动续订)';
-
-        // 2. Render Perks & Anlas
-        const perks = subRes.perks || {};
-        const priority = dataRes.priority || {};
-        const trainingSteps = subRes.trainingStepsLeft || {};
-        const totalAnlas = (trainingSteps.fixedTrainingStepsLeft ?? 0) + (trainingSteps.purchasedTrainingSteps ?? 0);
-        
-        const anlasDisplay = Number(totalAnlas).toLocaleString();
-        document.getElementById('statAnlas').textContent = anlasDisplay;
-        document.getElementById('uCardAnlasPaid').textContent = anlasDisplay;
-
-        const ctxTokens = perks.contextTokens || 8192;
-        document.getElementById('uCardContextTokens').textContent = `${Number(ctxTokens).toLocaleString()} Tokens`;
-
-        const isUnlimited = perks.unlimitedMaxPriority || tierNum === 3;
-        document.getElementById('uCardUnlimitedGen').innerHTML = isUnlimited
-          ? `<span class="badge badge-green">无限免费生成 (Opus)</span>`
-          : `<span class="badge badge-tier">标准模式</span>`;
-
-        document.getElementById('uCardTrainingSteps').textContent = `${Number(totalAnlas).toLocaleString()} 步`;
-
-        const refillStr = formatTimestamp(priority.nextRefillAt);
-        document.getElementById('uCardRefillAt').textContent = refillStr;
-
-        // 3. Priority & Account Status
-        const taskPri = priority.taskPriority ?? perks.startPriority ?? 10;
-        document.getElementById('uCardTaskPriority').textContent = taskPri;
-        document.getElementById('uCardMaxActions').textContent = perks.maxPriorityActions ?? 1000;
-        const accountInfo = dataRes.information || {};
-        document.getElementById('uCardCreatedAt').textContent = formatTimestamp(accountInfo.accountCreatedAt);
-        
-        const isBanned = accountInfo.banStatus && accountInfo.banStatus !== 'not_banned';
-        document.getElementById('uCardAccountBanned').innerHTML = isBanned
-          ? `<span class="badge badge-red">已封禁</span>`
-          : `<span class="badge badge-green">状态正常</span>`;
-
-        document.getElementById('uCardPrioritySetting').textContent = (dataRes.settings && dataRes.settings.disableFreeGeneration) ? '已关闭' : '优先消耗免费额度';
-
-        // 4. Official Opus V5 generation usage allowance
-        const v5Usage = subRes.usage || {};
-        const v5Percent = Number(v5Usage.percent);
-        const hasV5Usage = Number.isFinite(v5Percent);
-        const v5RemainingPercent = hasV5Usage ? Math.max(0, v5Percent) : 0;
-        const v5EstimatedImages = Math.round(v5RemainingPercent * 17.3);
-        document.getElementById('uCardV5Percent').textContent = hasV5Usage
-          ? `${v5Usage.isNegative ? '-' : ''}${v5RemainingPercent}% remaining`
-          : '上游未返回';
-        document.getElementById('uCardV5Progress').style.width = `${Math.min(v5RemainingPercent, 100)}%`;
-        document.getElementById('uCardV5Images').textContent = hasV5Usage
-          ? `约 ${Number(v5EstimatedImages).toLocaleString()} 张`
-          : '--';
-
-        const refillSeconds = Number(v5Usage.timeUntilNextPercent);
-        if (!hasV5Usage) {
-          document.getElementById('uCardV5Refill').textContent = '--';
-        } else if (!Number.isFinite(refillSeconds) || refillSeconds <= 0) {
-          document.getElementById('uCardV5Refill').innerHTML = '<span class="badge badge-tier">当前暂停补充</span>';
-        } else {
-          const refillMinutes = Math.ceil(refillSeconds / 60);
-          document.getElementById('uCardV5Refill').textContent = `约 ${refillMinutes} 分钟后 +1%`;
-        }
-
-        const now = new Date();
-        document.getElementById('upstreamLastSync').textContent = `最后同步: ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
-        toast(`已拉取账号 ${rawObj.account_id} 的上游数据`);
-
-      } catch (err) {
-        console.warn('Failed to load upstream details:', err);
-        document.getElementById('upstreamLastSync').textContent = '同步失败';
-        document.getElementById('upstreamRawJson').textContent = `获取上游信息异常: ${err.message}\n请检查账号 Token 是否已过期或网络连通性。`;
-        toast('拉取上游失败: ' + err.message, true);
-      } finally {
-        fetchButton.disabled = false;
-        fetchButton.innerHTML = originalButtonContent;
-      }
-    }
-
-    // --- Overview Quota & Stat Cards ---
-    async function loadOverview() {
-      try {
-        const [status, accountsData] = await Promise.all([
-          api('/overview'),
-          api('/accounts')
-        ]);
-
-        renderUpstreamControls(accountsData.accounts);
-
-        // V5 Quotas
-        const v5 = status.usage || status.v5_quota || {};
-        const dailyUsed = Number(v5.used_today ?? v5.daily_count ?? 0);
-        const dailyMax = Number(v5.daily_limit ?? 190);
-        const weeklyUsed = Number(v5.used_this_week ?? v5.weekly_count ?? 0);
-        const weeklyMax = Number(v5.weekly_limit ?? 1730);
-
-        document.getElementById('statDailyQuota').textContent = `${dailyUsed} / ${dailyMax}`;
-        const dailyPct = Math.min(100, Math.round((dailyUsed / dailyMax) * 100));
-        document.getElementById('statDailyProgress').style.width = `${dailyPct}%`;
-        document.getElementById('statDailySub').textContent = `今日消耗占比 ${dailyPct}%`;
-
-        document.getElementById('statWeeklyQuota').textContent = `${weeklyUsed} / ${weeklyMax}`;
-        const weeklyPct = Math.min(100, Math.round((weeklyUsed / weeklyMax) * 100));
-        document.getElementById('statWeeklyProgress').style.width = `${weeklyPct}%`;
-        document.getElementById('statWeeklySub').textContent = `本周消耗占比 ${weeklyPct}%`;
-
-        // Quota setting inputs & MD3 Custom Select for Quota Switch
-        const quotaEnabledVal = String(v5.enabled !== false);
-        if (!overviewQuotaSelectInstance) {
-          overviewQuotaSelectInstance = new MD3Select('overviewQuotaEnabledWrapper', {
-            options: [
-              { label: '启用配额流控 (Quota Enabled)', value: 'true' },
-              { label: '禁用配额流控 (Quota Disabled)', value: 'false' }
-            ],
-            value: quotaEnabledVal
-          });
-        } else {
-          overviewQuotaSelectInstance.setValue(quotaEnabledVal);
-        }
-
-        document.getElementById('overviewDailyLimit').value = dailyMax;
-        document.getElementById('overviewWeeklyLimit').value = weeklyMax;
-
-        // Fetch Upstream data
-        loadUpstreamData();
-      } catch (err) {
-        toast('加载总览数据失败: ' + err.message, true);
-      }
-    }
-
-    async function saveOverviewQuota() {
-      const enabled = overviewQuotaSelectInstance ? (overviewQuotaSelectInstance.value === 'true') : true;
-      const daily_limit = Number(document.getElementById('overviewDailyLimit').value) || 190;
-      const weekly_limit = Number(document.getElementById('overviewWeeklyLimit').value) || 1730;
-
-      try {
-        await api('/env', {
-          method: 'PUT',
-          body: JSON.stringify({
-            V5_QUOTA_ENABLED: String(enabled),
-            V5_DAILY_LIMIT: String(daily_limit),
-            V5_WEEKLY_LIMIT: String(weekly_limit)
-          })
-        });
-        toast('配额设置已保存并同步至系统环境');
-        loadOverview();
-      } catch (err) {
-        toast('保存配额失败: ' + err.message, true);
-      }
-    }
-
-    // --- Accounts Management ---
-    function renderAccountsTable(accounts) {
-      const container = document.getElementById('accountsTableContainer');
-      if (!accounts || accounts.length === 0) {
-        container.innerHTML = '<div style="padding: 32px; text-align: center; color: var(--text-muted);">暂无配置的 NovelAI 账号，请点击右上角添加。</div>';
-        return;
-      }
-
-      let html = `
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>显示名称</th>
-              <th>Token 掩码</th>
-              <th>权重</th>
-              <th>状态</th>
-              <th>连续失败</th>
-              <th>最后请求时间</th>
-              <th style="text-align: right;">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-      `;
-
-      accounts.forEach(a => {
-        const isCooling = a.cooling_down;
-        let statusBadge = '<span class="badge badge-green">正常空闲</span>';
-        if (!a.enabled) {
-          statusBadge = '<span class="badge badge-red">已停用</span>';
-        } else if (isCooling) {
-          statusBadge = '<span class="badge badge-tier">冷却熔断中</span>';
-        }
-
-        html += `
-          <tr>
-            <td><strong style="color: var(--primary); font-family: var(--font-mono);">${a.id}</strong></td>
-            <td>${a.name || '--'}</td>
-            <td><code>${a.masked_key || 'pst-••••••••'}</code></td>
-            <td><span class="badge badge-cyan">权重 ${a.weight || 1}</span></td>
-            <td>${statusBadge}</td>
-            <td><span style="font-family: var(--font-mono);">${a.fail_count || 0} 次</span></td>
-            <td><span style="font-size: 12px; color: var(--text-muted);">${a.last_used_at ? formatTimestamp(a.last_used_at) : '从未调用'}</span></td>
-            <td style="text-align: right;">
-              <div style="display: inline-flex; gap: 6px;">
-                <button class="btn btn-sm" onclick="testAccount('${a.id}')">探活</button>
-                <button class="btn btn-sm" onclick="editAccount('${a.id}')">编辑</button>
-                <button class="btn btn-sm" onclick="resetAccount('${a.id}')">重置</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteAccount('${a.id}')">删除</button>
-              </div>
-            </td>
-          </tr>
-        `;
-      });
-
-      html += '</tbody></table>';
-      container.innerHTML = html;
-    }
-
-    async function loadAccounts() {
-      const data = await api('/accounts');
-      renderAccountsTable(data.accounts);
-      renderUpstreamControls(data.accounts);
-    }
-
-    function openAccountForm(a = {}) {
-      editingAccountId = a.id || '';
-      document.getElementById('accountModalTitle').textContent = editingAccountId ? '编辑账号' : '添加 NovelAI 账号';
-      document.getElementById('modalAccountId').value = a.id || '';
-      document.getElementById('modalAccountId').disabled = !!editingAccountId;
-      document.getElementById('modalAccountName').value = a.name || '';
-      document.getElementById('modalAccountKey').value = '';
-      document.getElementById('modalAccountWeight').value = a.weight || 1;
-      document.getElementById('modalAccountEnabled').checked = a.enabled !== false;
-      document.getElementById('accountModal').classList.add('active');
-    }
-
-    function closeAccountForm() {
-      document.getElementById('accountModal').classList.remove('active');
-    }
-
-    async function editAccount(id) {
-      const data = await api('/accounts');
-      const target = (data.accounts || []).find(a => a.id === id);
-      if (target) openAccountForm(target);
-    }
-
-    async function saveAccount() {
-      const id = document.getElementById('modalAccountId').value.trim();
-      const name = document.getElementById('modalAccountName').value.trim();
-      const key = document.getElementById('modalAccountKey').value.trim();
-      const weight = Number(document.getElementById('modalAccountWeight').value) || 1;
-      const enabled = document.getElementById('modalAccountEnabled').checked;
-
-      if (!id || (!editingAccountId && !key)) {
-        toast('账号 ID 和密钥不能为空', true);
-        return;
-      }
-
-      try {
-        const body = { id, name, key, weight, enabled };
-        if (editingAccountId) {
-          await api(`/accounts/${editingAccountId}`, { method: 'PUT', body: JSON.stringify(body) });
-        } else {
-          await api('/accounts', { method: 'POST', body: JSON.stringify(body) });
-        }
-        closeAccountForm();
-        toast('账号保存成功');
-        loadAccounts();
-        refreshAll();
-      } catch (err) {
-        toast('保存失败: ' + err.message, true);
-      }
-    }
-
-    async function testAccount(id) {
-      toast(`正在探活测试账号 ${id}...`);
-      try {
-        const res = await api(`/accounts/${id}/test`, { method: 'POST' });
-        toast(res.message || '测试通过');
-        loadAccounts();
-      } catch (err) {
-        toast('探活失败: ' + err.message, true);
-        loadAccounts();
-      }
-    }
-
-    async function resetAccount(id) {
-      try {
-        await api(`/accounts/${id}/reset`, { method: 'POST' });
-        toast('账号状态已重置');
-        loadAccounts();
-      } catch (err) {
-        toast('重置失败: ' + err.message, true);
-      }
-    }
-
-    async function deleteAccount(id) {
-      const ok = await showConfirm('删除账号', `确认永久从轮询池删除账号 [${id}]？此操作不可恢复。`, true);
-      if (!ok) return;
-      try {
-        await api(`/accounts/${id}`, { method: 'DELETE' });
-        toast('账号已删除');
-        loadAccounts();
-        refreshAll();
-      } catch (err) {
-        toast('删除失败: ' + err.message, true);
-      }
-    }
-
-    // --- Models & Mapping Management ---
-    async function loadModelConfig() {
-      try {
-        const res = await api('/models/config');
-        document.getElementById('modelsTomlEditor').value = res.content || '';
-      } catch (err) {
-        toast('获取 models.toml 失败: ' + err.message, true);
-      }
-    }
-
-    async function saveModelConfig() {
-      const content = document.getElementById('modelsTomlEditor').value;
-      try {
-        await api('/models/config', {
-          method: 'PUT',
-          body: JSON.stringify({ content })
-        });
-        toast('models.toml 已成功保存并热重载');
-      } catch (err) {
-        toast('保存失败: ' + err.message, true);
-      }
-    }
-
-    // --- Settings Management ---
-    async function loadSettings() {
-      try {
-        const data = await api('/env');
-        const env = data.env || data;
-        for (const [k, v] of Object.entries(env)) {
-          const el = document.getElementById(k);
-          if (el) el.value = v;
-        }
-      } catch (err) {
-        console.warn('Load settings failed', err);
-      }
-    }
-
-    async function saveSettings() {
-      const keys = ['MAX_CONCURRENT', 'QUEUE_MAX_WAITERS', 'COOLDOWN_MIN', 'COOLDOWN_MAX', 'V5_QUOTA_ENABLED', 'V5_DAILY_LIMIT', 'V5_WEEKLY_LIMIT', 'IMAGE_BASE_URL'];
-      const payload = {};
-      keys.forEach(k => {
-        const el = document.getElementById(k);
-        if (el && el.value !== '') payload[k] = el.value.trim();
-      });
-
-      try {
-        await api('/env', { method: 'PUT', body: JSON.stringify(payload) });
-        toast('环境配置已保存生效');
-      } catch (err) {
-        toast('保存配置失败: ' + err.message, true);
-      }
-    }
-
-    // --- Live Logs Stream ---
-    async function loadLogs() {
-      try {
-        const data = await api('/logs');
-        const box = document.getElementById('logsBox');
-        const lines = data.lines || data.logs || [];
-        if (Array.isArray(lines)) {
-          box.innerHTML = lines.map(line => {
-            let cls = '';
-            if (line.includes('ERROR') || line.includes('Err')) cls = 'log-line-error';
-            else if (line.includes('WARN')) cls = 'log-line-warn';
-            else if (line.includes('INFO')) cls = 'log-line-info';
-            return `<div class="${cls}">${escapeHtml(line)}</div>`;
-          }).join('') || '<div style="color:var(--text-muted)">暂无最新日志</div>';
-        }
-        if (isLogFollowing) {
-          box.scrollTop = box.scrollHeight;
-        }
-      } catch (err) {
-        document.getElementById('logsBox').textContent = '读取实时日志流出错: ' + err.message;
-      }
-    }
-
-    function toggleLogFollow() {
-      isLogFollowing = !isLogFollowing;
-      const btn = document.getElementById('logFollowBtn');
-      btn.textContent = isLogFollowing ? '暂停跟随' : '恢复跟随';
-      document.getElementById('logStatus').textContent = isLogFollowing ? '自动刷新已启动 (2s)' : '自动滚动已暂停';
-    }
-
-    function escapeHtml(str) {
-      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
-    // --- Global Refresh ---
-    function refreshAll() {
-      loadOverview();
-      loadSettings();
-      loadAccounts();
-    }
-
-    // --- Initialization ---
-    window.addEventListener('DOMContentLoaded', () => {
-      loadAppearance();
-      refreshAll();
-      logInterval = setInterval(() => {
-        const activeTab = document.querySelector('nav button.active')?.dataset.tab;
-        if (activeTab === 'logs' && isLogFollowing) {
-          loadLogs();
-        }
-      }, 2000);
-    });
-  </script>
+      catch (e) { html = accCard(a, null, e.message); }
+      const el = document.getElementById('up_' + a.id); if (el) el.outerHTML = html;
+    }));
+    $('upT').textContent = '上游数据同步于 ' + new Date().toLocaleTimeString('zh-CN');
+  } finally { btn.disabled = false; }
+}
+$('upGo').onclick = () => run(loadUps)();
+$('upList').onclick = run(async e => {
+  const t = e.target.closest('.tg input'); if (!t) return;
+  const ep = t.dataset.k === 'v5' ? 'allow-v5' : t.dataset.k === 'anlas' ? 'allow-anlas' : 'enabled';
+  const field = ep === 'enabled' ? 'enabled' : ep.replace('-', '_');
+  const r = await api(`/accounts/${encodeURIComponent(t.dataset.id)}/${ep}`, { method: 'PUT', body: JSON.stringify({ [field]: t.checked }) });
+  toast(r.message);
+});
+
+
+async function loadModel() { $('mTxt').value = (await api('/models/config')).content; }
+$('mSave').onclick = run(async () => toast((await api('/models/config', { method: 'PUT', body: JSON.stringify({ content: $('mTxt').value }) })).message));
+$('mFetch').onclick = run(async () => { await api('/models/refresh', { method: 'POST' }); toast('已抓取上游模型'); loadModel(); });
+
+const KEYS = ['IMAGE_BASE_URL', 'HOST', 'PORT', 'MAX_CONCURRENT', 'QUEUE_MAX_WAITERS', 'COOLDOWN_MIN', 'COOLDOWN_MAX', 'V5_QUOTA_ENABLED', 'V5_DAILY_LIMIT', 'V5_WEEKLY_LIMIT'];
+async function loadEnv() {
+  const e = (await api('/env')).env || {};
+  $('envF').innerHTML = KEYS.map(k => `<label for="e_${k}">${k}</label><input id="e_${k}" name="${k}" value="${esc(e[k])}">`).join('') +
+    '<div class="bar" style="margin:16px 0 0"><span class="fill"></span><button class="btn">保存（重启后生效）</button></div>';
+}
+$('envF').onsubmit = run(async e => { e.preventDefault(); toast((await api('/env', { method: 'PUT', body: JSON.stringify(Object.fromEntries(new FormData(e.target))) })).message); });
+
+const LR = /^(\S+(?: \S+)?) \| (\w+)\s* \| (.*)$/;
+async function fetchLog() {
+  const r = await api('/logs/recent?cursor=' + (logFull ? logCur : -1));
+  if (r.last < logCur) logFull = false;
+  logCur = r.last; logFull = true;
+  return r.lines || [];
+}
+async function loadLog() {
+  const lines = await fetchLog(), f = $('lLv')?.value || '', box = $('logBox');
+  const bottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  const seg = lines.map(l => {
+    const m = l.match(LR);
+    if (!m) return f ? '' : esc(l);
+    return f && m[2] !== f ? '' : `<span class="t">${esc(m[1])}</span> <span class="L-${esc(m[2])}">${esc(m[2].padEnd(7))}</span> ${esc(m[3])}`;
+  }).filter(Boolean).join('\n');
+  if (seg) box.insertAdjacentHTML('beforeend', (box.textContent ? '\n' : '') + seg);
+  // 只保留最近的日志节点，避免长驻页面内存膨胀
+  while (box.childNodes.length > 4000) box.removeChild(box.firstChild);
+  if (bottom) box.scrollTop = box.scrollHeight;
+}
+async function startLog() { $('logBox').textContent = ''; logCur = 0; logFull = false; await loadLog(); logT = setInterval(() => $('lAuto')?.checked && run(loadLog)(), 2000); }
+$('lLv').onchange = () => { $('logBox').textContent = ''; logCur = 0; logFull = false; run(loadLog)(); };
+
+const DEF = { wall: '', blur: 18, alpha: 50, dim: 20 };
+let th = { ...DEF, ...JSON.parse(localStorage.getItem('gw_theme2') || '{}') };
+function paint() {
+  const r = document.documentElement.style;
+  if (th.wall) r.setProperty('--wall', `url("${th.wall.replace(/["\\]/g, encodeURIComponent)}")`); else r.removeProperty('--wall');
+  r.setProperty('--blur', th.blur + 'px'); r.setProperty('--alpha', th.alpha / 100); r.setProperty('--dim', th.dim / 100);
+  $('sB').value = th.blur; $('sA').value = th.alpha; $('sD').value = th.dim;
+  $('vB').textContent = th.blur + 'px'; $('vA').textContent = th.alpha + '%'; $('vD').textContent = th.dim + '%';
+  if (!th.wall.startsWith('data:')) $('wU').value = th.wall;
+}
+function keep() { try { localStorage.setItem('gw_theme2', JSON.stringify(th)); } catch { toast('图片过大，仅本次生效', true); } paint(); }
+[['sB', 'blur'], ['sA', 'alpha'], ['sD', 'dim']].forEach(([id, k]) => $(id).oninput = e => { th[k] = +e.target.value; keep(); });
+$('wSet').onclick = () => { const v = $('wU').value.trim(); if (v && !/^https?:\/\//i.test(v)) return toast('仅支持 http/https 地址', true); th.wall = v; keep(); };
+$('wF').onchange = e => { const f = e.target.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => { th.wall = rd.result; keep(); }; rd.readAsDataURL(f); };
+$('wReset').onclick = () => { th = { ...DEF }; keep(); };
+paint();
+
+if (tok) api('/session').then(() => { gate(false); go('dash'); }).catch(() => gate(true)); else gate(true);
+setInterval(() => $('dash').classList.contains('on') && $('gate').style.display === 'none' && run(loadDash)(), 15000);
+setInterval(() => $('dash').classList.contains('on') && $('gate').style.display === 'none' && run(loadUps)(), 60000);
+</script>
 </body>
 </html>

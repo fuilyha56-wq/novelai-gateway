@@ -85,6 +85,16 @@ class AccountPoolTests(unittest.TestCase):
 
             self.assertEqual(load_accounts_file(path), [])
 
+    def test_choose_filters_by_capability_without_fallback(self) -> None:
+        pool = AccountPool()
+        pool.configure(
+            '[{"id":"free","name":"免费","key":"key-free","allow_v5":false,"allow_anlas":false},'
+            '{"id":"v5","name":"V5","key":"key-v5","allow_v5":true,"allow_anlas":false}]'
+        )
+        self.assertEqual(pool.choose(need_v5=True, need_anlas=False)[0], "v5")
+        with self.assertRaises(RuntimeError):
+            pool.choose(need_v5=True, need_anlas=True)
+
 
 if __name__ == "__main__":
     unittest.main()

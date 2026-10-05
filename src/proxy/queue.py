@@ -11,6 +11,7 @@ import asyncio
 import logging
 import random
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import HTTPException
 
@@ -136,3 +137,36 @@ gate = ConcurrencyGate(
     cooldown_min=settings.cooldown_min,
     cooldown_max=settings.cooldown_max,
 )
+
+
+class AccountGenerationGate:
+    """按请求已选中的 NovelAI 账号串行化上游生成。"""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+
+async def acquire_account_gate(request):
+    """等待当前请求绑定账号的上游锁。"""
+    account_id = getattr(request.state, "gateway_account_id", None)
+    if not account_id:
+        return None
+    lock = account_pool.get_async_lock(account_id)
+    if lock is None:
+        return None
+    await lock.acquire()
+    return lock
+
+
+@asynccontextmanager
+async def account_generation_gate(request):
+    """在当前请求绑定的账号上串行执行一次上游生成。"""
+    lock = await acquire_account_gate(request)
+    try:
+        yield
+    finally:
+        if lock is not None and lock.locked():
+            lock.release()

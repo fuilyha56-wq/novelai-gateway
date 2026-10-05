@@ -13,6 +13,7 @@ import zipfile
 import base64
 import logging
 import math
+import asyncio
 from typing import Any
 
 from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -26,7 +27,7 @@ except ImportError:
     UnidentifiedImageError = Exception
 
 from .config import get_request_auth_token, settings
-from .queue import gate
+from .queue import account_generation_gate, gate
 from .stats import record_generation
 from .v5_quota import check_v5_quota, log_generation
 
@@ -646,9 +647,34 @@ def _normalize_token(raw_token: str) -> str:
     return raw_token.strip().strip("'\"")
 
 
-def _get_auth_token(request: Request) -> str:
-    """获取当前请求的共享凭据，多 API Key 时复用本请求已轮到的 Key。"""
-    return get_request_auth_token(request)
+def _get_auth_token(request: Request, need_v5: bool = False, need_anlas: bool = False) -> str:
+    """获取当前请求的共享凭据，多 API Key 时复用本请求已轮到的 Key。
+
+    need_v5 / need_anlas 仅在首次选号时生效，用于按账号计费能力过滤候选。
+    """
+    return get_request_auth_token(request, need_v5=need_v5, need_anlas=need_anlas)
+
+
+def _preflight_account(request: Request, nai_model: str, allow_anlas: bool) -> None:
+    """按账号计费能力预检生图请求，并把请求要求传给后续选号。
+
+    账号关闭 allow_v5 时拒绝 V5 请求；关闭 allow_anlas 时拒绝会消耗
+    Anlas 的请求。该校验在排队前进行，超限直接拒绝，不消耗上游额度。
+    """
+    from .account_pool import account_pool
+
+    need_v5 = _is_v5_model(nai_model)
+    try:
+        ok, message = account_pool.check_request(need_v5=need_v5, need_anlas=allow_anlas)
+    except Exception:
+        ok, message = True, ""
+    if not ok:
+        logger.warning(
+            f"⛔ 账号能力预检拒绝 | {nai_model} | need_v5={need_v5} | need_anlas={allow_anlas} | {message}"
+        )
+        raise HTTPException(status_code=409, detail=message)
+    request.state.gateway_need_v5 = need_v5
+    request.state.gateway_need_anlas = allow_anlas
 
 
 def _get_image_url(request: Request, filename: str) -> str:
@@ -1569,34 +1595,42 @@ async def _send_nai_request(
     # 对齐 NAI 网页端的行为：带图片的请求用 multipart，纯文生图用 JSON
     use_multipart = _has_base64_image(payload)
 
-    try:
-        if use_multipart:
-            # 转换为 multipart 格式
-            mp_headers, files = _build_multipart_form(payload)
-            # multipart 时不设 Content-Type，由 httpx 自动设置 boundary
-            send_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
-            resp = await client.post(
-                target_url,
-                files=files,
-                headers=send_headers,
-                timeout=settings.upstream_timeout,
-            )
-        else:
-            resp = await client.post(
-                target_url,
-                json=payload,
-                headers=headers,
-                timeout=settings.upstream_timeout,
-            )
-    except Exception as e:
-        account_id = getattr(request.state, "gateway_account_id", None)
-        if account_id:
-            account_pool.failure(account_id, str(e))
-        logger.error(f"❌ NAI 请求失败 ({target_url}): {e}")
-        raise HTTPException(status_code=502, detail=f"上游请求失败: {e}")
+    async with account_generation_gate(request):
+        for attempt in range(3):
+            try:
+                if use_multipart:
+                    mp_headers, files = _build_multipart_form(payload)
+                    send_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+                    resp = await client.post(
+                        target_url,
+                        files=files,
+                        headers=send_headers,
+                        timeout=settings.upstream_timeout,
+                    )
+                else:
+                    resp = await client.post(
+                        target_url,
+                        json=payload,
+                        headers=headers,
+                        timeout=settings.upstream_timeout,
+                    )
+            except Exception as e:
+                account_id = getattr(request.state, "gateway_account_id", None)
+                if account_id:
+                    account_pool.failure(account_id, str(e))
+                logger.error(f"❌ NAI 请求失败 ({target_url}): {e}")
+                raise HTTPException(status_code=502, detail=f"上游请求失败: {e}")
+            error_text = resp.content[:500].decode("utf-8", errors="replace")
+            if resp.status_code != 429 or "Concurrent generation is locked" not in error_text or attempt == 2:
+                break
+            delay = 2 ** (attempt + 1)
+            logger.warning(f"⚠️ NAI 生成锁定，{delay} 秒后重试 ({attempt + 1}/2)")
+            await asyncio.sleep(delay)
 
     if resp.status_code != 200:
         error_text = resp.content[:500].decode("utf-8", errors="replace")
+        if resp.status_code == 429 and "Concurrent generation is locked" in error_text:
+            logger.warning("⚠️ NAI 上游仍处于生成锁定，当前请求已按账号串行化；请稍后重试")
         account_id = getattr(request.state, "gateway_account_id", None)
         if account_id:
             account_pool.failure(account_id, error_text)
@@ -1641,29 +1675,37 @@ async def _send_nai_binary_request(
     # 但某些端点（如 annotate-image）需要纯 JSON，通过 force_json 跳过 multipart
     use_multipart = (not force_json) and _has_base64_image(payload)
 
-    try:
-        if use_multipart:
-            mp_headers, files = _build_multipart_form(payload)
-            send_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
-            resp = await client.post(
-                target_url,
-                files=files,
-                headers=send_headers,
-                timeout=settings.upstream_timeout,
-            )
-        else:
-            resp = await client.post(
-                target_url,
-                json=payload,
-                headers=headers,
-                timeout=settings.upstream_timeout,
-            )
-    except Exception as e:
-        account_id = getattr(request.state, "gateway_account_id", None)
-        if account_id:
-            account_pool.failure(account_id, str(e))
-        logger.error(f"❌ NAI 请求失败 ({target_url}): {e}")
-        raise HTTPException(status_code=502, detail=f"上游请求失败: {e}")
+    async with account_generation_gate(request):
+        for attempt in range(3):
+            try:
+                if use_multipart:
+                    mp_headers, files = _build_multipart_form(payload)
+                    send_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+                    resp = await client.post(
+                        target_url,
+                        files=files,
+                        headers=send_headers,
+                        timeout=settings.upstream_timeout,
+                    )
+                else:
+                    resp = await client.post(
+                        target_url,
+                        json=payload,
+                        headers=headers,
+                        timeout=settings.upstream_timeout,
+                    )
+            except Exception as e:
+                account_id = getattr(request.state, "gateway_account_id", None)
+                if account_id:
+                    account_pool.failure(account_id, str(e))
+                logger.error(f"❌ NAI 请求失败 ({target_url}): {e}")
+                raise HTTPException(status_code=502, detail=f"上游请求失败: {e}")
+            error_text = resp.content[:500].decode("utf-8", errors="replace")
+            if resp.status_code != 429 or "Concurrent generation is locked" not in error_text or attempt == 2:
+                break
+            delay = 2 ** (attempt + 1)
+            logger.warning(f"⚠️ NAI 生成锁定，{delay} 秒后重试 ({attempt + 1}/2)")
+            await asyncio.sleep(delay)
 
     if resp.status_code != 200:
         error_text = resp.content[:500].decode("utf-8", errors="replace")
@@ -2181,6 +2223,9 @@ async def handle_openai_generations(request: Request) -> Response:
     # 确定 accept_format
     accept_format = "json" if response_format == "nai_json" else "zip"
 
+    # 账号能力预检（allow_v5 / allow_anlas）
+    _preflight_account(request, nai_model, allow_anlas=not _in_opus_free_envelope(body, operation or None))
+
     # V5 每日限额预检（超限直接拒绝，不消耗上游额度）
     try:
         check_v5_quota(nai_model, n_samples)
@@ -2341,6 +2386,9 @@ async def handle_nai_inpainting(request: Request) -> Response:
     _apply_custom_params(body, params, nai_model)
 
     accept_format = "json" if response_format == "nai_json" else "zip"
+
+    # 账号能力预检（allow_v5 / allow_anlas）
+    _preflight_account(request, nai_model, allow_anlas=not _in_opus_free_envelope(body))
 
     # V5 每日限额预检
     try:
@@ -2543,6 +2591,9 @@ async def handle_openai_image_edits(request: Request) -> Response:
 
     accept_format = "json" if response_format == "nai_json" else "zip"
 
+    # 账号能力预检（allow_v5 / allow_anlas）
+    _preflight_account(request, nai_model, allow_anlas=not _in_opus_free_envelope(body))
+
     # V5 每日限额预检
     try:
         check_v5_quota(nai_model, 1)
@@ -2678,6 +2729,9 @@ async def handle_img2img(request: Request) -> Response:
     _apply_custom_params(body, params, nai_model)
 
     accept_format = "json" if response_format == "nai_json" else "zip"
+
+    # 账号能力预检（allow_v5 / allow_anlas）
+    _preflight_account(request, nai_model, allow_anlas=not _in_opus_free_envelope(body))
 
     # V5 每日限额预检
     try:
@@ -2824,6 +2878,9 @@ async def handle_vibe_transfer(request: Request) -> Response:
     _apply_custom_params(body, params, nai_model)
 
     accept_format = "json" if response_format == "nai_json" else "zip"
+
+    # 账号能力预检（allow_v5 / allow_anlas）
+    _preflight_account(request, nai_model, allow_anlas=not _in_opus_free_envelope(body))
 
     # V5 每日限额预检
     try:
@@ -3061,6 +3118,9 @@ async def handle_character_reference(request: Request) -> Response:
 
     accept_format = "json" if response_format == "nai_json" else "zip"
 
+    # 账号能力预检（allow_v5 / allow_anlas）
+    _preflight_account(request, nai_model, allow_anlas=not _in_opus_free_envelope(body))
+
     # V5 每日限额预检
     try:
         check_v5_quota(nai_model, 1)
@@ -3279,6 +3339,9 @@ async def handle_precise_reference(request: Request) -> Response:
     _apply_custom_params(body, params, nai_model)
 
     accept_format = "json" if response_format == "nai_json" else "zip"
+
+    # 账号能力预检（allow_v5 / allow_anlas）
+    _preflight_account(request, nai_model, allow_anlas=not _in_opus_free_envelope(body))
 
     # V5 每日限额预检
     try:

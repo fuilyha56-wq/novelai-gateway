@@ -136,12 +136,7 @@ def record_generation(content: bytes, path: str, width: int = 0, height: int = 0
             f"大小: {size_bytes / 1024 / 1024:.2f}MB | "
             f"今日累计: 小图={current['small']}, 大图={current['large']}"
         )
-        stats_logger.info(log_msg)
-        try:
-            print(f"📊 {log_msg}")
-        except UnicodeEncodeError:
-            # Windows GBK 控制台可能无法输出 emoji，降级为纯文本
-            print(f"[stats] {log_msg}")
+        stats_logger.info(f"📊 {log_msg}")
 
 
 def _load_stats() -> dict:

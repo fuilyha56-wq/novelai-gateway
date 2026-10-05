@@ -234,10 +234,10 @@ def record_v5_generation(
     _logger.info(
         f"🎨 V5 +{n_samples} 张 | {nai_model}{extra} | "
         f"模型 今日 {model_today} · 本周 {model_week} | "
-        f"V5合计 今日 {v5_today}/{V5_DAILY_LIMIT} {_bar(v5_today, V5_DAILY_LIMIT)} "
+        f"V5 今日 {v5_today}/{V5_DAILY_LIMIT} {_bar(v5_today, V5_DAILY_LIMIT)} "
         f"({_pct(v5_today, V5_DAILY_LIMIT)}) | "
         f"本周 {v5_week}/{V5_WEEKLY_LIMIT} {_bar(v5_week, V5_WEEKLY_LIMIT)} "
-        f"({_pct(v5_week, V5_WEEKLY_LIMIT)})"
+        f"({_pct(v5_week, V5_WEEKLY_LIMIT)}) | {_fmt_counters()}"
     )
 
 
@@ -271,14 +271,51 @@ def log_generation(
     extra = f" | {param_str}" if param_str else ""
     _logger.info(
         f"🎨 生成 +{n_samples} 张 | {nai_model}{extra} | "
-        f"模型 今日 {model_today} · 本周 {model_week}"
+        f"模型 今日 {model_today} · 本周 {model_week} | {_fmt_counters()}"
+    )
+
+
+def is_v45_model(nai_model: str | None) -> bool:
+    """判断内部模型名是否为 V4.5 系模型。"""
+    return isinstance(nai_model, str) and "diffusion-4-5" in nai_model
+
+
+def _sum_where(usage: dict[str, dict[str, int]], pred, dates: set[str]) -> int:
+    """按模型谓词与日期集合求和。"""
+    return sum(n for k, m in usage.items() if pred(k) for d, n in m.items() if d in dates)
+
+
+def get_counters() -> dict[str, int]:
+    """每日全部 / 每日 V4.5 / 每日 V5 / 每周 V5（滚动 7 天）/ 每月 V5（自然月）。"""
+    with _lock:
+        usage = _load_usage()
+    today = _today()
+    day = datetime.strptime(today, "%Y-%m-%d").date()
+    week = {(day - timedelta(days=i)).isoformat() for i in range(_WEEK_WINDOW_DAYS)}
+    month = {d for m in usage.values() for d in m if d.startswith(today[:7])}
+    v5 = lambda k: k == "*" or is_v5_model(k)  # noqa: E731
+    return {
+        "daily_all": _sum_where(usage, lambda _k: True, {today}),
+        "daily_v45": _sum_where(usage, is_v45_model, {today}),
+        "daily_v5": _sum_where(usage, v5, {today}),
+        "weekly_v5": _sum_where(usage, v5, week),
+        "monthly_v5": _sum_where(usage, v5, month),
+    }
+
+
+def _fmt_counters() -> str:
+    """汇总计数单行摘要。"""
+    c = get_counters()
+    return (
+        f"今日全部 {c['daily_all']} · 今日V4.5 {c['daily_v45']} · 今日V5 {c['daily_v5']} · "
+        f"本周V5 {c['weekly_v5']} · 本月V5 {c['monthly_v5']}"
     )
 
 
 def get_usage() -> dict[str, Any]:
     """查询当前限额状态（供调试/文档用）。
 
-    返回含按模型明细（per_model）与 V5 账号级合计（used_today/used_this_week）。
+    返回含按模型明细（per_model）、汇总计数（counters）与 V5 账号级合计。
     """
     usage = _load_usage()
     today = _today()
@@ -301,5 +338,6 @@ def get_usage() -> dict[str, Any]:
         "used_this_week": v5_week,
         "remaining_week": max(V5_WEEKLY_LIMIT - v5_week, 0),
         "per_model": per_model,
+        "counters": get_counters(),
         "history": usage,
     }

@@ -15,7 +15,8 @@ from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from contextlib import asynccontextmanager
 
-from .config import settings
+from .config import get_request_auth_token, settings
+from .account_pool import account_pool
 from .forwarder import forward, build_response, close_client, _CORS_HEADERS
 from .queue import gate
 from .stats import record_generation
@@ -348,6 +349,28 @@ def _cors_preflight():
     return Response(status_code=204, headers=_CORS_HEADERS)
 
 
+def _prepare_native_account(request: Request, api_path: str, body: bytes = b"") -> None:
+    """按原生请求模型设置账号能力筛选后再缓存凭据。"""
+    if not settings.shared_api_keys.strip() or not settings.is_heavy(api_path):
+        return
+    model = ""
+    try:
+        import json
+
+        payload = json.loads(body)
+        model = str(payload.get("model") or payload.get("parameters", {}).get("model", ""))
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        pass
+    need_v5 = "diffusion-5" in model
+    need_anlas = not model.endswith("-limit")
+    ok, message = account_pool.check_request(need_v5=need_v5, need_anlas=need_anlas)
+    if not ok:
+        raise HTTPException(status_code=409, detail=message)
+    request.state.gateway_need_v5 = need_v5
+    request.state.gateway_need_anlas = need_anlas
+    get_request_auth_token(request, need_v5=need_v5, need_anlas=need_anlas)
+
+
 # ── NAI API 代理 ──────────────────────────────────────────────
 
 async def _proxy_buffered_response(
@@ -403,13 +426,16 @@ async def _proxy_native_nai(request: Request, api_path: str) -> Response:
     """按官方路径转发到对应上游，并保持 ZIP / Msgpack Stream 原样返回。"""
     from contextlib import AsyncExitStack
 
-    from .queue import gate
+    from .queue import account_generation_gate, gate
 
     target_url = settings.get_upstream_url(api_path)
     try:
+        request_body = await request.body() if settings.is_heavy(api_path) else b""
         async with AsyncExitStack() as stack:
             if settings.is_heavy(api_path):
                 await stack.enter_async_context(gate)
+                _prepare_native_account(request, api_path, request_body)
+                await stack.enter_async_context(account_generation_gate(request))
             upstream = await forward(request, target_url)
 
             content_type = (upstream.headers.get("content-type") or "").lower()
@@ -473,17 +499,19 @@ async def native_upscale(request: Request):
     body = await request.body()
     target_url = settings.get_upstream_url("/ai/upscale")
     from .forwarder import _build_upstream_headers, get_client
-    from .queue import gate
+    from .queue import account_generation_gate, gate
 
     try:
         async with gate:
-            client = await get_client()
-            upstream = await client.post(
-                target_url,
-                content=body,
-                headers=_build_upstream_headers(request, target_url),
-            )
-            await upstream.aread()
+            _prepare_native_account(request, "/ai/upscale", body)
+            async with account_generation_gate(request):
+                client = await get_client()
+                upstream = await client.post(
+                    target_url,
+                    content=body,
+                    headers=_build_upstream_headers(request, target_url),
+                )
+                await upstream.aread()
         headers = _native_response_headers(upstream)
         if settings.is_heavy("/ai/upscale") and upstream.status_code == 200:
             record_generation(upstream.content, "/ai/upscale")
@@ -537,8 +565,13 @@ async def proxy_api(request: Request, path: str):
         # OpenAI 兼容入口已经在 openai.py 中门控；透明 API 入口也必须纳入
         # 同一门控，否则网页端直连 /_api 会绕过并发限制。
         if settings.is_heavy(api_path):
+            body = await request.body()
+            _prepare_native_account(request, api_path, body)
             async with gate:
-                return await _proxy_buffered_response(request, target_url, api_path)
+                from .queue import account_generation_gate
+
+                async with account_generation_gate(request):
+                    return await _proxy_buffered_response(request, target_url, api_path)
         return await _proxy_buffered_response(request, target_url, api_path)
     except Exception as exc:
         if isinstance(exc, HTTPException):

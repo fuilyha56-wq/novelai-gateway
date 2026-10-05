@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
@@ -62,6 +63,10 @@ def parse_accounts(value: str) -> list[dict[str, Any]]:
         except (TypeError, ValueError):
             account["weight"] = 1
         account["enabled"] = bool(account.get("enabled", True))
+        # 账号级计费开关：allow_v5 控制是否承接 V5 请求，
+        # allow_anlas 控制是否允许该账号消耗 Anlas（超出 Opus 免费额度）。
+        account["allow_v5"] = bool(account.get("allow_v5", True))
+        account["allow_anlas"] = bool(account.get("allow_anlas", True))
         accounts.append(account)
     return accounts
 
@@ -79,6 +84,8 @@ def serialize_accounts(accounts: list[dict[str, Any]]) -> str:
             "key": key,
             "weight": max(1, min(100, int(item.get("weight", 1)))),
             "enabled": bool(item.get("enabled", True)),
+            "allow_v5": bool(item.get("allow_v5", True)),
+            "allow_anlas": bool(item.get("allow_anlas", True)),
         })
     return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
@@ -119,6 +126,8 @@ class AccountState:
     key: str
     weight: int = 1
     enabled: bool = True
+    allow_v5: bool = True
+    allow_anlas: bool = True
     current_weight: float = 0
     status: str = "ready"
     last_error: str = ""
@@ -135,6 +144,8 @@ class AccountState:
             "masked_key": mask_secret(self.key),
             "weight": self.weight,
             "enabled": self.enabled,
+            "allow_v5": self.allow_v5,
+            "allow_anlas": self.allow_anlas,
             "status": self.status if self.enabled else "disabled",
             "last_error": self.last_error,
             "success_count": self.success_count,
@@ -150,6 +161,7 @@ class AccountPool:
         self._lock = Lock()
         self._accounts: dict[str, AccountState] = {}
         self._source = ""
+        self._async_locks: dict[str, asyncio.Lock] = {}
 
     def configure(self, value: str) -> None:
         """从环境配置同步账号，保留已有运行时统计。"""
@@ -166,6 +178,8 @@ class AccountPool:
                     key=str(item["key"]),
                     weight=int(item["weight"]),
                     enabled=bool(item["enabled"]),
+                    allow_v5=bool(item.get("allow_v5", True)),
+                    allow_anlas=bool(item.get("allow_anlas", True)),
                     current_weight=previous.current_weight if previous else 0,
                     status=previous.status if previous else "ready",
                     last_error=previous.last_error if previous else "",
@@ -174,10 +188,15 @@ class AccountPool:
                     failure_count=previous.failure_count if previous else 0,
                     last_used_at=previous.last_used_at if previous else 0,
                 )
+                self._async_locks.setdefault(account_id, asyncio.Lock())
             self._source = value
 
-    def choose(self) -> tuple[str, str]:
-        """使用平滑加权轮询选择账号，返回账号 ID 和凭据。"""
+    def choose(self, need_v5: bool = False, need_anlas: bool = False) -> tuple[str, str]:
+        """平滑加权轮询选择账号，返回账号 ID 和凭据。
+
+        need_v5 / need_anlas：请求对账号计费能力的要求。启用对应开关的账号
+        才进入候选池；没有符合条件的账号时直接失败，绝不回退到其他账号。
+        """
         now = time.monotonic()
         with self._lock:
             enabled_accounts = [
@@ -186,6 +205,18 @@ class AccountPool:
             ]
             if not enabled_accounts:
                 raise RuntimeError("没有可用的 NovelAI 账号")
+            if need_v5 or need_anlas:
+                enabled_accounts = [
+                    account for account in enabled_accounts
+                    if (not need_v5 or account.allow_v5) and (not need_anlas or account.allow_anlas)
+                ]
+                if not enabled_accounts:
+                    required = []
+                    if need_v5:
+                        required.append("V5")
+                    if need_anlas:
+                        required.append("Anlas")
+                    raise RuntimeError(f"没有满足权限的 NovelAI 账号：{' + '.join(required)}")
             candidates = [
                 account for account in enabled_accounts
                 if account.cooldown_until <= now
@@ -245,6 +276,17 @@ class AccountPool:
             account.status = "ready" if enabled else "disabled"
             return True
 
+    def set_flag(self, account_id: str, flag: str, allowed: bool) -> bool:
+        """更新账号计费开关（allow_v5 / allow_anlas），运行时立即生效。"""
+        if flag not in ("allow_v5", "allow_anlas"):
+            return False
+        with self._lock:
+            account = self._accounts.get(account_id)
+            if not account:
+                return False
+            setattr(account, flag, bool(allowed))
+            return True
+
     def enabled_count(self) -> int:
         """当前启用且配置了凭据的账号数量，用于并发容量计算。"""
         with self._lock:
@@ -252,6 +294,36 @@ class AccountPool:
                 1 for account in self._accounts.values()
                 if account.enabled and account.key
             )
+
+    def check_request(self, need_v5: bool = False, need_anlas: bool = False) -> tuple[bool, str]:
+        """检查是否存在满足计费能力要求的启用账号。
+
+        Returns:
+            (是否通过, 未通过时的提示消息)
+        """
+        if not (need_v5 or need_anlas):
+            return True, ""
+        with self._lock:
+            enabled = [a for a in self._accounts.values() if a.enabled and a.key]
+        if not enabled:
+            return True, ""
+        capable = [
+            a for a in enabled
+            if (not need_v5 or a.allow_v5) and (not need_anlas or a.allow_anlas)
+        ]
+        if capable:
+            return True, ""
+        missing = []
+        if need_v5 and need_anlas:
+            missing.append("允许 V5 且允许消耗 Anlas")
+        elif need_v5:
+            missing.append("允许 V5 模型")
+        else:
+            missing.append("允许消耗 Anlas")
+        return False, (
+            f"当前没有任何启用的账号{' ' + '/'.join(missing) if missing else ''}；"
+            f"请在管理控制台为至少一个账号开启对应能力后再试"
+        )
 
     def public(self) -> list[dict[str, Any]]:
         """返回脱敏账号列表。"""
@@ -263,6 +335,13 @@ class AccountPool:
         with self._lock:
             account = self._accounts.get(account_id)
             return account.key if account else ""
+
+    def get_async_lock(self, account_id: str) -> asyncio.Lock | None:
+        """返回账号级异步锁；未知账号返回 None。"""
+        with self._lock:
+            if account_id not in self._accounts:
+                return None
+            return self._async_locks.setdefault(account_id, asyncio.Lock())
 
 
 account_pool = AccountPool()

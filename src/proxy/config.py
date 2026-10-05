@@ -175,9 +175,6 @@ class Settings(BaseSettings):
             _account_id, token = account_pool.choose()
             return token
 
-        if self.shared_api_key:
-            return _normalize_credential(self.shared_api_key)
-
         if self.shared_token:
             token_str = _normalize_credential(self.shared_token)
             try:
@@ -246,8 +243,15 @@ class Settings(BaseSettings):
         return f"{self.novelai_api_url}{api_path}"
 
 
-def get_request_auth_token(request: Any) -> str:
-    """为一个下游请求选择并缓存共享凭据，避免内部子请求跨 Key。"""
+def get_request_auth_token(
+    request: Any,
+    need_v5: bool = False,
+    need_anlas: bool = False,
+) -> str:
+    """为一个下游请求选择并缓存共享凭据，避免内部子请求跨 Key。
+
+    need_v5 / need_anlas：生图请求对账号计费能力的要求，仅在首次选号时生效。
+    """
     cached_token = getattr(request.state, "gateway_auth_token", None)
     if isinstance(cached_token, str) and cached_token:
         return cached_token
@@ -257,7 +261,9 @@ def get_request_auth_token(request: Any) -> str:
         if account_id:
             token = account_pool.get_secret(account_id)
         else:
-            account_id, token = account_pool.choose()
+            need_v5 = need_v5 or bool(getattr(request.state, "gateway_need_v5", False))
+            need_anlas = need_anlas or bool(getattr(request.state, "gateway_need_anlas", False))
+            account_id, token = account_pool.choose(need_v5=need_v5, need_anlas=need_anlas)
             request.state.gateway_account_id = account_id
     else:
         token = settings.get_shared_auth_token()
