@@ -14,6 +14,7 @@ import base64
 import logging
 import math
 import asyncio
+import secrets
 from typing import Any
 
 from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -28,7 +29,7 @@ except ImportError:
 
 from .config import get_request_auth_token, settings
 from .queue import account_generation_gate, gate
-from .stats import record_generation
+from .stats import record_generation, record_model_latency
 from .v5_quota import check_v5_quota, log_generation
 
 logger = logging.getLogger("gateway")
@@ -629,6 +630,12 @@ def _safe_int(value, default: int) -> int:
         return int(value)
     except (ValueError, TypeError):
         return default
+
+
+def _request_seed(value) -> int:
+    """将未指定或 0 的种子转换为随机的非零种子。"""
+    seed = _safe_int(value, 0)
+    return seed if seed != 0 else secrets.randbelow(2**32 - 1) + 1
 
 
 def _safe_float(value, default: float) -> float:
@@ -1596,6 +1603,7 @@ async def _send_nai_request(
     use_multipart = _has_base64_image(payload)
 
     async with account_generation_gate(request):
+        generation_started = time.monotonic()
         for attempt in range(3):
             try:
                 if use_multipart:
@@ -1643,6 +1651,7 @@ async def _send_nai_request(
     account_id = getattr(request.state, "gateway_account_id", None)
     if account_id:
         account_pool.success(account_id)
+    record_model_latency(nai_model, time.monotonic() - generation_started)
     return resp.content
 
 
@@ -1869,7 +1878,7 @@ def _build_generation_payload(
         "width": width,
         "height": height,
         "n_samples": n_samples,
-        "seed": body.get("seed", int(time.time()) % 2**32),
+        "seed": _request_seed(body.get("seed")),
         "steps": body.get("steps", 28),
         "scale": body.get("scale", body.get("guidance_scale", 5.0)),
         "sampler": body.get("sampler", "k_euler_ancestral"),
@@ -2317,7 +2326,7 @@ async def handle_nai_inpainting(request: Request) -> Response:
         "width": width,
         "height": height,
         "n_samples": 1,
-        "seed": body.get("seed", int(time.time()) % 2**32),
+        "seed": _request_seed(body.get("seed")),
         "steps": body.get("steps", 28),
         "scale": body.get("scale", 5.0),
         "sampler": body.get("sampler", "k_euler_ancestral"),
@@ -2661,7 +2670,7 @@ async def handle_img2img(request: Request) -> Response:
         "width": width,
         "height": height,
         "n_samples": 1,
-        "seed": body.get("seed", int(time.time()) % 2**32),
+        "seed": _request_seed(body.get("seed")),
         "steps": body.get("steps", 28),
         "scale": body.get("scale", 5.0),
         "sampler": body.get("sampler", "k_euler_ancestral"),
@@ -2673,7 +2682,7 @@ async def handle_img2img(request: Request) -> Response:
         "strength": body.get("strength", 0.7),
         "noise": body.get("noise", 0.0),
         "cfg_rescale": body.get("cfg_rescale", 0.0),
-        "extra_noise_seed": body.get("extra_noise_seed", body.get("seed", int(time.time()) % 2**32)),
+        "extra_noise_seed": _request_seed(body.get("extra_noise_seed", body.get("seed"))),
     }
 
     nai_payload = {
@@ -2813,7 +2822,7 @@ async def handle_vibe_transfer(request: Request) -> Response:
         "width": width,
         "height": height,
         "n_samples": 1,
-        "seed": body.get("seed", int(time.time()) % 2**32),
+        "seed": _request_seed(body.get("seed")),
         "steps": body.get("steps", 28),
         "scale": body.get("scale", 5.0),
         "sampler": body.get("sampler", "k_euler_ancestral"),
@@ -3035,7 +3044,7 @@ async def handle_character_reference(request: Request) -> Response:
         "width": width,
         "height": height,
         "n_samples": 1,
-        "seed": body.get("seed", int(time.time()) % 2**32),
+        "seed": _request_seed(body.get("seed")),
         "steps": body.get("steps", 28),
         "scale": body.get("scale", 5.0),
         "sampler": body.get("sampler", "k_euler_ancestral"),
@@ -3281,7 +3290,7 @@ async def handle_precise_reference(request: Request) -> Response:
         "width": width,
         "height": height,
         "n_samples": 1,
-        "seed": body.get("seed", int(time.time()) % 2**32),
+        "seed": _request_seed(body.get("seed")),
         "steps": body.get("steps", 28),
         "scale": body.get("scale", 5.0),
         "sampler": body.get("sampler", "k_euler_ancestral"),

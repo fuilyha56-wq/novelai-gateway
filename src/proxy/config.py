@@ -138,7 +138,7 @@ class Settings(BaseSettings):
     queue_max_waiters: int = 8
     cooldown_min: float = 0.5
     cooldown_max: float = 1.0
-    upstream_timeout: float = 120.0
+    upstream_timeout: float = 300.0
 
     # V5 图片生成限额
     v5_quota_enabled: bool = True

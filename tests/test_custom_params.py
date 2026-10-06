@@ -41,6 +41,23 @@ def _rgba_png_bytes(min_alpha: int) -> bytes:
 class FirstClassV5ParamsTests(unittest.TestCase):
     """一等公民参数：straight_alpha / transparent_background / tag_hint_*。"""
 
+    def test_zero_seed_is_random_but_explicit_seed_is_preserved(self) -> None:
+        first, _, _ = _build_generation_payload(
+            {"model": "nai-v4.5-full", "prompt": "test", "seed": 0}
+        )
+        second, _, _ = _build_generation_payload(
+            {"model": "nai-v4.5-full", "prompt": "test", "seed": 0}
+        )
+        first_seed = first["parameters"]["seed"]
+        second_seed = second["parameters"]["seed"]
+        self.assertNotEqual(first_seed, 0)
+        self.assertNotEqual(second_seed, 0)
+        self.assertNotEqual(first_seed, second_seed)
+        explicit, _, _ = _build_generation_payload(
+            {"model": "nai-v4.5-full", "prompt": "test", "seed": 42}
+        )
+        self.assertEqual(explicit["parameters"]["seed"], 42)
+
     def test_v5_defaults_straight_alpha_true(self) -> None:
         nai_payload, _, _ = _build_generation_payload(
             {"model": "nai-diffusion-5-full", "prompt": "test"}

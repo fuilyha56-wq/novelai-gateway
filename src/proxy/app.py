@@ -5,6 +5,8 @@ NovelAI 透明反向代理网关 — 路由层。
 """
 
 import logging
+import json
+import time
 import mimetypes
 import platform
 import secrets
@@ -19,7 +21,7 @@ from .config import get_request_auth_token, settings
 from .account_pool import account_pool
 from .forwarder import forward, build_response, close_client, _CORS_HEADERS
 from .queue import gate
-from .stats import record_generation
+from .stats import record_generation, record_model_latency
 from .openai import (
     handle_annotate,
     handle_character_reference,
@@ -379,6 +381,7 @@ async def _proxy_buffered_response(
     api_path: str,
 ) -> Response:
     """读取并关闭透明代理响应，避免连接池长期保留未释放的响应。"""
+    generation_started = time.monotonic()
     upstream = await forward(request, target_url)
     try:
         # 读取响应（需要去 content-disposition，也便于统计图片大小）。
@@ -390,6 +393,8 @@ async def _proxy_buffered_response(
         headers.update(_CORS_HEADERS)
 
         content_bytes = upstream.content
+        if upstream.status_code == 200:
+            _record_native_latency(await request.body(), api_path, generation_started)
         if settings.is_heavy(api_path):
             record_generation(content_bytes, api_path)
 
@@ -410,6 +415,16 @@ _NATIVE_DROP_HEADERS = frozenset({
     "content-security-policy", "content-security-policy-report-only",
     "strict-transport-security", "x-frame-options",
 })
+
+
+def _record_native_latency(body: bytes, api_path: str, started: float) -> None:
+    if not api_path.startswith("/ai/generate-image"):
+        return
+    try:
+        payload = json.loads(body)
+        record_model_latency(str(payload.get("model", "")), time.monotonic() - started)
+    except (ValueError, AttributeError, TypeError):
+        return
 
 
 def _native_response_headers(upstream) -> dict[str, str]:
@@ -436,6 +451,7 @@ async def _proxy_native_nai(request: Request, api_path: str) -> Response:
                 await stack.enter_async_context(gate)
                 _prepare_native_account(request, api_path, request_body)
                 await stack.enter_async_context(account_generation_gate(request))
+            generation_started = time.monotonic()
             upstream = await forward(request, target_url)
 
             content_type = (upstream.headers.get("content-type") or "").lower()
@@ -448,11 +464,19 @@ async def _proxy_native_nai(request: Request, api_path: str) -> Response:
             if streaming and not upstream.is_stream_consumed:
                 headers = _native_response_headers(upstream)
                 hold_gate = stack.pop_all()
+                first_chunk_at = None
 
                 async def _stream():
+                    nonlocal first_chunk_at
                     try:
                         async for chunk in upstream.aiter_bytes():
+                            if first_chunk_at is None:
+                                first_chunk_at = time.monotonic()
+                                logger.info("📡 原生流首包 %s %.1fs", api_path, first_chunk_at - generation_started)
                             yield chunk
+                        if upstream.status_code == 200:
+                            _record_native_latency(request_body, api_path, generation_started)
+                            logger.info("📡 原生流结束 %s %.1fs", api_path, time.monotonic() - generation_started)
                     finally:
                         await upstream.aclose()
                         await hold_gate.aclose()
@@ -469,6 +493,8 @@ async def _proxy_native_nai(request: Request, api_path: str) -> Response:
             await upstream.aread()
             headers = _native_response_headers(upstream)
             content_bytes = upstream.content
+            if upstream.status_code == 200:
+                _record_native_latency(request_body, api_path, generation_started)
             if settings.is_heavy(api_path) and upstream.status_code == 200:
                 record_generation(content_bytes, api_path)
             return Response(

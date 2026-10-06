@@ -75,6 +75,7 @@ pre{margin:0;white-space:pre-wrap;word-break:break-all;font:12px Consolas,monosp
 <section class="page on" id="dash"><h1>总览</h1><div class="grid" id="cnt"></div>
 <div class="bar"><h2 class="fill" style="margin:8px 0 0;font-size:17px">NovelAI 账号</h2><span class="pill" id="upT">加载中...</span><button class="btn" id="upGo">刷新</button></div>
 <div class="grid wide" id="upList"></div>
+<section class="glass box" style="margin-bottom:16px"><h2 style="font-size:17px;margin:0 0 16px">模型调用耗时 · 最近 24 小时</h2><div style="height:300px;position:relative"><canvas id="modelLatencyChart" aria-label="V4.5与V5模型每小时平均调用耗时" role="img"></canvas></div><p id="latencyEmpty" class="t" hidden>暂无调用耗时数据</p></section>
 <div class="glass box"><h3>按模型统计</h3><table><thead><tr><th>模型</th><th>今日</th><th>近 7 天</th></tr></thead><tbody id="perm"></tbody></table></div></section>
 <section class="page" id="acct"><div class="bar"><h1 class="fill">账号池</h1><button class="btn" id="addA">新增账号</button></div>
 <div class="glass box"><table><thead><tr><th>名称</th><th>密钥</th><th>权重</th><th>状态</th><th>成功/失败</th><th>能力与操作</th></tr></thead><tbody id="accs"></tbody></table></div></section>
@@ -99,6 +100,7 @@ pre{margin:0;white-space:pre-wrap;word-break:break-all;font:12px Consolas,monosp
 <label for="editWeight">权重</label><input id="editWeight" type="number" min="1" max="100" required>
 <div class="edit-flags"><label><input id="editEnabled" type="checkbox"> 启用账号</label><label><input id="editV5" type="checkbox"> 承接 V5</label><label><input id="editAnlas" type="checkbox"> 允许消耗 Anlas</label></div>
 <div class="bar" style="margin:16px 0 0"><span class="fill"></span><button type="submit" class="btn">保存修改</button></div></form></div>
+<script src="/admin/api/chart.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -138,6 +140,31 @@ async function loadDash() {
     stat('今日 · V5', c.daily_v5 ?? 0, u.daily_limit) + stat('近 7 天 · V5', c.weekly_v5 ?? 0, u.weekly_limit) + stat('本月 · V5', c.monthly_v5 ?? 0);
   const rows = Object.entries(u.per_model || {}).sort((a, b) => b[1].used_today - a[1].used_today);
   $('perm').innerHTML = rows.map(([m, v]) => `<tr><td>${esc(m)}</td><td>${v.used_today}</td><td>${v.used_this_week}</td></tr>`).join('') || '<tr><td colspan="3">暂无数据</td></tr>';
+  await loadLatency();
+}
+
+let latencyChart;
+async function loadLatency() {
+  const result = await api('/model-latency');
+  $('latencyEmpty').hidden = result.series.length > 0;
+  const colors = ['#58a6ff', '#43d17a', '#ffb454', '#ff6370', '#38c9d6', '#e78edb', '#d6df63', '#c7b299'];
+  const datasets = result.series.map((series, index) => ({
+    label: series.model, data: series.average_ms.map(value => value === null ? null : value / 1000),
+    borderColor: colors[index % colors.length], backgroundColor: colors[index % colors.length],
+    borderWidth: 2, pointRadius: 3, spanGaps: false, counts: series.counts,
+  }));
+  const data = {labels: result.hours.map(hour => new Date(hour * 1000).toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit', hour12:false})), datasets};
+  if (latencyChart) { latencyChart.data = data; latencyChart.update('none'); return; }
+  latencyChart = new Chart($('modelLatencyChart'), {
+    type: 'line', data,
+    options: {responsive: true, maintainAspectRatio: false, interaction: {mode:'index', intersect:false},
+      plugins: {legend: {labels: {color:'#f1f3f8', boxWidth:12}}, tooltip: {callbacks: {
+        label: item => `${item.dataset.label}: ${item.parsed.y.toFixed(2)} 秒（${item.dataset.counts[item.dataIndex]} 次）`,
+      }}},
+      scales: {x: {ticks: {color:'#a3abc2', maxTicksLimit:12}, grid: {display:false}},
+        y: {beginAtZero:true, title:{display:true, text:'平均耗时（秒）', color:'#a3abc2'}, ticks:{color:'#a3abc2'}, grid:{color:'rgba(255,255,255,.12)'}}},
+    },
+  });
 }
 
 const pill = s => `<span class="pill ${/^(active|ok|healthy)$/.test(s) ? 'ok' : s === 'disabled' ? '' : 'warn'}">${esc(s)}</span>`;

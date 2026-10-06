@@ -12,7 +12,7 @@ from threading import Lock
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from .account_pool import (
     account_pool,
@@ -26,6 +26,7 @@ from .config import _parse_weighted_api_keys, settings
 from .model_registry import ModelRegistry
 from .model_fetcher import handle_refresh_upstream_models
 from .v5_quota import get_usage
+from .stats import get_model_latency, render_model_latency_png
 
 router = APIRouter(prefix="/admin/api")
 _logger = logging.getLogger("gateway")
@@ -162,6 +163,32 @@ async def overview(request: Request) -> dict[str, Any]:
 async def status(request: Request) -> dict[str, Any]:
     """返回控制台概览数据（与 /overview 兼容的别名）。"""
     return await overview(request)
+
+
+@router.get("/model-latency")
+async def model_latency(request: Request) -> dict[str, Any]:
+    await _require_auth(request)
+    try:
+        window_minutes = max(1, min(int(request.query_params.get("minutes", 1440)), 10080))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="minutes 必须是整数") from None
+    return get_model_latency(window_minutes=window_minutes, points=24)
+
+
+@router.get("/chart.js")
+async def chart_script() -> FileResponse:
+    return FileResponse(Path(__file__).parent / "templates" / "chart.umd.js", media_type="application/javascript")
+
+
+@router.get("/model-latency.png")
+async def model_latency_image(request: Request) -> Response:
+    await _require_auth(request)
+    try:
+        window_minutes = max(1, min(int(request.query_params.get("minutes", 1440)), 10080))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="minutes 必须是整数") from None
+    image = await asyncio.to_thread(render_model_latency_png, window_minutes)
+    return Response(image, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 async def _choose_upstream_account(account_id: str | None) -> tuple[str, str]:
