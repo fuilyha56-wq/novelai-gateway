@@ -76,6 +76,16 @@ type = "image"
 model_identifier = "nai-v5-inpaint"
 name = "nai-diffusion-5-full-inpainting"
 
+[[image.models]]
+type = "image"
+model_identifier = "nai-v5-full-medium"
+name = "nai-diffusion-5-full-medium"
+
+[[image.models]]
+type = "image"
+model_identifier = "nai-v5-inpaint-medium"
+name = "nai-diffusion-5-full-medium-inpainting"
+
 # ── V5 限制版（-limit 后缀，不允许消耗 Anlas）──
 # 与 V4.5 -limit 规则一致：仅允许 Opus 免费额度文生图路径。
 # NewAPI 渠道固定价 0.07 元/张（见 newapi-pricing.md）。

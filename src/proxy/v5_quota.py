@@ -38,6 +38,7 @@ from .config import settings
 # 默认限额；实际值可通过 .env 中的 V5_DAILY_LIMIT / V5_WEEKLY_LIMIT 覆盖。
 V5_WEEKLY_LIMIT = settings.v5_weekly_limit
 V5_DAILY_LIMIT = settings.v5_daily_limit
+V5_AUTO_RESTORE_PERCENT = 15.0
 
 # 滚动周窗口天数（对齐官方"随时间自动补充"）
 _WEEK_WINDOW_DAYS = 7
@@ -88,6 +89,44 @@ def _fmt_params(params: dict[str, Any] | None) -> str:
 def is_v5_model(nai_model: str | None) -> bool:
     """判断内部模型名是否为 V5 系模型。"""
     return isinstance(nai_model, str) and "diffusion-5" in nai_model
+
+
+def is_v5_quota_exhausted_error(status_code: int, error_text: str) -> bool:
+    """判断上游错误是否明确表示 V5 免费生成额度耗尽。"""
+    if status_code < 400 or not isinstance(error_text, str):
+        return False
+    text = error_text.casefold()
+    exhausted = (
+        "exhausted",
+        "used up",
+        "no remaining",
+        "zero remaining",
+        "耗尽",
+        "用完",
+        "用尽",
+        "剩余 0",
+        "剩余为 0",
+        "没有剩余",
+    )
+    quota_terms = (
+        "free generation",
+        "free generations",
+        "free image",
+        "free images",
+        "free quota",
+        "opus quota",
+        "opus free",
+        "免费额度",
+        "免费生成",
+        "免费配额",
+        "免费次数",
+    )
+    return any(term in text for term in quota_terms) and any(marker in text for marker in exhausted)
+
+
+def is_v5_quota_recovered(remaining_percent: float) -> bool:
+    """判断 V5 免费额度是否达到自动恢复阈值（严格大于 15%）。"""
+    return remaining_percent > V5_AUTO_RESTORE_PERCENT
 
 
 def _load_usage() -> dict[str, dict[str, int]]:
@@ -277,7 +316,9 @@ def log_generation(
 
 def is_v45_model(nai_model: str | None) -> bool:
     """判断内部模型名是否为 V4.5 系模型。"""
-    return isinstance(nai_model, str) and "diffusion-4-5" in nai_model
+    return isinstance(nai_model, str) and (
+        "diffusion-4-5" in nai_model or "v4.5" in nai_model
+    )
 
 
 def _sum_where(usage: dict[str, dict[str, int]], pred, dates: set[str]) -> int:
@@ -286,7 +327,7 @@ def _sum_where(usage: dict[str, dict[str, int]], pred, dates: set[str]) -> int:
 
 
 def get_counters() -> dict[str, int]:
-    """每日全部 / 每日 V4.5 / 每日 V5 / 每周 V5（滚动 7 天）/ 每月 V5（自然月）。"""
+    """返回全部、V4.5、V5 的日/周/月生成张数。"""
     with _lock:
         usage = _load_usage()
     today = _today()
@@ -297,6 +338,8 @@ def get_counters() -> dict[str, int]:
     return {
         "daily_all": _sum_where(usage, lambda _k: True, {today}),
         "daily_v45": _sum_where(usage, is_v45_model, {today}),
+        "weekly_v45": _sum_where(usage, is_v45_model, week),
+        "monthly_v45": _sum_where(usage, is_v45_model, month),
         "daily_v5": _sum_where(usage, v5, {today}),
         "weekly_v5": _sum_where(usage, v5, week),
         "monthly_v5": _sum_where(usage, v5, month),

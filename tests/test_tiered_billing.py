@@ -16,11 +16,14 @@ import zipfile
 from starlette.requests import Request
 
 from src.proxy.openai import (
+    _anlas_to_tokens,
     _billing_prompt_tokens,
     _build_image_response_v2,
     _build_png_image_response,
+    _calc_anlas_cost,
     _in_opus_free_envelope,
     _tiered_billing_units,
+    native_anlas_quote,
 )
 
 
@@ -167,10 +170,30 @@ class ResponseUsageInjectionTests(unittest.TestCase):
         return json.loads(response.body)["usage"]
 
     def test_limit_tier_usage_is_25_for_v5(self) -> None:
-        usage = self._usage_of(anlas_cost=17, billing_prompt_tokens=25)
+        response = _build_image_response_v2(
+            _request_stub(), _zip_bytes(), "test prompt", "b64_json",
+            anlas_cost=0, billing_prompt_tokens=25,
+        )
+        usage = json.loads(response.body)["usage"]
         self.assertEqual(usage["prompt_tokens"], 25)
         self.assertEqual(usage["total_tokens"], 25)
         self.assertEqual(usage["completion_tokens"], 0)
+        self.assertEqual(response.headers["X-Anlas-Cost"], "0")
+        self.assertEqual(response.headers["X-Prompt-Tokens"], "25")
+
+    def test_raw_zip_includes_known_anlas_and_prompt_tokens(self) -> None:
+        response = _build_image_response_v2(
+            _request_stub(), _zip_bytes(), "test prompt", "raw",
+            anlas_cost=17, billing_prompt_tokens=25,
+        )
+        self.assertEqual(response.headers["X-Anlas-Cost"], "17")
+        self.assertEqual(response.headers["X-Prompt-Tokens"], "25")
+
+    def test_unknown_anlas_is_not_reported_as_zero(self) -> None:
+        response = _build_image_response_v2(
+            _request_stub(), _zip_bytes(), "test prompt", "b64_json"
+        )
+        self.assertNotIn("X-Anlas-Cost", response.headers)
 
     def test_v45_free_tier_usage_is_zero(self) -> None:
         usage = self._usage_of(anlas_cost=0, billing_prompt_tokens=0)
@@ -195,6 +218,112 @@ class ResponseUsageInjectionTests(unittest.TestCase):
         self.assertEqual(json.loads(response.body)["usage"]["prompt_tokens"], 250)
         response = _build_png_image_response(_png_bytes("red"), "test", anlas_cost=0)
         self.assertEqual(json.loads(response.body)["usage"]["prompt_tokens"], 0)
+
+
+class NativeAnlasQuoteTests(unittest.TestCase):
+    """原生请求报价复用 Gateway 算法并区分 Anlas 与 NewAPI usage。"""
+
+    def test_native_v5_precise_quote_matches_gateway_calculator(self) -> None:
+        body = {
+            "model": "nai-diffusion-5-full",
+            "action": "generate",
+            "parameters": {
+                "width": 832,
+                "height": 1216,
+                "steps": 29,
+                "n_samples": 2,
+                "director_reference_images": ["ref-1", "ref-2"],
+            },
+        }
+        quote = native_anlas_quote("/ai/generate-image", body)
+        expected = _calc_anlas_cost(
+            width=832,
+            height=1216,
+            steps=29,
+            n_samples=2,
+            reference_image_count=2,
+            reference_mode="precise",
+            price_multiplier=2,
+        )
+        self.assertEqual(quote, (expected, _anlas_to_tokens(expected)))
+
+    def test_native_limit_quote_keeps_zero_anlas_and_nonzero_usage_marker(self) -> None:
+        body = {
+            "model": "nai-diffusion-5-full-limit",
+            "action": "generate",
+            "parameters": {
+                "width": 512,
+                "height": 512,
+                "steps": 28,
+                "n_samples": 1,
+            },
+        }
+        self.assertEqual(native_anlas_quote("/ai/generate-image", body), (0, 25))
+
+    def test_native_vibe_quote_does_not_rebill_encoded_reference(self) -> None:
+        body = {
+            "model": "nai-diffusion-4-5-full",
+            "action": "generate",
+            "parameters": {
+                "width": 1024,
+                "height": 1024,
+                "steps": 29,
+                "n_samples": 1,
+                "reference_image_multiple": ["A" * 1200],
+            },
+        }
+        quote = native_anlas_quote("/ai/generate-image", body)
+        expected = _calc_anlas_cost(
+            width=1024,
+            height=1024,
+            steps=29,
+            n_samples=1,
+            reference_image_count=1,
+            reference_image_encoded_count=1,
+        )
+        self.assertEqual(quote, (expected, _anlas_to_tokens(expected)))
+
+    def test_native_upscale_uses_source_pixel_tier(self) -> None:
+        image = base64.b64encode(_png_bytes()).decode("ascii")
+        self.assertEqual(native_anlas_quote("/ai/upscale", {"image": image}), (1, 50))
+
+    def test_openai_quote_endpoint_returns_gateway_anlas_and_usage(self) -> None:
+        from fastapi.testclient import TestClient
+        from src.proxy.app import app
+        from src.proxy.config import settings
+
+        previous = settings.allow_unauthenticated_access
+        settings.allow_unauthenticated_access = True
+        try:
+            response = TestClient(app).post("/v1/images/price-quote", json={
+                "model": "nai-v5-full",
+                "operation": "precise-reference",
+                "width": 832,
+                "height": 1216,
+                "steps": 29,
+                "samples": 1,
+                "reference_count": 1,
+            })
+        finally:
+            settings.allow_unauthenticated_access = previous
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["anlas_cost"], 50)
+        self.assertEqual(response.headers["X-Anlas-Cost"], "50")
+        self.assertEqual(response.headers["X-Prompt-Tokens"], "2500")
+        self.assertEqual(response.json()["usage"]["prompt_tokens"], 2500)
+
+    def test_openai_quote_endpoint_rejects_invalid_pricing_parameters(self) -> None:
+        from fastapi.testclient import TestClient
+        from src.proxy.app import app
+        from src.proxy.config import settings
+
+        previous = settings.allow_unauthenticated_access
+        settings.allow_unauthenticated_access = True
+        try:
+            response = TestClient(app).post("/v1/images/price-quote", json={"model": "nai-v5-full"})
+        finally:
+            settings.allow_unauthenticated_access = previous
+        self.assertEqual(response.status_code, 400)
 
 
 if __name__ == "__main__":

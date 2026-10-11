@@ -67,6 +67,7 @@ def parse_accounts(value: str) -> list[dict[str, Any]]:
         # allow_anlas 控制是否允许该账号消耗 Anlas（超出 Opus 免费额度）。
         account["allow_v5"] = bool(account.get("allow_v5", True))
         account["allow_anlas"] = bool(account.get("allow_anlas", True))
+        account["v5_auto_disabled"] = bool(account.get("v5_auto_disabled", False))
         accounts.append(account)
     return accounts
 
@@ -86,6 +87,7 @@ def serialize_accounts(accounts: list[dict[str, Any]]) -> str:
             "enabled": bool(item.get("enabled", True)),
             "allow_v5": bool(item.get("allow_v5", True)),
             "allow_anlas": bool(item.get("allow_anlas", True)),
+            "v5_auto_disabled": bool(item.get("v5_auto_disabled", False)),
         })
     return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
@@ -128,6 +130,7 @@ class AccountState:
     enabled: bool = True
     allow_v5: bool = True
     allow_anlas: bool = True
+    v5_auto_disabled: bool = False
     current_weight: float = 0
     status: str = "ready"
     last_error: str = ""
@@ -146,6 +149,7 @@ class AccountState:
             "enabled": self.enabled,
             "allow_v5": self.allow_v5,
             "allow_anlas": self.allow_anlas,
+            "v5_auto_disabled": self.v5_auto_disabled,
             "status": self.status if self.enabled else "disabled",
             "last_error": self.last_error,
             "success_count": self.success_count,
@@ -157,11 +161,12 @@ class AccountState:
 class AccountPool:
     """线程安全的平滑加权账号池。"""
 
-    def __init__(self) -> None:
+    def __init__(self, persistence_path: Path | None = Path("config/accounts.json")) -> None:
         self._lock = Lock()
         self._accounts: dict[str, AccountState] = {}
         self._source = ""
         self._async_locks: dict[str, asyncio.Lock] = {}
+        self._persistence_path = persistence_path
 
     def configure(self, value: str) -> None:
         """从环境配置同步账号，保留已有运行时统计。"""
@@ -180,6 +185,7 @@ class AccountPool:
                     enabled=bool(item["enabled"]),
                     allow_v5=bool(item.get("allow_v5", True)),
                     allow_anlas=bool(item.get("allow_anlas", True)),
+                    v5_auto_disabled=bool(item.get("v5_auto_disabled", False)),
                     current_weight=previous.current_weight if previous else 0,
                     status=previous.status if previous else "ready",
                     last_error=previous.last_error if previous else "",
@@ -241,8 +247,9 @@ class AccountPool:
             account = self._accounts.get(account_id)
             if account:
                 account.success_count += 1
-                account.status = "ready"
-                account.last_error = ""
+                account.status = "v5_quota_exhausted" if account.v5_auto_disabled else "ready"
+                if not account.v5_auto_disabled:
+                    account.last_error = ""
                 account.cooldown_until = 0
 
     def failure(self, account_id: str, error: str, cooldown_seconds: float = 30) -> None:
@@ -251,7 +258,7 @@ class AccountPool:
             account = self._accounts.get(account_id)
             if account:
                 account.failure_count += 1
-                account.status = "cooldown"
+                account.status = "v5_quota_exhausted" if account.v5_auto_disabled else "cooldown"
                 account.last_error = error[:300]
                 account.cooldown_until = time.monotonic() + cooldown_seconds
 
@@ -261,8 +268,9 @@ class AccountPool:
             account = self._accounts.get(account_id)
             if not account:
                 return False
-            account.status = "ready"
-            account.last_error = ""
+            account.status = "v5_quota_exhausted" if account.v5_auto_disabled else "ready"
+            if not account.v5_auto_disabled:
+                account.last_error = ""
             account.cooldown_until = 0
             return True
 
@@ -285,7 +293,67 @@ class AccountPool:
             if not account:
                 return False
             setattr(account, flag, bool(allowed))
+            if flag == "allow_v5":
+                account.v5_auto_disabled = False
+                if account.enabled:
+                    account.status = "ready"
             return True
+
+    def disable_v5_for_quota(self, account_id: str, reason: str) -> bool:
+        """因上游报告 V5 免费额度耗尽而关闭账号的 V5 能力。"""
+        with self._lock:
+            account = self._accounts.get(account_id)
+            if not account:
+                return False
+            account.allow_v5 = False
+            account.v5_auto_disabled = True
+            account.status = "v5_quota_exhausted" if account.enabled else "disabled"
+            account.last_error = reason[:300]
+            snapshot = [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "key": item.key,
+                    "weight": item.weight,
+                    "enabled": item.enabled,
+                    "allow_v5": item.allow_v5,
+                    "allow_anlas": item.allow_anlas,
+                    "v5_auto_disabled": item.v5_auto_disabled,
+                }
+                for item in self._accounts.values()
+            ]
+            persistence_path = self._persistence_path
+        if persistence_path is not None:
+            save_accounts_file(persistence_path, snapshot)
+        return True
+
+    def restore_v5_after_quota(self, account_id: str) -> bool:
+        """上游报告额度恢复时，仅恢复本功能自动关闭的 V5 能力。"""
+        with self._lock:
+            account = self._accounts.get(account_id)
+            if not account or not account.v5_auto_disabled:
+                return False
+            account.allow_v5 = True
+            account.v5_auto_disabled = False
+            account.status = "ready" if account.enabled else "disabled"
+            account.last_error = ""
+            snapshot = [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "key": item.key,
+                    "weight": item.weight,
+                    "enabled": item.enabled,
+                    "allow_v5": item.allow_v5,
+                    "allow_anlas": item.allow_anlas,
+                    "v5_auto_disabled": item.v5_auto_disabled,
+                }
+                for item in self._accounts.values()
+            ]
+            persistence_path = self._persistence_path
+        if persistence_path is not None:
+            save_accounts_file(persistence_path, snapshot)
+        return True
 
     def enabled_count(self) -> int:
         """当前启用且配置了凭据的账号数量，用于并发容量计算。"""

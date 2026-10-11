@@ -25,7 +25,7 @@ from .account_pool import (
 from .config import _parse_weighted_api_keys, settings
 from .model_registry import ModelRegistry
 from .model_fetcher import handle_refresh_upstream_models
-from .v5_quota import get_usage
+from .v5_quota import get_usage, is_v5_quota_exhausted_error, is_v5_quota_recovered
 from .stats import get_model_latency, render_model_latency_png
 
 router = APIRouter(prefix="/admin/api")
@@ -228,10 +228,14 @@ async def _fetch_upstream_with_account(path: str, selected_id: str, secret: str)
         raise HTTPException(status_code=502, detail=f"上游连接失败: {exc}") from exc
 
     if response.status_code >= 400:
-        account_pool.failure(selected_id, f"HTTP {response.status_code}")
+        error_text = response.text[:500]
+        if path == "/ai/generate-image" and is_v5_quota_exhausted_error(response.status_code, error_text):
+            account_pool.disable_v5_for_quota(selected_id, "V5 免费额度已耗尽")
+            _logger.warning("账号 %s V5 免费额度已耗尽，已自动关闭该账号的 V5 能力", selected_id)
+        account_pool.failure(selected_id, f"HTTP {response.status_code}: {error_text}")
         raise HTTPException(
             status_code=response.status_code,
-            detail=response.text[:500] or "上游请求失败",
+            detail=error_text or "上游请求失败",
         )
 
     account_pool.success(selected_id)
@@ -239,6 +243,23 @@ async def _fetch_upstream_with_account(path: str, selected_id: str, secret: str)
         payload = response.json()
     except Exception:
         payload = {"raw": response.text}
+
+    if path == "/user/subscription" and isinstance(payload, dict):
+        usage = payload.get("usage")
+        try:
+            tier = int(payload.get("tier"))
+        except (TypeError, ValueError):
+            tier = None
+        if tier == 3 and isinstance(usage, dict):
+            percent = usage.get("percent")
+            try:
+                remaining_percent = float(percent)
+            except (TypeError, ValueError):
+                remaining_percent = None
+            if remaining_percent is not None and remaining_percent <= 0:
+                account_pool.disable_v5_for_quota(selected_id, "V5 免费额度已耗尽")
+            elif remaining_percent is not None and is_v5_quota_recovered(remaining_percent):
+                account_pool.restore_v5_after_quota(selected_id)
 
     return {
         "account_id": selected_id,
@@ -509,6 +530,8 @@ async def _set_account_flag(account_id: str, flag: str, allowed: bool) -> dict[s
     """更新账号计费开关：同步内存账号池并持久化到 accounts.json。"""
     accounts, target = _find_managed_account(account_id)
     target[flag] = allowed
+    if flag == "allow_v5":
+        target["v5_auto_disabled"] = False
     _persist_accounts(accounts)
     updated = next(item for item in account_pool.public() if item["id"] == account_id)
     _logger.info(f"⚙️ 账号 {account_id} {'开启' if allowed else '关闭'} {flag}")

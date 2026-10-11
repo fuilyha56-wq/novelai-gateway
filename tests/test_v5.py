@@ -5,8 +5,10 @@ import io
 import json
 import os
 import tempfile
+import tomllib
 import unittest
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi import HTTPException
 from PIL import Image
@@ -17,6 +19,8 @@ from src.proxy.openai import (
     _is_v4_family,
     _is_v5_model,
     _v5_price_multiplier,
+    _resolve_infill_model,
+    _absorb_extra_params,
 )
 from src.proxy import v5_quota
 
@@ -29,6 +33,14 @@ def _png_bytes(color: str = "red") -> bytes:
 
 class V5ModelHelpersTests(unittest.TestCase):
     """V5 模型识别与销售倍率。"""
+
+    def test_medium_aliases_registered_in_example(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        with (root / "config" / "models.toml.example").open("rb") as source:
+            config = tomllib.load(source)
+        models = {entry["model_identifier"]: entry["name"] for entry in config["image"]["models"]}
+        self.assertEqual(models["nai-v5-full-medium"], "nai-diffusion-5-full-medium")
+        self.assertEqual(models["nai-v5-inpaint-medium"], "nai-diffusion-5-full-medium-inpainting")
 
     def test_is_v5_model_detects_diffusion_5(self) -> None:
         self.assertTrue(_is_v5_model("nai-diffusion-5-full"))
@@ -50,9 +62,35 @@ class V5ModelHelpersTests(unittest.TestCase):
         self.assertEqual(_v5_price_multiplier("nai-diffusion-4-5-full"), 1.0)
         self.assertEqual(_v5_price_multiplier("nai-diffusion-3"), 1.0)
 
+    def test_medium_price_multiplier_matches_official_cost(self) -> None:
+        self.assertEqual(_v5_price_multiplier("nai-diffusion-5-full-medium"), 1.5)
+        self.assertEqual(_calc_anlas_cost(1024, 1024, 14, medium=True), 18)
+        self.assertEqual(_calc_anlas_cost(512, 512, 14, medium=True), 5)
+        self.assertEqual(_calc_anlas_cost(1024, 1024, 14, medium=True, is_opus=True), 0)
+
 
 class V5GenerationPayloadTests(unittest.TestCase):
     """V5 载荷：params_version=4，且保留 v4_prompt 结构。"""
+
+    def test_medium_payload_uses_official_model_and_fixed_settings(self) -> None:
+        payload, _, _ = _build_generation_payload({"model": "nai-diffusion-5-full-medium", "prompt": "landscape"})
+        self.assertEqual(payload["model"], "nai-diffusion-5-full-medium")
+        self.assertEqual(payload["parameters"]["steps"], 14)
+        self.assertEqual(payload["parameters"]["sampler"], "k_euler_ancestral")
+        self.assertEqual(payload["parameters"]["tag_hint_uc_preset"], 2)
+        self.assertEqual(_resolve_infill_model(payload["model"]), "nai-diffusion-5-full-medium-inpainting")
+
+    def test_medium_rejects_costly_and_unsupported_overrides(self) -> None:
+        for overrides in [{"steps": 23}, {"n": 2}, {"size": "1088x1024"}, {"sampler": "k_euler"}, {"cfg_rescale": 0.5}, {"negative_prompt": "custom"}, {"ucPreset": 3}, {"service_tier": "priority"}, {"reference_image": "image"}, {"params_version": 3}, {"characterPrompts": [{"negativePrompt": "custom"}]}, {"v4_negative_prompt": {"caption": {"base_caption": "custom"}}}]:
+            with self.subTest(overrides=overrides), self.assertRaises(HTTPException) as raised:
+                _build_generation_payload({"model": "nai-diffusion-5-full-medium", "prompt": "landscape", **overrides})
+            self.assertEqual(raised.exception.status_code, 400)
+
+    def test_medium_extra_params_cannot_bypass_steps(self) -> None:
+        body = {"model": "nai-diffusion-5-full-medium", "prompt": "landscape", "extra_params": {"steps": 28}}
+        _absorb_extra_params(body)
+        with self.assertRaises(HTTPException):
+            _build_generation_payload(body)
 
     def test_v5_payload_uses_params_version_4(self) -> None:
         nai_payload, _prompt, _fmt = _build_generation_payload(
@@ -193,6 +231,18 @@ class V5QuotaTests(unittest.TestCase):
         v5_quota.record_v5_generation("nai-diffusion-4-5-full", 100)
         self.assertEqual(v5_quota.get_usage()["used_today"], 0)
 
+    def test_v5_quota_error_detection_requires_free_quota_signal(self) -> None:
+        self.assertTrue(v5_quota.is_v5_quota_exhausted_error(400, "Opus free generation quota exhausted"))
+        self.assertTrue(v5_quota.is_v5_quota_exhausted_error(429, "免费额度已用完"))
+        self.assertFalse(v5_quota.is_v5_quota_exhausted_error(400, "Free generation is not available for this operation"))
+        self.assertFalse(v5_quota.is_v5_quota_exhausted_error(402, "Not enough Anlas"))
+        self.assertFalse(v5_quota.is_v5_quota_exhausted_error(200, "free quota"))
+
+    def test_v5_auto_restore_requires_more_than_fifteen_percent(self) -> None:
+        self.assertFalse(v5_quota.is_v5_quota_recovered(0))
+        self.assertFalse(v5_quota.is_v5_quota_recovered(15))
+        self.assertTrue(v5_quota.is_v5_quota_recovered(15.01))
+
     def test_check_and_record_roundtrip(self) -> None:
         v5_quota.check_v5_quota("nai-diffusion-5-full", 1)
         v5_quota.record_v5_generation("nai-diffusion-5-full", 1)
@@ -295,6 +345,26 @@ class V5QuotaTests(unittest.TestCase):
         self.assertEqual(
             v5_quota.get_usage()["per_model"]["nai-diffusion-4-5-curated"]["used_today"], 1
         )
+
+    def test_v45_weekly_and_monthly_counters(self) -> None:
+        today = v5_quota._today()
+        day = datetime.strptime(today, "%Y-%m-%d").date()
+        usage = {
+            "nai-diffusion-4-5-full": {
+                today: 3,
+                (day - timedelta(days=3)).isoformat(): 4,
+                (day.replace(day=1) - timedelta(days=1)).isoformat(): 5,
+            },
+            "nai-diffusion-5-full": {today: 7},
+        }
+        with open(v5_quota.V5_USAGE_JSON, "w", encoding="utf-8") as stream:
+            json.dump(usage, stream)
+
+        counters = v5_quota.get_counters()
+
+        self.assertEqual(counters["daily_v45"], 3)
+        self.assertEqual(counters["weekly_v45"], 7)
+        self.assertEqual(counters["monthly_v45"], 7)
 
     def test_log_generation_v5_counts(self) -> None:
         """V5 走 log_generation 正常计数（复用 record_v5_generation）。"""

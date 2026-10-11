@@ -2,6 +2,18 @@
 
 本文档以当前 `src/proxy/app.py`、`src/proxy/openai.py`、`src/proxy/config.py` 和 `config/models.toml` 为准，描述网关当前公开的 HTTP 接口、输入格式、响应格式与计费映射。
 
+## V5 Medium（2026-10-10）
+
+新增独立别名 `nai-v5-full-medium` 和 `nai-v5-inpaint-medium`，对应官方 `nai-diffusion-5-full-medium` 和 `nai-diffusion-5-full-medium-inpainting`。不是给普通 V5 设置 14 步；旧模型及 `-limit` 语义保持不变。
+
+固定 14 步、`k_euler_ancestral`、Heavy UC、`cfg_rescale=0`、单张；本站尺寸限 64 倍数、面积不超过 1048576、单边不超过 1600。仅允许 generate/img2img/infill；自定义主/角色负面词、其他 UC 预设、参考图、ControlNet、priority、超分和 Director 工具返回 HTTP 400。限制在 body/header/extra_params 合并后以及最终上游 parameters 构建后检查，原生 JSON/multipart 两种入口也校验并发送固定参数。
+
+官方基础 Anlas 计算（无参考图/额外工具）：步数项乘 `1 / 1.06521739`，基础值向上取整，乘 V5 的 1.5 和 strength 后再次向上取整，每张至少 2 Anlas。1024²/14 步为 18，512²/14 步为 5；High 1024²/23 步为 26。Medium 固定 usage 标记 18 仅用于受限请求结算/观测，不是任意尺寸的实际 Anlas。
+
+线上 NewAPI 为两个 Medium 模型配置按次价格 `3.46153846` 个余额单位（既有 High 档内 5 × 18/26），只添加到常规渠道 115，不改限量渠道 116；不应再套用 High 的 tiered token 表达式。500000 quota 为一个默认站内余额单位，不能与官方 USD 或 Anlas 混同。
+
+来源（查询日期 2026-10-10）：[官方 Effort 文档](https://docs.novelai.net/en/image/effort/)、[公告](https://journal.novelai.net/novelai-diffusion-v5-full-effort-toggle/)、[FAQ](https://docs.novelai.net/en/faq/)及官网公开计算器。官方描述约省 42%，当前计算器上述代表性 Anlas 示例为 26→18（约省 30.77%）；保留差异，不凭经验用固定 42% 改写金额。
+
 ## 目录
 
 1. [基础信息](#1-基础信息)

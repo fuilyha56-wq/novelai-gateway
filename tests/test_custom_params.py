@@ -465,6 +465,21 @@ class HandlerIntegrationTests(unittest.TestCase):
         self.assertIs(params["color_correct"], True)
         self.assertIs(params["straight_alpha"], True)
 
+    def test_medium_edit_endpoints_default_to_official_fixed_settings(self) -> None:
+        """Omitted sampling settings must not inherit High defaults in edit handlers."""
+        image_b64 = base64.b64encode(_rgba_png_bytes(min_alpha=0)).decode()
+        for endpoint in ("img2img", "inpainting", "edits"):
+            with self.subTest(endpoint=endpoint):
+                response = self._client.post(
+                    f"/v1/images/{endpoint}",
+                    json={"model": "nai-v5-full-medium", "prompt": "landscape", "width": 512, "height": 512, "image": image_b64, "mask": image_b64},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(self._last_params()["steps"], 14)
+                self.assertEqual(self._last_params()["sampler"], "k_euler_ancestral")
+                self.assertEqual(self._last_params()["tag_hint_uc_preset"], 2)
+                self.assertEqual(self.captured[-1]["model"], "nai-diffusion-5-full-medium" if endpoint == "img2img" else "nai-diffusion-5-full-medium-inpainting")
+
     def test_inpainting_merges_custom_params(self) -> None:
         image_b64 = base64.b64encode(_rgba_png_bytes(min_alpha=0)).decode()
         resp = self._client.post(

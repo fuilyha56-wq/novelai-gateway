@@ -137,6 +137,7 @@ function stat(t, v, lim) {
 async function loadDash() {
   const u = (await api('/overview')).usage || {}, c = u.counters || {};
   $('cnt').innerHTML = stat('今日 · 全部模型', c.daily_all ?? 0) + stat('今日 · V4.5', c.daily_v45 ?? 0) +
+    stat('近 7 天 · V4.5', c.weekly_v45 ?? 0) + stat('本月 · V4.5', c.monthly_v45 ?? 0) +
     stat('今日 · V5', c.daily_v5 ?? 0, u.daily_limit) + stat('近 7 天 · V5', c.weekly_v5 ?? 0, u.weekly_limit) + stat('本月 · V5', c.monthly_v5 ?? 0);
   const rows = Object.entries(u.per_model || {}).sort((a, b) => b[1].used_today - a[1].used_today);
   $('perm').innerHTML = rows.map(([m, v]) => `<tr><td>${esc(m)}</td><td>${v.used_today}</td><td>${v.used_this_week}</td></tr>`).join('') || '<tr><td colspan="3">暂无数据</td></tr>';
@@ -243,7 +244,8 @@ const allRows = (title, obj) => `<tr class="sec"><td colspan="2">${esc(title)}</
 function accCard(a, r, err, duplicate = false) {
   const duplicateTip = duplicate ? '<span class="pill warn" title="多个账号使用同一个 Token，上游返回的数据会相同">重复凭据</span>' : '';
   const head = `<div class="hd"><div class="av" aria-hidden="true">${esc((a.name || '?')[0].toUpperCase())}</div><div class="nm"><b>${esc(a.name)}</b><small><code>${esc(a.masked_key)}</code></small></div>${duplicateTip}${pill(a.status)}</div>`;
-  const sw = `<div class="sw">${tgl('停用后保留账号配置，不再参与请求', 'enabled', a.id, a.enabled !== false)}<span>启用</span>${tgl('是否允许该账号使用 V5 模型', 'v5', a.id, a.allow_v5 !== false)}<span>V5</span>${tgl('是否允许该账号消耗 Anlas', 'anlas', a.id, a.allow_anlas !== false)}<span>Anlas</span></div>`;
+  const v5State = a.v5_auto_disabled ? '<small class="pill warn" title="检测到该账号 V5 免费额度耗尽后自动关闭；额度恢复时会自动重新开启">V5 额度耗尽，自动停用</small>' : '';
+  const sw = `<div class="sw">${tgl('停用后保留账号配置，不再参与请求', 'enabled', a.id, a.enabled !== false)}<span>启用</span>${tgl('是否允许该账号使用 V5 模型', 'v5', a.id, a.allow_v5 !== false)}<span>V5</span>${v5State}${tgl('是否允许该账号消耗 Anlas', 'anlas', a.id, a.allow_anlas !== false)}<span>Anlas</span></div>`;
   if (err) return `<article class="glass acc" id="up_${esc(a.id)}">${head}${sw}<div class="box"><span class="pill err">拉取失败</span> <small>${esc(err)}</small></div></article>`;
   const s = r.subscription || {}, d = r.user_data || {}, pk = s.perks || {}, pr = d.priority || {}, inf = d.information || {}, st = s.trainingStepsLeft || {};
   const tier = s.tier ?? 0, u = s.usage || {}, pct = Number(u.percent), has = Number.isFinite(pct), rem = has ? Math.max(0, pct) : 0, sec = Number(u.timeUntilNextPercent);
