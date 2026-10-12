@@ -287,44 +287,5 @@ class NativeAnlasQuoteTests(unittest.TestCase):
         image = base64.b64encode(_png_bytes()).decode("ascii")
         self.assertEqual(native_anlas_quote("/ai/upscale", {"image": image}), (1, 50))
 
-    def test_openai_quote_endpoint_returns_gateway_anlas_and_usage(self) -> None:
-        from fastapi.testclient import TestClient
-        from src.proxy.app import app
-        from src.proxy.config import settings
-
-        previous = settings.allow_unauthenticated_access
-        settings.allow_unauthenticated_access = True
-        try:
-            response = TestClient(app).post("/v1/images/price-quote", json={
-                "model": "nai-v5-full",
-                "operation": "precise-reference",
-                "width": 832,
-                "height": 1216,
-                "steps": 29,
-                "samples": 1,
-                "reference_count": 1,
-            })
-        finally:
-            settings.allow_unauthenticated_access = previous
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["anlas_cost"], 50)
-        self.assertEqual(response.headers["X-Anlas-Cost"], "50")
-        self.assertEqual(response.headers["X-Prompt-Tokens"], "2500")
-        self.assertEqual(response.json()["usage"]["prompt_tokens"], 2500)
-
-    def test_openai_quote_endpoint_rejects_invalid_pricing_parameters(self) -> None:
-        from fastapi.testclient import TestClient
-        from src.proxy.app import app
-        from src.proxy.config import settings
-
-        previous = settings.allow_unauthenticated_access
-        settings.allow_unauthenticated_access = True
-        try:
-            response = TestClient(app).post("/v1/images/price-quote", json={"model": "nai-v5-full"})
-        finally:
-            settings.allow_unauthenticated_access = previous
-        self.assertEqual(response.status_code, 400)
-
-
 if __name__ == "__main__":
     unittest.main()

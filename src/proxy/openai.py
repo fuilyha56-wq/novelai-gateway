@@ -1231,69 +1231,6 @@ def native_anlas_quote(api_path: str, body: dict[str, Any]) -> tuple[int, int] |
     return None
 
 
-def image_anlas_quote(body: dict[str, Any]) -> tuple[int, int] | None:
-    """Quote one normalized image request using Gateway's production billing rules."""
-    model = body.get("model")
-    if not isinstance(model, str) or not model:
-        return None
-    registry = get_registry()
-    nai_model = registry.resolve_image_model(model) if registry else MEDIUM_MODELS.get(model, model)
-    operation = str(body.get("operation", "generate"))
-    if operation.startswith("director-"):
-        tool = operation.removeprefix("director-")
-        info = _DIRECTOR_TOOLS_INFO.get(tool)
-        return (info["anlas"], _anlas_to_tokens(info["anlas"])) if info else None
-    if operation == "encode-vibe":
-        refs = max(1, _safe_int(body.get("reference_count", 1), 1))
-        anlas = 2 * refs
-        return anlas, _anlas_to_tokens(anlas)
-    if operation == "annotate":
-        return None
-    width = _safe_int(body.get("width"), 0)
-    height = _safe_int(body.get("height"), 0)
-    steps = _safe_int(body.get("steps", 28), 28)
-    samples = _safe_int(body.get("samples", 1), 1)
-    reference_count = max(0, _safe_int(body.get("reference_count", 0), 0))
-    encoded_count = max(0, min(reference_count, _safe_int(body.get("encoded_vibe_count", 0), 0)))
-    if width <= 0 or height <= 0 or steps <= 0 or samples <= 0:
-        return None
-    if operation == "upscale":
-        pixels = width * height
-        if pixels <= 0 or pixels > 3_145_728:
-            return None
-        anlas = 1 if pixels <= 1_048_576 else 2 if pixels <= 1_747_627 else 3 if pixels <= 2_446_678 else 4
-    else:
-        precise = operation == "precise-reference"
-        medium = is_medium_model(nai_model)
-        anlas = _calc_anlas_cost(
-            width=width,
-            height=height,
-            steps=steps,
-            n_samples=samples,
-            strength=_safe_float(body.get("strength"), 1.0) if operation in {"img2img", "inpainting", "edits", "outpainting"} else None,
-            uncond_scale=_safe_float(body.get("uncond_scale"), 1.0),
-            is_opus=is_limit_model(model),
-            reference_image_count=reference_count,
-            reference_mode="precise" if precise else "vibe",
-            reference_image_encoded_count=0 if precise else encoded_count,
-            price_multiplier=_v5_price_multiplier(nai_model),
-            medium=medium,
-        )
-    prompt_tokens = _anlas_to_tokens(anlas) if anlas > 0 else 0
-    billing_body = {
-        "model": model,
-        "action": "infill" if operation in {"inpainting", "edits", "outpainting"} else operation,
-        "width": width,
-        "height": height,
-        "steps": steps,
-        "n_samples": samples,
-        "references": [None] * reference_count if operation == "precise-reference" else [],
-        "reference_images": [None] * reference_count if operation != "precise-reference" else [],
-    }
-    billing_tokens = _billing_prompt_tokens(model, billing_body)
-    return anlas, billing_tokens if billing_tokens is not None else prompt_tokens
-
-
 def _build_image_response_v2(
     request: Request,
     content: bytes,

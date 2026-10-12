@@ -47,7 +47,6 @@ from .openai import (
     is_medium_model,
     MEDIUM_MODELS,
     native_anlas_quote,
-    image_anlas_quote,
     set_registry,
 )
 from .model_registry import ModelRegistry
@@ -224,27 +223,6 @@ async def openai_models():
 async def openai_generations(request: Request):
     """文生图（OpenAI 兼容）。"""
     return await handle_openai_generations(request)
-
-
-@app.post("/v1/images/price-quote")
-async def openai_image_price_quote(request: Request):
-    """Return a read-only quote from the same Gateway Anlas billing function."""
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Request body must be valid JSON")
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="Request body must be an object")
-    quote = image_anlas_quote(body)
-    if quote is None:
-        raise HTTPException(status_code=400, detail="Image quote parameters are invalid or unsupported")
-    anlas, prompt_tokens = quote
-    return Response(
-        content=json.dumps({"anlas_cost": anlas, "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": 0, "total_tokens": prompt_tokens}}),
-        status_code=200,
-        media_type="application/json",
-        headers={**_CORS_HEADERS, "X-Anlas-Cost": str(anlas), "X-Prompt-Tokens": str(prompt_tokens), "Cache-Control": "no-store"},
-    )
 
 
 @app.post("/v1/images/inpainting")
