@@ -1,10 +1,10 @@
 """两档计费单测：Opus 免费额度档位判定、档内固定价、usage 注入。
 
 -limit 模型的固定价并入完整版模型的两档计费：
-- 档内（Opus 免费额度边界内）→ usage = 档内固定价（V4.5=0 / V5=8），
-  NewAPI 侧 tier("limit", ...) 分支 1:1 落账；
+- 档内（Opus 免费额度边界内）→ usage = 档内固定价（V4.5=0 / V5=25），
+  NewAPI 侧表达式落账：V4.5 p<100 分支归零，V5 p×240000÷2=$6 与 limit ModelPrice 平价；
 - 档外（超边界或付费操作）→ usage = None，沿用 Anlas 动态换算旧口径，
-  NewAPI 按 tier("full", p * 130000 / p * 100000) 动态计费。
+  NewAPI 按 tier("full", p * 160000 / p * 240000) 动态计费。
 """
 
 import base64
@@ -16,11 +16,14 @@ import zipfile
 from starlette.requests import Request
 
 from src.proxy.openai import (
+    _anlas_to_tokens,
     _billing_prompt_tokens,
     _build_image_response_v2,
     _build_png_image_response,
+    _calc_anlas_cost,
     _in_opus_free_envelope,
     _tiered_billing_units,
+    native_anlas_quote,
 )
 
 
@@ -63,10 +66,10 @@ class TieredBillingUnitsTests(unittest.TestCase):
     """模型 → 档内固定价，接受上游名与网关名。"""
 
     def test_v5_family(self) -> None:
-        self.assertEqual(_tiered_billing_units("nai-diffusion-5-full"), 8)
-        self.assertEqual(_tiered_billing_units("nai-diffusion-5-full-inpainting"), 8)
-        self.assertEqual(_tiered_billing_units("nai-v5-full"), 8)
-        self.assertEqual(_tiered_billing_units("nai-v5-inpaint"), 8)
+        self.assertEqual(_tiered_billing_units("nai-diffusion-5-full"), 25)
+        self.assertEqual(_tiered_billing_units("nai-diffusion-5-full-inpainting"), 25)
+        self.assertEqual(_tiered_billing_units("nai-v5-full"), 25)
+        self.assertEqual(_tiered_billing_units("nai-v5-inpaint"), 25)
 
     def test_v45_family(self) -> None:
         self.assertEqual(_tiered_billing_units("nai-diffusion-4-5-full"), 0)
@@ -135,8 +138,8 @@ class OpusFreeEnvelopeTests(unittest.TestCase):
 class BillingPromptTokensTests(unittest.TestCase):
     """档内固定价 / 档外回落动态口径 / 不参与两档计费的模型。"""
 
-    def test_v5_in_envelope_is_8(self) -> None:
-        self.assertEqual(_billing_prompt_tokens("nai-diffusion-5-full", {"steps": 28}), 8)
+    def test_v5_in_envelope_is_25(self) -> None:
+        self.assertEqual(_billing_prompt_tokens("nai-diffusion-5-full", {"steps": 28}), 25)
 
     def test_v5_out_of_envelope_falls_back_to_legacy(self) -> None:
         self.assertIsNone(_billing_prompt_tokens("nai-diffusion-5-full", {"steps": 50}))
@@ -154,7 +157,7 @@ class BillingPromptTokensTests(unittest.TestCase):
         self.assertIsNone(_billing_prompt_tokens("nai-diffusion-3", None))
 
     def test_gateway_identifier_accepted(self) -> None:
-        self.assertEqual(_billing_prompt_tokens("nai-v5-curated", {"steps": 28}), 8)
+        self.assertEqual(_billing_prompt_tokens("nai-v5-curated", {"steps": 28}), 25)
 
 
 class ResponseUsageInjectionTests(unittest.TestCase):
@@ -166,11 +169,39 @@ class ResponseUsageInjectionTests(unittest.TestCase):
         )
         return json.loads(response.body)["usage"]
 
-    def test_limit_tier_usage_is_8_for_v5(self) -> None:
-        usage = self._usage_of(anlas_cost=17, billing_prompt_tokens=8)
-        self.assertEqual(usage["prompt_tokens"], 8)
-        self.assertEqual(usage["total_tokens"], 8)
+    def test_limit_tier_usage_is_25_for_v5(self) -> None:
+        response = _build_image_response_v2(
+            _request_stub(), _zip_bytes(), "test prompt", "b64_json",
+            anlas_cost=0, billing_prompt_tokens=25,
+        )
+        usage = json.loads(response.body)["usage"]
+        self.assertEqual(usage["prompt_tokens"], 25)
+        self.assertEqual(usage["total_tokens"], 25)
         self.assertEqual(usage["completion_tokens"], 0)
+        self.assertEqual(response.headers["X-Anlas-Cost"], "0")
+        self.assertEqual(response.headers["X-Prompt-Tokens"], "25")
+
+    def test_raw_zip_includes_known_anlas_and_prompt_tokens(self) -> None:
+        response = _build_image_response_v2(
+            _request_stub(), _zip_bytes(), "test prompt", "raw",
+            anlas_cost=17, billing_prompt_tokens=25,
+        )
+        self.assertEqual(response.headers["X-Anlas-Cost"], "17")
+        self.assertEqual(response.headers["X-Prompt-Tokens"], "25")
+
+    def test_generation_quantity_prices_base_fee_in_all_json_formats(self) -> None:
+        for format in ("b64_json", "nai_json"):
+            content = json.dumps({"data": [{"b64_json": "image"}]}).encode() if format == "nai_json" else _zip_bytes()
+            response = _build_image_response_v2(_request_stub(), content, "test", format,
+                anlas_cost=180, billing_image_samples=2)
+            self.assertEqual(json.loads(response.body)["usage"], {"prompt_tokens": 9000, "completion_tokens": 2, "total_tokens": 9002})
+            self.assertEqual(response.headers["X-Completion-Tokens"], "2")
+
+    def test_unknown_anlas_is_not_reported_as_zero(self) -> None:
+        response = _build_image_response_v2(
+            _request_stub(), _zip_bytes(), "test prompt", "b64_json"
+        )
+        self.assertNotIn("X-Anlas-Cost", response.headers)
 
     def test_v45_free_tier_usage_is_zero(self) -> None:
         usage = self._usage_of(anlas_cost=0, billing_prompt_tokens=0)
@@ -186,9 +217,9 @@ class ResponseUsageInjectionTests(unittest.TestCase):
 
     def test_png_response_billing_override(self) -> None:
         response = _build_png_image_response(
-            _png_bytes("red"), "test", anlas_cost=5, billing_prompt_tokens=8
+            _png_bytes("red"), "test", anlas_cost=5, billing_prompt_tokens=25
         )
-        self.assertEqual(json.loads(response.body)["usage"]["prompt_tokens"], 8)
+        self.assertEqual(json.loads(response.body)["usage"]["prompt_tokens"], 25)
 
     def test_png_response_legacy(self) -> None:
         response = _build_png_image_response(_png_bytes("red"), "test", anlas_cost=5)
@@ -196,6 +227,73 @@ class ResponseUsageInjectionTests(unittest.TestCase):
         response = _build_png_image_response(_png_bytes("red"), "test", anlas_cost=0)
         self.assertEqual(json.loads(response.body)["usage"]["prompt_tokens"], 0)
 
+
+class NativeAnlasQuoteTests(unittest.TestCase):
+    """原生请求报价复用 Gateway 算法并区分 Anlas 与 NewAPI usage。"""
+
+    def test_native_v5_precise_quote_matches_gateway_calculator(self) -> None:
+        body = {
+            "model": "nai-diffusion-5-full",
+            "action": "generate",
+            "parameters": {
+                "width": 832,
+                "height": 1216,
+                "steps": 29,
+                "n_samples": 2,
+                "director_reference_images": ["ref-1", "ref-2"],
+            },
+        }
+        quote = native_anlas_quote("/ai/generate-image", body)
+        expected = _calc_anlas_cost(
+            width=832,
+            height=1216,
+            steps=29,
+            n_samples=2,
+            reference_image_count=2,
+            reference_mode="precise",
+            price_multiplier=1.5,
+        )
+        self.assertEqual(quote, (expected, _anlas_to_tokens(expected)))
+
+    def test_native_limit_quote_keeps_zero_anlas_and_nonzero_usage_marker(self) -> None:
+        body = {
+            "model": "nai-diffusion-5-full-limit",
+            "action": "generate",
+            "parameters": {
+                "width": 512,
+                "height": 512,
+                "steps": 28,
+                "n_samples": 1,
+            },
+        }
+        self.assertEqual(native_anlas_quote("/ai/generate-image", body), (0, 25))
+
+    def test_native_vibe_quote_does_not_rebill_encoded_reference(self) -> None:
+        body = {
+            "model": "nai-diffusion-4-5-full",
+            "action": "generate",
+            "parameters": {
+                "width": 1024,
+                "height": 1024,
+                "steps": 29,
+                "n_samples": 1,
+                "reference_image_multiple": ["A" * 1200],
+            },
+        }
+        quote = native_anlas_quote("/ai/generate-image", body)
+        expected = _calc_anlas_cost(
+            width=1024,
+            height=1024,
+            steps=29,
+            n_samples=1,
+            reference_image_count=1,
+            reference_image_encoded_count=1,
+        )
+        self.assertEqual(quote, (expected, _anlas_to_tokens(expected)))
+
+    def test_native_upscale_uses_source_pixel_tier(self) -> None:
+        image = base64.b64encode(_png_bytes()).decode("ascii")
+        self.assertEqual(native_anlas_quote("/ai/upscale", {"image": image}), (1, 50))
 
 if __name__ == "__main__":
     unittest.main()

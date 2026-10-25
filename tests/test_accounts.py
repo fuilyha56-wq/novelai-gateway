@@ -85,6 +85,59 @@ class AccountPoolTests(unittest.TestCase):
 
             self.assertEqual(load_accounts_file(path), [])
 
+    def test_choose_filters_by_capability_without_fallback(self) -> None:
+        pool = AccountPool()
+        pool.configure(
+            '[{"id":"free","name":"免费","key":"key-free","allow_v5":false,"allow_anlas":false},'
+            '{"id":"v5","name":"V5","key":"key-v5","allow_v5":true,"allow_anlas":false}]'
+        )
+        self.assertEqual(pool.choose(need_v5=True, need_anlas=False)[0], "v5")
+        with self.assertRaises(RuntimeError):
+            pool.choose(need_v5=True, need_anlas=True)
+
+    def test_capacity_summary_counts_enabled_model_and_anlas_capabilities(self) -> None:
+        pool = AccountPool()
+        pool.configure(
+            '[{"id":"full","key":"same-key","allow_v5":true,"allow_anlas":true},'
+            '{"id":"free-v45","key":"v45-key","allow_v5":false,"allow_anlas":false},'
+            '{"id":"disabled","key":"off-key","enabled":false}]'
+        )
+
+        self.assertEqual(pool.capacity_summary(), {
+            "total": 2,
+            "v45": 2,
+            "v5": 1,
+            "anlas": 1,
+            "v45_and_anlas": 1,
+            "v5_and_anlas": 1,
+        })
+
+    def test_v5_quota_disable_is_persisted_and_can_be_manually_reenabled(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "accounts.json"
+            pool = AccountPool(persistence_path=path)
+            pool.configure('[{"id":"a","key":"key-a"}]')
+
+            self.assertTrue(pool.disable_v5_for_quota("a", "V5 免费额度已耗尽"))
+
+            saved = load_accounts_file(path)[0]
+            self.assertFalse(saved["allow_v5"])
+            self.assertTrue(saved["v5_auto_disabled"])
+            self.assertFalse(pool.public()[0]["allow_v5"])
+            self.assertEqual(pool.public()[0]["status"], "v5_quota_exhausted")
+
+            self.assertTrue(pool.set_flag("a", "allow_v5", True))
+            self.assertFalse(pool.public()[0]["v5_auto_disabled"])
+
+    def test_auto_disabled_account_leaves_v5_rotation_until_reenabled(self) -> None:
+        pool = AccountPool(persistence_path=None)
+        pool.configure('[{"id":"a","key":"key-a"},{"id":"b","key":"key-b"}]')
+        pool.disable_v5_for_quota("a", "V5 免费额度已耗尽")
+
+        self.assertEqual(pool.choose(need_v5=True)[0], "b")
+        self.assertTrue(pool.restore_v5_after_quota("a"))
+        self.assertTrue(pool.public()[0]["allow_v5"])
+
 
 if __name__ == "__main__":
     unittest.main()

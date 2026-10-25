@@ -44,6 +44,12 @@ start.bat
 # 模型配置只保留 .example，真实 models.toml 由宿主机挂入
 config/models.toml
 config/models_suggested.toml
+.diagnostics/
 
 # 输出图片
 *.png
+
+# Local operational credentials and scripts never enter build contexts.
+.rsh*.py
+.upload*.py
+.*.py

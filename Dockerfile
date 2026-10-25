@@ -1,4 +1,6 @@
 FROM python:3.11-slim
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$SOURCE_REVISION
 
 # 安装系统依赖与 cloudflared（用于可选的隧道功能）
 RUN apt-get update \

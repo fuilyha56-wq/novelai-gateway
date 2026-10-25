@@ -8,22 +8,33 @@ import re
 import secrets
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
-from .account_pool import account_pool, mask_secret, parse_accounts, save_accounts_file, serialize_accounts
+from .account_pool import (
+    account_pool,
+    load_accounts_file,
+    mask_secret,
+    parse_accounts,
+    save_accounts_file,
+    serialize_accounts,
+)
 from .config import _parse_weighted_api_keys, settings
 from .model_registry import ModelRegistry
 from .model_fetcher import handle_refresh_upstream_models
-from .v5_quota import get_usage
+from .v5_quota import get_usage, is_v5_quota_exhausted_error, is_v5_quota_recovered
+from .stats import get_model_latency, render_model_latency_png
 
 router = APIRouter(prefix="/admin/api")
 _logger = logging.getLogger("gateway")
 _ENV_PATH = Path(".env")
 _ACCOUNTS_PATH = Path("config/accounts.json")
+_ACCOUNTS_LOCK = Lock()
 _LOG_BUFFER: list[str] = []
+_LOG_LOCK = Lock()
 _LOG_PATH = Path("logs/gateway.log")
 
 
@@ -154,6 +165,32 @@ async def status(request: Request) -> dict[str, Any]:
     return await overview(request)
 
 
+@router.get("/model-latency")
+async def model_latency(request: Request) -> dict[str, Any]:
+    await _require_auth(request)
+    try:
+        window_minutes = max(1, min(int(request.query_params.get("minutes", 1440)), 10080))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="minutes 必须是整数") from None
+    return get_model_latency(window_minutes=window_minutes, points=24)
+
+
+@router.get("/chart.js")
+async def chart_script() -> FileResponse:
+    return FileResponse(Path(__file__).parent / "templates" / "chart.umd.js", media_type="application/javascript")
+
+
+@router.get("/model-latency.png")
+async def model_latency_image(request: Request) -> Response:
+    await _require_auth(request)
+    try:
+        window_minutes = max(1, min(int(request.query_params.get("minutes", 1440)), 10080))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="minutes 必须是整数") from None
+    image = await asyncio.to_thread(render_model_latency_png, window_minutes)
+    return Response(image, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
 async def _choose_upstream_account(account_id: str | None) -> tuple[str, str]:
     """选择用于探测 NovelAI 上游的账号。
 
@@ -191,10 +228,14 @@ async def _fetch_upstream_with_account(path: str, selected_id: str, secret: str)
         raise HTTPException(status_code=502, detail=f"上游连接失败: {exc}") from exc
 
     if response.status_code >= 400:
-        account_pool.failure(selected_id, f"HTTP {response.status_code}")
+        error_text = response.text[:500]
+        if path == "/ai/generate-image" and is_v5_quota_exhausted_error(response.status_code, error_text):
+            account_pool.disable_v5_for_quota(selected_id, "V5 免费额度已耗尽")
+            _logger.warning("账号 %s V5 免费额度已耗尽，已自动关闭该账号的 V5 能力", selected_id)
+        account_pool.failure(selected_id, f"HTTP {response.status_code}: {error_text}")
         raise HTTPException(
             status_code=response.status_code,
-            detail=response.text[:500] or "上游请求失败",
+            detail=error_text or "上游请求失败",
         )
 
     account_pool.success(selected_id)
@@ -202,6 +243,23 @@ async def _fetch_upstream_with_account(path: str, selected_id: str, secret: str)
         payload = response.json()
     except Exception:
         payload = {"raw": response.text}
+
+    if path == "/user/subscription" and isinstance(payload, dict):
+        usage = payload.get("usage")
+        try:
+            tier = int(payload.get("tier"))
+        except (TypeError, ValueError):
+            tier = None
+        if tier == 3 and isinstance(usage, dict):
+            percent = usage.get("percent")
+            try:
+                remaining_percent = float(percent)
+            except (TypeError, ValueError):
+                remaining_percent = None
+            if remaining_percent is not None and remaining_percent <= 0:
+                account_pool.disable_v5_for_quota(selected_id, "V5 免费额度已耗尽")
+            elif remaining_percent is not None and is_v5_quota_recovered(remaining_percent):
+                account_pool.restore_v5_after_quota(selected_id)
 
     return {
         "account_id": selected_id,
@@ -250,10 +308,33 @@ async def upstream_account_data(request: Request, account_id: str | None = None)
 
 def _persist_accounts(accounts: list[dict[str, Any]]) -> None:
     """持久化账号并让当前进程立即使用新账号池。"""
-    persisted_accounts = save_accounts_file(_ACCOUNTS_PATH, accounts)
-    encoded = serialize_accounts(persisted_accounts)
-    settings.shared_api_keys = encoded
-    account_pool.configure(encoded)
+    normalized = parse_accounts(serialize_accounts(accounts))
+    if not normalized and accounts:
+        raise HTTPException(status_code=400, detail="账号配置无效，拒绝覆盖现有账号")
+    with _ACCOUNTS_LOCK:
+        persisted_accounts = save_accounts_file(_ACCOUNTS_PATH, normalized)
+        encoded = serialize_accounts(persisted_accounts)
+        settings.shared_api_keys = encoded
+        account_pool.configure(encoded)
+
+
+def _load_managed_accounts() -> list[dict[str, Any]]:
+    """从持久化账号文件读取管理数据，避免运行时配置为空时丢账号。"""
+    with _ACCOUNTS_LOCK:
+        if _ACCOUNTS_PATH.exists():
+            accounts = load_accounts_file(_ACCOUNTS_PATH)
+            if accounts:
+                return accounts
+    return parse_accounts(settings.shared_api_keys)
+
+
+def _find_managed_account(account_id: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """读取持久化账号并定位指定账号。"""
+    accounts = _load_managed_accounts()
+    target = next((item for item in accounts if item.get("id") == account_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    return accounts, target
 
 
 @router.get("/accounts")
@@ -261,6 +342,15 @@ async def list_accounts(request: Request) -> dict[str, Any]:
     """返回脱敏账号状态。"""
     await _require_auth(request)
     return {"accounts": account_pool.public()}
+
+
+@router.get("/concurrency")
+async def account_concurrency(request: Request) -> dict[str, int]:
+    """向受信任的 LFN 服务提供实时账号能力与并发，不返回账号凭据。"""
+    await _require_auth(request)
+    summary = account_pool.capacity_summary()
+    summary["concurrency"] = summary["total"] or max(1, settings.max_concurrent)
+    return summary
 
 
 @router.post("/accounts")
@@ -271,7 +361,7 @@ async def create_account(request: Request) -> dict[str, Any]:
     secret = body.get("key", body.get("token", ""))
     if not isinstance(secret, str) or not secret.strip():
         raise HTTPException(status_code=400, detail="账号密钥不能为空")
-    accounts = parse_accounts(settings.shared_api_keys)
+    accounts = _load_managed_accounts()
     account_id = str(body.get("id", f"account-{len(accounts) + 1}"))
     if any(item.get("id") == account_id for item in accounts):
         raise HTTPException(status_code=409, detail="账号 ID 已存在")
@@ -285,11 +375,11 @@ async def update_account(account_id: str, request: Request) -> dict[str, Any]:
     """编辑账号元数据或密钥。"""
     await _require_auth(request)
     body = await request.json()
-    accounts = parse_accounts(settings.shared_api_keys)
+    accounts = _load_managed_accounts()
     target = next((item for item in accounts if item.get("id") == account_id), None)
     if target is None:
         raise HTTPException(status_code=404, detail="账号不存在")
-    for key in ("name", "weight", "enabled"):
+    for key in ("name", "weight", "enabled", "allow_v5", "allow_anlas"):
         if key in body:
             target[key] = body[key]
     if isinstance(body.get("key"), str) and body["key"].strip() and not body["key"].startswith("••••"):
@@ -302,8 +392,9 @@ async def update_account(account_id: str, request: Request) -> dict[str, Any]:
 async def delete_account(account_id: str, request: Request) -> dict[str, str]:
     """删除账号。"""
     await _require_auth(request)
-    accounts = [item for item in parse_accounts(settings.shared_api_keys) if item.get("id") != account_id]
-    if len(accounts) == len(parse_accounts(settings.shared_api_keys)):
+    source_accounts = _load_managed_accounts()
+    accounts = [item for item in source_accounts if item.get("id") != account_id]
+    if len(accounts) == len(source_accounts):
         raise HTTPException(status_code=404, detail="账号不存在")
     _persist_accounts(accounts)
     return {"message": "账号已删除"}
@@ -316,6 +407,20 @@ async def reset_account(account_id: str, request: Request) -> dict[str, str]:
     if not account_pool.reset(account_id):
         raise HTTPException(status_code=404, detail="账号不存在")
     return {"message": "账号状态已重置"}
+
+
+@router.put("/accounts/{account_id}/enabled")
+async def set_account_enabled(account_id: str, request: Request) -> dict[str, Any]:
+    """启用或停用单个账号，停用不删除账号配置。"""
+    await _require_auth(request)
+    body = await request.json()
+    enabled = bool(body.get("enabled", True))
+    accounts, target = _find_managed_account(account_id)
+    target["enabled"] = enabled
+    _persist_accounts(accounts)
+    updated = next(item for item in account_pool.public() if item["id"] == account_id)
+    _logger.info(f"⚙️ 账号 {account_id} {'启用' if enabled else '停用'}")
+    return {"account": updated, "message": f"账号已{'启用' if enabled else '停用'}，账号配置仍保留"}
 
 
 @router.post("/accounts/{account_id}/test")
@@ -394,6 +499,52 @@ async def logs(request: Request, lines: int = 100) -> dict[str, list[str]]:
     if _LOG_PATH.exists():
         return {"lines": _read_last_lines(_LOG_PATH, limit)}
     return {"lines": _LOG_BUFFER[-limit:]}
+
+
+@router.get("/logs/recent")
+async def logs_recent(request: Request, cursor: int = -1) -> dict[str, Any]:
+    """增量读取内存日志：cursor 为上次返回的 last 位置（-1 表示从头拉取）。"""
+    await _require_auth(request)
+    with _LOG_LOCK:
+        snapshot = list(_LOG_BUFFER)
+    total = len(snapshot)
+    if cursor < 0:
+        start = max(0, total - 200)
+    elif cursor > total:
+        start = 0
+    else:
+        start = cursor
+    return {"lines": snapshot[start:], "last": total, "total": total}
+
+
+@router.put("/accounts/{account_id}/allow-v5")
+async def set_account_allow_v5(account_id: str, request: Request) -> dict[str, Any]:
+    """开启/关闭单个账号承接 V5 模型请求的能力。"""
+    await _require_auth(request)
+    body = await request.json()
+    allowed = bool(body.get("allow_v5", True))
+    return await _set_account_flag(account_id, "allow_v5", allowed)
+
+
+@router.put("/accounts/{account_id}/allow-anlas")
+async def set_account_allow_anlas(account_id: str, request: Request) -> dict[str, Any]:
+    """开启/关闭单个账号消耗 Anlas 的能力（关闭后只能走 Opus 免费额度）。"""
+    await _require_auth(request)
+    body = await request.json()
+    allowed = bool(body.get("allow_anlas", True))
+    return await _set_account_flag(account_id, "allow_anlas", allowed)
+
+
+async def _set_account_flag(account_id: str, flag: str, allowed: bool) -> dict[str, Any]:
+    """更新账号计费开关：同步内存账号池并持久化到 accounts.json。"""
+    accounts, target = _find_managed_account(account_id)
+    target[flag] = allowed
+    if flag == "allow_v5":
+        target["v5_auto_disabled"] = False
+    _persist_accounts(accounts)
+    updated = next(item for item in account_pool.public() if item["id"] == account_id)
+    _logger.info(f"⚙️ 账号 {account_id} {'开启' if allowed else '关闭'} {flag}")
+    return {"account": updated, "message": f"已{'开启' if allowed else '关闭'} {flag}，立即生效"}
 
 
 @router.get("/models/config")

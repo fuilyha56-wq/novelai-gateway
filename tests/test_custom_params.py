@@ -8,7 +8,7 @@ import zipfile
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 from src.proxy import openai as openai_module
 from src.proxy.app import app
@@ -40,6 +40,23 @@ def _rgba_png_bytes(min_alpha: int) -> bytes:
 
 class FirstClassV5ParamsTests(unittest.TestCase):
     """一等公民参数：straight_alpha / transparent_background / tag_hint_*。"""
+
+    def test_zero_seed_is_random_but_explicit_seed_is_preserved(self) -> None:
+        first, _, _ = _build_generation_payload(
+            {"model": "nai-v4.5-full", "prompt": "test", "seed": 0}
+        )
+        second, _, _ = _build_generation_payload(
+            {"model": "nai-v4.5-full", "prompt": "test", "seed": 0}
+        )
+        first_seed = first["parameters"]["seed"]
+        second_seed = second["parameters"]["seed"]
+        self.assertNotEqual(first_seed, 0)
+        self.assertNotEqual(second_seed, 0)
+        self.assertNotEqual(first_seed, second_seed)
+        explicit, _, _ = _build_generation_payload(
+            {"model": "nai-v4.5-full", "prompt": "test", "seed": 42}
+        )
+        self.assertEqual(explicit["parameters"]["seed"], 42)
 
     def test_v5_defaults_straight_alpha_true(self) -> None:
         nai_payload, _, _ = _build_generation_payload(
@@ -158,6 +175,36 @@ class ExtraParamsTests(unittest.TestCase):
         )
         self.assertEqual(nai_payload["parameters"]["ucPreset"], 3)
         self.assertIs(nai_payload["parameters"]["qualityToggle"], False)
+        self.assertEqual(nai_payload["input"], "t")
+        self.assertEqual(nai_payload["parameters"]["v4_prompt"]["caption"]["base_caption"], "t")
+
+    def test_disabled_quality_preserves_user_prompt_and_explicit_empty_uc(self) -> None:
+        for overrides in ({"qualityToggle": False}, {"extra_params": {"qualityToggle": False}}, {}):
+            with self.subTest(overrides=overrides):
+                header = '{"qualityToggle": false}' if not overrides else None
+                payload, _, _ = _absorb_and_build({
+                    "model": "nai-diffusion-5-full", "prompt": "a quiet landscape",
+                    "negative_prompt": "", "ucPreset": 3, **overrides,
+                }, header)
+                self.assertEqual(payload["input"], "a quiet landscape")
+                self.assertEqual(payload["parameters"]["v4_prompt"]["caption"]["base_caption"], "a quiet landscape")
+                self.assertEqual(payload["parameters"]["negative_prompt"], "")
+                self.assertEqual(payload["parameters"]["v4_negative_prompt"]["caption"]["base_caption"], "")
+
+    def test_disabled_quality_never_strips_manually_entered_quality_tags(self) -> None:
+        prompt = "1girl, very aesthetic, masterpiece, no text"
+        payload, _, _ = _absorb_and_build({"model": "nai-diffusion-5-full", "prompt": prompt, "qualityToggle": False})
+        self.assertEqual(payload["input"], prompt)
+
+    def test_legacy_default_and_custom_quality_tags_still_work(self) -> None:
+        for fields, expected in (({}, "scene" + openai_module.QUALITY_TAGS),
+                                 ({"qualityToggle": True}, "scene" + openai_module.QUALITY_TAGS),
+                                 ({"quality_tags": ", custom quality"}, "scene, custom quality"),
+                                 ({"quality_tags": ""}, "scene"),
+                                 ({"qualityToggle": False, "quality_tags": ", custom quality"}, "scene")):
+            with self.subTest(fields=fields):
+                payload, _, _ = _absorb_and_build({"model": "nai-diffusion-5-full", "prompt": "scene", **fields})
+                self.assertEqual(payload["input"], expected)
 
     def test_header_extra_params_merges_and_wins(self) -> None:
         header_json = json.dumps({"color_correct": True, "tag_hint_qt": 2})
@@ -375,6 +422,92 @@ class HandlerIntegrationTests(unittest.TestCase):
     def _last_params(self) -> dict:
         return self.captured[-1]["parameters"]
 
+    def test_all_generation_endpoints_respect_disabled_quality_and_empty_uc(self) -> None:
+        image = base64.b64encode(_rgba_png_bytes(min_alpha=0)).decode()
+        encoded = base64.b64encode(bytes(2000)).decode()
+        cases = [
+            ("generations", {}), ("img2img", {"image": image}),
+            ("inpainting", {"image": image, "mask": image}),
+            ("edits", {"image": image, "mask": image}),
+            ("vibe-transfer", {"reference_images": [encoded]}),
+            ("character-reference", {"characters": [{"reference_image": encoded, "prompt": "white hair"}]}),
+            ("precise-reference", {"references": [{"reference_image": image}]}),
+        ]
+        for endpoint, extra in cases:
+            with self.subTest(endpoint=endpoint):
+                response = self._client.post(f"/v1/images/{endpoint}", json={
+                    "model": "nai-diffusion-5-full", "prompt": "a quiet landscape",
+                    "negative_prompt": "", "qualityToggle": False, "ucPreset": 3, **extra,
+                })
+                self.assertEqual(response.status_code, 200, response.text)
+                payload = self.captured[-1]
+                self.assertEqual(payload["input"], "a quiet landscape")
+                self.assertEqual(payload["parameters"]["v4_prompt"]["caption"]["base_caption"], "a quiet landscape")
+                self.assertIs(payload["parameters"]["qualityToggle"], False)
+                self.assertEqual(payload["parameters"]["negative_prompt"], "")
+                self.assertEqual(payload["parameters"]["v4_negative_prompt"]["caption"]["base_caption"], "")
+
+    def test_multipart_edits_can_disable_quality_and_keep_empty_uc(self) -> None:
+        png = _rgba_png_bytes(min_alpha=0)
+        response = self._client.post("/v1/images/edits", files={
+            "image": ("image.png", png, "image/png"), "mask": ("mask.png", png, "image/png"),
+        }, data={"model": "nai-diffusion-5-full", "prompt": "scene", "qualityToggle": "false", "negative_prompt": "", "ucPreset": "3"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.captured[-1]["input"], "scene")
+        self.assertIs(self._last_params()["qualityToggle"], False)
+        self.assertEqual(self._last_params()["negative_prompt"], "")
+
+    def test_original_png_metadata_preserves_disabled_presets(self) -> None:
+        from unittest.mock import patch
+
+        async def metadata_upstream(request, payload, target_url=None, accept_format="zip"):
+            metadata = PngImagePlugin.PngInfo()
+            metadata.add_text("Software", "NovelAI")
+            metadata.add_text("Comment", json.dumps({"prompt": payload["input"], "uc": payload["parameters"]["negative_prompt"], **payload["parameters"]}))
+            png = io.BytesIO()
+            Image.new("RGBA", (32, 32), (255, 0, 0, 0)).save(png, format="PNG", pnginfo=metadata)
+            archive = io.BytesIO()
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("image_0.png", png.getvalue())
+            return archive.getvalue()
+
+        with patch.object(openai_module, "_send_nai_request", metadata_upstream):
+            response = self._client.post("/v1/images/generations", json={
+                "model": "nai-v5-full", "prompt": "a quiet landscape", "negative_prompt": "", "qualityToggle": False, "ucPreset": 3,
+            })
+        self.assertEqual(response.status_code, 200, response.text)
+        original = base64.b64decode(response.json()["data"][0]["b64_json"])
+        with Image.open(io.BytesIO(original)) as image:
+            parsed = json.loads(image.info["Comment"])
+        self.assertEqual(parsed["prompt"], "a quiet landscape")
+        self.assertEqual(parsed["v4_prompt"]["caption"]["base_caption"], "a quiet landscape")
+        self.assertEqual(parsed["uc"], "")
+        self.assertIs(parsed["qualityToggle"], False)
+
+    def test_edit_and_reference_batches_forward_and_bill_all_samples(self) -> None:
+        from unittest.mock import patch
+        image = base64.b64encode(_rgba_png_bytes(min_alpha=0)).decode()
+        encoded = base64.b64encode(bytes(2000)).decode()
+        cases = [
+            ("img2img", {"image": image}, 126),
+            ("inpainting", {"image": image, "mask": image, "strength": 0.2}, 180),
+            ("edits", {"image": image, "mask": image, "inpaintImg2ImgStrength": 0.55}, 100),
+            ("vibe-transfer", {"reference_images": [encoded]}, 180),
+            ("character-reference", {"characters": [{"reference_image": encoded}]}, 180),
+            ("precise-reference", {"references": [{"reference_image": image}]}, 190),
+        ]
+        for endpoint, parameters, anlas in cases:
+            with self.subTest(endpoint=endpoint), patch.object(openai_module, "log_generation") as logged, patch.object(openai_module, "check_v5_quota") as quota:
+                response = self._client.post("/v1/images/" + endpoint, json={"model": "nai-v5-full", "width": 2048, "height": 1536, "steps": 28, "n": 2, **parameters})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(self._last_params()["n_samples"], 2)
+                self.assertEqual(response.headers["X-Anlas-Cost"], str(anlas))
+                self.assertEqual(response.json()["usage"]["prompt_tokens"], anlas * 50)
+                self.assertEqual(response.json()["usage"]["completion_tokens"], 2)
+                self.assertEqual(response.json()["usage"]["total_tokens"], anlas * 50 + 2)
+                self.assertEqual(logged.call_args.args[1], 2)
+                self.assertEqual(quota.call_args.args[1], 2)
+
     def test_generations_merges_custom_params(self) -> None:
         resp = self._client.post(
             "/v1/images/generations",
@@ -447,6 +580,21 @@ class HandlerIntegrationTests(unittest.TestCase):
         params = self._last_params()
         self.assertIs(params["color_correct"], True)
         self.assertIs(params["straight_alpha"], True)
+
+    def test_medium_edit_endpoints_default_to_official_fixed_settings(self) -> None:
+        """Omitted sampling settings must not inherit High defaults in edit handlers."""
+        image_b64 = base64.b64encode(_rgba_png_bytes(min_alpha=0)).decode()
+        for endpoint in ("img2img", "inpainting", "edits"):
+            with self.subTest(endpoint=endpoint):
+                response = self._client.post(
+                    f"/v1/images/{endpoint}",
+                    json={"model": "nai-v5-full-medium", "prompt": "landscape", "width": 512, "height": 512, "image": image_b64, "mask": image_b64},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(self._last_params()["steps"], 14)
+                self.assertEqual(self._last_params()["sampler"], "k_euler_ancestral")
+                self.assertEqual(self._last_params()["tag_hint_uc_preset"], 2)
+                self.assertEqual(self.captured[-1]["model"], "nai-diffusion-5-full-medium" if endpoint == "img2img" else "nai-diffusion-5-full-medium-inpainting")
 
     def test_inpainting_merges_custom_params(self) -> None:
         image_b64 = base64.b64encode(_rgba_png_bytes(min_alpha=0)).decode()

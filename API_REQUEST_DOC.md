@@ -2,6 +2,18 @@
 
 本文档以当前 `src/proxy/app.py`、`src/proxy/openai.py`、`src/proxy/config.py` 和 `config/models.toml` 为准，描述网关当前公开的 HTTP 接口、输入格式、响应格式与计费映射。
 
+## V5 Medium（2026-10-10）
+
+新增独立别名 `nai-v5-full-medium` 和 `nai-v5-inpaint-medium`，对应官方 `nai-diffusion-5-full-medium` 和 `nai-diffusion-5-full-medium-inpainting`。不是给普通 V5 设置 14 步；旧模型及 `-limit` 语义保持不变。
+
+固定 14 步、`k_euler_ancestral`、Heavy UC、`cfg_rescale=0`、单张；本站尺寸限 64 倍数、面积不超过 1048576、单边不超过 1600。仅允许 generate/img2img/infill；自定义主/角色负面词、其他 UC 预设、参考图、ControlNet、priority、超分和 Director 工具返回 HTTP 400。限制在 body/header/extra_params 合并后以及最终上游 parameters 构建后检查，原生 JSON/multipart 两种入口也校验并发送固定参数。
+
+官方基础 Anlas 计算（无参考图/额外工具）：步数项乘 `1 / 1.06521739`，基础值向上取整，乘 V5 的 1.5 和 strength 后再次向上取整，每张至少 2 Anlas。1024²/14 步为 18，512²/14 步为 5；High 1024²/23 步为 26。Medium 固定 usage 标记 18 仅用于受限请求结算/观测，不是任意尺寸的实际 Anlas。
+
+线上 NewAPI 为两个 Medium 模型配置按次价格 `3.46153846` 个余额单位（既有 High 档内 5 × 18/26），只添加到常规渠道 115，不改限量渠道 116；不应再套用 High 的 tiered token 表达式。500000 quota 为一个默认站内余额单位，不能与官方 USD 或 Anlas 混同。
+
+来源（查询日期 2026-10-10）：[官方 Effort 文档](https://docs.novelai.net/en/image/effort/)、[公告](https://journal.novelai.net/novelai-diffusion-v5-full-effort-toggle/)、[FAQ](https://docs.novelai.net/en/faq/)及官网公开计算器。官方描述约省 42%，当前计算器上述代表性 Anlas 示例为 26→18（约省 30.77%）；保留差异，不凭经验用固定 42% 改写金额。
+
 ## 目录
 
 1. [基础信息](#1-基础信息)
@@ -261,7 +273,7 @@ V4/V4.5 模型所需的 `v4_prompt`、`v4_negative_prompt` 等结构由网关自
 | `tag_hint_qt` | integer | - | 质量标签提示（官方前端 standard 档对应 `1`） |
 | `tag_hint_uc_preset` | integer | - | UC 预设提示（官方前端 heavy 档对应 `2`） |
 | `ucPreset` | integer | `0` | UC 预设（旧式字段），可覆盖 |
-| `qualityToggle` | boolean | `true` | 质量标签开关（旧式字段），可覆盖 |
+| `qualityToggle` | boolean | `true` | 质量标签开关；`false` 同时关闭网关质量词追加和上游提示开关，保留用户手写文本。适用于生成、编辑及参考图端点 |
 
 透明背景用法：透明由**提示词标签**驱动——在提示词里加 `transparent background, has alpha` 等标签（NAI V5 特性）。`transparent_background` / `tag_hint_transparent_background` 参数只是配合提示的 pass-through hint（官方 spec 原文 "the prompt is asking for a transparent background"），**单独传参数不会产生透明图**，网关也不会改动用户提示词。返回 PNG 保留 alpha 通道（网关仅对不透明图做白底压平，实质透明的图原样透传）。
 
@@ -363,7 +375,7 @@ Authorization: Bearer <GATEWAY_PASSWORD>
 }
 ```
 
-2026-08-30 起完整版 V4.5/V5 模型采用**两档计费**：网关按 Opus 免费额度边界判档——档内把固定档内价写入 `usage.prompt_tokens`（V4.5 = 0 / V5 = 8，即原 `-limit` 价），NewAPI 表达式 `p < 100` 分支 1:1 落账；档外不改写 usage，按 Anlas 换算的动态 token 计费（V5 = p × 130000、V4.5 = p × 100000）。档内/档外边界与 `-limit` 模型限制一致（见第 2 节），规则明细见 `TIERED_PRICING.md`。
+2026-08-30 起完整版 V4.5/V5 模型采用**两档计费**（2026-09-17 调价）：网关按 Opus 免费额度边界判档——档内把固定档内价写入 `usage.prompt_tokens`（V4.5 = 0 / V5 = 25，对应扣费 $0 / $6，与 `-limit` ModelPrice 平价）；档外不改写 usage，按 Anlas 换算的动态 token 计费（quota = p × 240,000 ÷ 2 [V5] / p × 160,000 ÷ 2 [V4.5]）。档内/档外边界与 `-limit` 模型限制一致（见第 2 节），规则明细见 `TIERED_PRICING.md`。
 
 `-limit` 模型与其他模型的 `usage` 按 Anlas 换算返回观测值（`prompt_tokens = max(1, round(Anlas/20*1000))`，V5 ×2），例如普通 `512x512`、28 steps 文生图为 5 Anlas，即 250 tokens；Director 去背景为 65 Anlas，即 3250 tokens。
 
@@ -992,7 +1004,7 @@ Header 值优先级高于 body。
 
 ### 13.1 网关侧 Anlas 映射
 
-生成类 JSON 响应会包含 `usage.prompt_tokens`。**完整版 V4.5/V5 模型（两档计费）**：档内该值为固定档内价（V4.5 = 0 / V5 = 8），档外为 Anlas 换算的动态 token；NewAPI 用 `p < 100 ? tier("limit", ...) : tier("full", ...)` 两档表达式落账（见 `TIERED_PRICING.md`）。
+生成类 JSON 响应会包含 `usage.prompt_tokens`。**完整版 V4.5/V5 模型（两档计费）**：档内该值为固定档内价（V4.5 = 0 / V5 = 25，扣费 $0 / $6），档外为 Anlas 换算的动态 token；NewAPI 表达式与扣费换算见 `TIERED_PRICING.md`。
 
 其余模型与 `-limit` 模型的 `usage` 仅为观测值，映射为（V5 销售价 = 上游 Anlas × 2）：
 
@@ -1019,11 +1031,11 @@ X-Prompt-Tokens: 250
 
 ### 13.2 tiered_expr 示例
 
-完整版 V4.5/V5 模型在 NewAPI 配置（`p` 为网关 usage tokens；档内 0/1/8 走固定价分支，动态档恒 ≥ 250）：
+完整版 V4.5/V5 模型在 NewAPI 配置（`p` 为网关 usage tokens；档内 V4.5 钳位为 1、V5 固定 25，动态档恒 ≥ 250；实际扣费 quota = p × 系数 ÷ 2）：
 
 ```text
-V5:   p < 100 ? tier("limit", p * 1000000) : tier("full", p * 130000)
-V4.5: p < 100 ? tier("limit", p * 0)        : tier("full", p * 100000)
+V5:   tier("base", p * 240000 + c * 0)                                    # 档内 25 token = $6，与 limit 平价
+V4.5: p < 100 ? tier("limit", p * 0 + c * 0) : tier("full", p * 160000 + c * 0)  # 档内归零（0 被钳位成 1）
 ```
 
 实际金额取决于 NewAPI 的 QuotaPerUnit 与分组倍率；分支必须经 tier() 返回浮点表达式，不能写整数字面量（结算时会因 int→float64 断言失败回退预扣额度）。

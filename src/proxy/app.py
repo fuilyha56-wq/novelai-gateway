@@ -5,6 +5,8 @@ NovelAI 透明反向代理网关 — 路由层。
 """
 
 import logging
+import json
+import time
 import mimetypes
 import platform
 import secrets
@@ -12,13 +14,15 @@ import subprocess
 from urllib.parse import unquote
 
 from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from contextlib import asynccontextmanager
 
-from .config import settings
+from .config import get_request_auth_token, settings
+from .account_pool import account_pool
 from .forwarder import forward, build_response, close_client, _CORS_HEADERS
 from .queue import gate
-from .stats import record_generation
+from .stats import record_generation, record_model_latency
+from .v5_quota import is_v5_model, is_v5_quota_exhausted_error
 from .openai import (
     handle_annotate,
     handle_character_reference,
@@ -39,6 +43,11 @@ from .openai import (
     handle_tts,
     handle_upscale,
     handle_vibe_transfer,
+    enforce_medium_model,
+    validate_nai_canvas,
+    is_medium_model,
+    MEDIUM_MODELS,
+    native_anlas_quote,
     set_registry,
 )
 from .model_registry import ModelRegistry
@@ -348,7 +357,187 @@ def _cors_preflight():
     return Response(status_code=204, headers=_CORS_HEADERS)
 
 
+async def _read_native_payload(request: Request, resolve_images: bool = False) -> dict | None:
+    """Read JSON or the native multipart request part without consuming uploads."""
+    try:
+        if "multipart/form-data" in request.headers.get("content-type", ""):
+            form = await request.form()
+            part = form.get("request")
+            if hasattr(part, "read"):
+                await part.seek(0)
+                raw = await part.read()
+                await part.seek(0)
+            else:
+                raw = part
+            payload = json.loads(raw)
+            if resolve_images and isinstance(payload, dict):
+                import base64
+                parts = {}
+                for name, item in form.multi_items():
+                    if name == "request" or not hasattr(item, "read"):
+                        continue
+                    await item.seek(0)
+                    parts[name] = base64.b64encode(await item.read()).decode("ascii")
+                    await item.seek(0)
+
+                def substitute(value, key=""):
+                    image_field = key in {"image", "mask", "reference_image", "data"} or "images" in key or "image_multiple" in key
+                    if isinstance(value, str) and image_field:
+                        return parts.get(value, value)
+                    if isinstance(value, list):
+                        return [substitute(item, key) for item in value]
+                    if isinstance(value, dict):
+                        return {name: substitute(item, name) for name, item in value.items()}
+                    return value
+                payload = substitute(payload)
+        else:
+            payload = json.loads(await request.body())
+        return payload if isinstance(payload, dict) else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+async def _prepare_native_account(request: Request, api_path: str) -> None:
+    """按原生请求模型设置账号能力筛选后再缓存凭据。"""
+    if not settings.shared_api_keys.strip() or not settings.is_heavy(api_path):
+        return
+    payload = await _read_native_payload(request, resolve_images=True) or {}
+    parameters = payload.get("parameters")
+    model = str(payload.get("model") or (parameters.get("model", "") if isinstance(parameters, dict) else ""))
+    from .openai import _is_v5_model, _requires_anlas_for_account
+
+    need_v5 = _is_v5_model(model)
+    # Only known image-generation requests can use the free envelope. Tools such
+    # as encode-vibe/augment/upscale are paid even with a V5 model and small size.
+    generation = api_path in {"/ai/generate-image", "/ai/generate-image-stream"}
+    need_anlas = not generation or not isinstance(parameters, dict) or _requires_anlas_for_account(model, payload)
+    ok, message = account_pool.check_request(need_v5=need_v5, need_anlas=need_anlas)
+    if not ok:
+        raise HTTPException(status_code=409, detail=message)
+    request.state.gateway_need_v5 = need_v5
+    request.state.gateway_need_anlas = need_anlas
+    get_request_auth_token(request, need_v5=need_v5, need_anlas=need_anlas)
+
+
+async def _preflight_native_v5_quota(request: Request, api_path: str) -> None:
+    """原生 V5 生图请求也必须在转发前确认 Opus 免费额度。"""
+    if not api_path.startswith("/ai/generate-image"):
+        return
+    payload = await _read_native_payload(request)
+    model = payload.get("model") if payload else None
+    from .openai import _is_v5_model
+
+    if not isinstance(model, str) or not _is_v5_model(model):
+        return
+    from .forwarder import get_client
+    from .openai import _check_v5_account_quota
+
+    await _check_v5_account_quota(request, model, await get_client())
+
+
+async def _disable_v5_for_native_quota_error(
+    request: Request,
+    api_path: str,
+    status_code: int,
+    error_text: str,
+) -> None:
+    """原生生图错误明确指向 V5 免费额度耗尽时，关闭当前账号的 V5。"""
+    if not api_path.startswith("/ai/generate-image"):
+        return
+    payload = await _read_native_payload(request)
+    model = payload.get("model") if payload else None
+    account_id = getattr(request.state, "gateway_account_id", None)
+    if not is_v5_model(model) or not account_id:
+        return
+    if is_v5_quota_exhausted_error(status_code, error_text):
+        account_pool.disable_v5_for_quota(account_id, "V5 免费额度已耗尽")
+        logger.warning("⛔ 账号 %s V5 免费额度已耗尽，已自动关闭该账号的 V5 能力", account_id)
+
+
 # ── NAI API 代理 ──────────────────────────────────────────────
+
+async def _validate_native_medium(request: Request, api_path: str) -> None:
+    """Normalize billable generation defaults before selecting an account."""
+    if request.method != "POST" or not api_path.startswith("/ai/"):
+        return
+    content_type = request.headers.get("content-type", "")
+    multipart = "multipart/form-data" in content_type
+    if not multipart and "application/json" not in content_type:
+        return
+    await request.body()
+    try:
+        if multipart:
+            form = await request.form()
+            request_part = form.get("request")
+            if hasattr(request_part, "read"):
+                request_json = await request_part.read()
+            elif isinstance(request_part, str):
+                request_json = request_part
+            else:
+                request_json = "{}"
+            payload = json.loads(request_json)
+        else:
+            payload = json.loads(await request.body())
+    except Exception as exc:
+        if multipart:
+            # 原生代理必须优先透传：multipart 的 request 部件无法被预检解析时，
+            # 不应替非 Medium 请求伪造 400；上游仍可返回它自己的协议错误。
+            logger.warning("multipart 原生请求预检解析失败，保持原样透传: %s", exc)
+            return
+        raise HTTPException(status_code=400, detail="Invalid native image request JSON") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Native image request must be an object")
+    model = payload.get("model", "")
+    normalized = False
+    if isinstance(model, str) and api_path in {"/ai/generate-image", "/ai/generate-image-stream"}:
+        canvas = payload.get("parameters")
+        if isinstance(canvas, dict):
+            action = str(payload.get("action", "generate"))
+            key = "strength" if action == "img2img" else "inpaintImg2ImgStrength" if action == "infill" else None
+            if key and key not in canvas:
+                canvas[key] = 0.7 if action == "img2img" else 1.0
+                normalized = True
+            pricing_canvas = canvas
+            if multipart and model.endswith("-limit"):
+                resolved = await _read_native_payload(request, resolve_images=True)
+                if resolved and isinstance(resolved.get("parameters"), dict):
+                    pricing_canvas = resolved["parameters"]
+            validate_nai_canvas(model, pricing_canvas, action)
+    if isinstance(model, str) and is_medium_model(model):
+        if api_path not in {"/ai/generate-image", "/ai/generate-image-stream"}:
+            raise HTTPException(status_code=400, detail="Medium model does not support this endpoint")
+        params = payload.get("parameters")
+        if not isinstance(params, dict):
+            raise HTTPException(status_code=400, detail="Medium parameters must be an object")
+        enforce_medium_model(model, params, str(payload.get("action", "generate")))
+        payload["model"] = MEDIUM_MODELS.get(model, model)
+        normalized = True
+    if not normalized:
+        return
+    if multipart:
+        import httpx
+        from starlette.datastructures import UploadFile
+
+        parts = []
+        for name, item in form.multi_items():
+            if name == "request":
+                parts.append((name, (None, json.dumps(payload))))
+            elif isinstance(item, UploadFile):
+                parts.append((name, (item.filename, await item.read(), item.content_type)))
+            else:
+                parts.append((name, (None, str(item))))
+        encoded = httpx.Request("POST", "http://native.invalid", files=parts)
+        request._body = encoded.read()
+        request.scope["headers"] = [
+            (name, value) for name, value in request.scope["headers"]
+            if name.lower() not in {b"content-type", b"content-length"}
+        ] + [(b"content-type", encoded.headers["content-type"].encode("ascii"))]
+        del request._headers
+        await form.close()
+        request._form = None
+    else:
+        request._body = json.dumps(payload).encode("utf-8")
+
 
 async def _proxy_buffered_response(
     request: Request,
@@ -356,6 +545,7 @@ async def _proxy_buffered_response(
     api_path: str,
 ) -> Response:
     """读取并关闭透明代理响应，避免连接池长期保留未释放的响应。"""
+    generation_started = time.monotonic()
     upstream = await forward(request, target_url)
     try:
         # 读取响应（需要去 content-disposition，也便于统计图片大小）。
@@ -367,6 +557,15 @@ async def _proxy_buffered_response(
         headers.update(_CORS_HEADERS)
 
         content_bytes = upstream.content
+        if upstream.status_code == 200:
+            headers.update(await _native_billing_headers(request, api_path))
+        if upstream.status_code >= 400:
+            await _disable_v5_for_native_quota_error(
+                request, api_path, upstream.status_code,
+                content_bytes[:500].decode("utf-8", errors="replace"),
+            )
+        if upstream.status_code == 200:
+            _record_native_latency(await request.body(), api_path, generation_started)
         if settings.is_heavy(api_path):
             record_generation(content_bytes, api_path)
 
@@ -389,6 +588,16 @@ _NATIVE_DROP_HEADERS = frozenset({
 })
 
 
+def _record_native_latency(body: bytes, api_path: str, started: float) -> None:
+    if not api_path.startswith("/ai/generate-image"):
+        return
+    try:
+        payload = json.loads(body)
+        record_model_latency(str(payload.get("model", "")), time.monotonic() - started)
+    except (ValueError, AttributeError, TypeError):
+        return
+
+
 def _native_response_headers(upstream) -> dict[str, str]:
     """透传上游响应头，去掉 hop-by-hop 与安全策略，并补 CORS。"""
     headers = {
@@ -399,21 +608,42 @@ def _native_response_headers(upstream) -> dict[str, str]:
     return headers
 
 
+async def _native_billing_headers(request: Request, api_path: str) -> dict[str, str]:
+    """Expose Gateway's own quote for native image requests with known pricing."""
+    quote_path = api_path.removeprefix("/_api")
+    if not quote_path.startswith("/ai/"):
+        return {}
+    payload = await _read_native_payload(request, resolve_images=True)
+    if not isinstance(payload, dict):
+        return {}
+    quote = native_anlas_quote(quote_path, payload)
+    if quote is None:
+        return {}
+    anlas, prompt_tokens = quote
+    return {"X-Anlas-Cost": str(anlas), "X-Prompt-Tokens": str(prompt_tokens)}
+
+
 async def _proxy_native_nai(request: Request, api_path: str) -> Response:
     """按官方路径转发到对应上游，并保持 ZIP / Msgpack Stream 原样返回。"""
     from contextlib import AsyncExitStack
 
-    from .queue import gate
+    from .queue import account_generation_gate, gate
 
     target_url = settings.get_upstream_url(api_path)
     try:
+        await _validate_native_medium(request, api_path)
+        request_body = await request.body() if settings.is_heavy(api_path) else b""
         async with AsyncExitStack() as stack:
             if settings.is_heavy(api_path):
-                await stack.enter_async_context(gate)
+                await _prepare_native_account(request, api_path)
+                await stack.enter_async_context(gate.for_request(request))
+                await stack.enter_async_context(account_generation_gate(request))
+                await _preflight_native_v5_quota(request, api_path)
+            generation_started = time.monotonic()
             upstream = await forward(request, target_url)
 
             content_type = (upstream.headers.get("content-type") or "").lower()
-            streaming = (
+            streaming = upstream.status_code < 400 and (
                 "octet-stream" in content_type
                 or "msgpack" in content_type
                 or "event-stream" in content_type
@@ -421,12 +651,22 @@ async def _proxy_native_nai(request: Request, api_path: str) -> Response:
             )
             if streaming and not upstream.is_stream_consumed:
                 headers = _native_response_headers(upstream)
+                if upstream.status_code == 200:
+                    headers.update(await _native_billing_headers(request, api_path))
                 hold_gate = stack.pop_all()
+                first_chunk_at = None
 
                 async def _stream():
+                    nonlocal first_chunk_at
                     try:
                         async for chunk in upstream.aiter_bytes():
+                            if first_chunk_at is None:
+                                first_chunk_at = time.monotonic()
+                                logger.info("📡 原生流首包 %s %.1fs", api_path, first_chunk_at - generation_started)
                             yield chunk
+                        if upstream.status_code == 200:
+                            _record_native_latency(request_body, api_path, generation_started)
+                            logger.info("📡 原生流结束 %s %.1fs", api_path, time.monotonic() - generation_started)
                     finally:
                         await upstream.aclose()
                         await hold_gate.aclose()
@@ -443,6 +683,15 @@ async def _proxy_native_nai(request: Request, api_path: str) -> Response:
             await upstream.aread()
             headers = _native_response_headers(upstream)
             content_bytes = upstream.content
+            if upstream.status_code == 200:
+                headers.update(await _native_billing_headers(request, api_path))
+            if upstream.status_code >= 400:
+                await _disable_v5_for_native_quota_error(
+                    request, api_path, upstream.status_code,
+                    content_bytes[:500].decode("utf-8", errors="replace"),
+                )
+            if upstream.status_code == 200:
+                _record_native_latency(request_body, api_path, generation_started)
             if settings.is_heavy(api_path) and upstream.status_code == 200:
                 record_generation(content_bytes, api_path)
             return Response(
@@ -473,18 +722,22 @@ async def native_upscale(request: Request):
     body = await request.body()
     target_url = settings.get_upstream_url("/ai/upscale")
     from .forwarder import _build_upstream_headers, get_client
-    from .queue import gate
+    from .queue import account_generation_gate, gate
 
     try:
-        async with gate:
-            client = await get_client()
-            upstream = await client.post(
-                target_url,
-                content=body,
-                headers=_build_upstream_headers(request, target_url),
-            )
-            await upstream.aread()
+        await _prepare_native_account(request, "/ai/upscale")
+        async with gate.for_request(request):
+            async with account_generation_gate(request):
+                client = await get_client()
+                upstream = await client.post(
+                    target_url,
+                    content=body,
+                    headers=_build_upstream_headers(request, target_url),
+                )
+                await upstream.aread()
         headers = _native_response_headers(upstream)
+        if upstream.status_code == 200:
+            headers.update(await _native_billing_headers(request, "/ai/upscale"))
         if settings.is_heavy("/ai/upscale") and upstream.status_code == 200:
             record_generation(upstream.content, "/ai/upscale")
         return Response(
@@ -534,11 +787,18 @@ async def proxy_api(request: Request, path: str):
     target_url = settings.get_upstream_url(f"/{path}")
     api_path = f"/{path}"
     try:
+        await _validate_native_medium(request, api_path)
         # OpenAI 兼容入口已经在 openai.py 中门控；透明 API 入口也必须纳入
         # 同一门控，否则网页端直连 /_api 会绕过并发限制。
         if settings.is_heavy(api_path):
-            async with gate:
-                return await _proxy_buffered_response(request, target_url, api_path)
+            await request.body()
+            await _prepare_native_account(request, api_path)
+            async with gate.for_request(request):
+                from .queue import account_generation_gate
+
+                async with account_generation_gate(request):
+                    await _preflight_native_v5_quota(request, api_path)
+                    return await _proxy_buffered_response(request, target_url, api_path)
         return await _proxy_buffered_response(request, target_url, api_path)
     except Exception as exc:
         if isinstance(exc, HTTPException):

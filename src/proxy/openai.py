@@ -13,6 +13,8 @@ import zipfile
 import base64
 import logging
 import math
+import asyncio
+import secrets
 from typing import Any
 
 from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -26,9 +28,14 @@ except ImportError:
     UnidentifiedImageError = Exception
 
 from .config import get_request_auth_token, settings
-from .queue import gate
-from .stats import record_generation
-from .v5_quota import check_v5_quota, log_generation
+from .queue import account_generation_gate, gate
+from .stats import record_generation, record_model_latency
+from .v5_quota import (
+    check_v5_quota,
+    is_v5_quota_exhausted_error,
+    is_v5_quota_recovered,
+    log_generation,
+)
 
 logger = logging.getLogger("gateway")
 
@@ -50,20 +57,43 @@ VALID_SIZES = {(1024, 1024), (1216, 832), (832, 1216)}
 # NovelAI SDK 默认质量标签
 QUALITY_TAGS = ", very aesthetic, masterpiece, no text"
 
+
+def _quality_enabled(body: dict[str, Any]) -> bool:
+    value = body.get("qualityToggle", True)
+    if isinstance(value, bool):
+        return value
+    # OpenAI edits also accepts multipart text fields.
+    if isinstance(value, str) and value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    raise HTTPException(status_code=400, detail="qualityToggle must be a boolean")
+
+
+def _generation_prompt(body: dict[str, Any], prompt: str) -> str:
+    """An explicit quality opt-out disables gateway injection as well as NAI hints."""
+    if not _quality_enabled(body):
+        return prompt
+    quality_tags = body.get("quality_tags", QUALITY_TAGS)
+    if quality_tags is None:
+        return prompt
+    if not isinstance(quality_tags, str):
+        raise HTTPException(status_code=400, detail="quality_tags must be a string")
+    return prompt + quality_tags
+
 # NovelAI 图片 API 尺寸限制
 MIN_IMAGE_DIM = 64
-MAX_IMAGE_DIM = 1600
+MAX_IMAGE_PIXELS = 3_145_728
+MAX_IMAGE_DIM = MAX_IMAGE_PIXELS // 64
 MIN_STEPS = 1
 MAX_STEPS = 50
 MIN_N_SAMPLES = 1
-MAX_N_SAMPLES = 6
+MAX_N_SAMPLES = 8
 
 # Opus 免费额度边界（超出任一即消耗 Anlas）
 OPUS_FREE_MAX_STEPS = 28
 OPUS_FREE_MAX_PIXELS = 1024 * 1024  # 1024×1024
 
 # 网关公开的 Vibe Transfer 参考图上限。
-MAX_VIBE_REFERENCE_IMAGES = 4
+MAX_VIBE_REFERENCE_IMAGES = 16
 
 # -limit 后缀模型：限制版，只允许走 Opus 免费额度的文生图路径
 LIMIT_MODEL_SUFFIX = "-limit"
@@ -76,6 +106,60 @@ VALID_RESPONSE_FORMATS = {"b64_json", "url", "raw", "nai_json", "auto"}
 VALID_TTS_VERSIONS = {"v1", "v2"}
 VALID_TTS_VOICE_IDS = {-1, 0, 1}
 TTS_RESPONSE_FORMAT_TO_OPUS = {"mp3": False, "opus": True}
+
+MEDIUM_MODELS = {
+    "nai-v5-full-medium": "nai-diffusion-5-full-medium",
+    "nai-v5-inpaint-medium": "nai-diffusion-5-full-medium-inpainting",
+}
+MEDIUM_NEGATIVE_PROMPT = (
+    "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, "
+    "jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, "
+    "screentone, multiple views, logo, too many watermarks, negative space, blank page"
+)
+
+
+def is_medium_model(model: str) -> bool:
+    """Recognize the restricted Medium aliases and official upstream names."""
+    return model in MEDIUM_MODELS or model in MEDIUM_MODELS.values()
+
+
+def enforce_medium_model(model: str, params: dict[str, Any], action: str = "generate") -> None:
+    """Reject costly overrides and apply the official fixed Medium settings."""
+    if not is_medium_model(model):
+        return
+    if action not in {"generate", "img2img", "infill"}:
+        raise HTTPException(status_code=400, detail="Medium model only supports generate, img2img and infill")
+    width, height = _parse_size(params.get("size", ""))
+    width = params.get("width", width)
+    height = params.get("height", height)
+    if not isinstance(width, int) or not isinstance(height, int) or width * height > MAX_IMAGE_PIXELS:
+        raise HTTPException(status_code=400, detail="Medium model requires width * height <= 3145728")
+    _validate_image_params(width, height, 14, n_samples=_safe_int(params.get("n_samples", params.get("n", 1)), 1))
+    for key, required in {"steps": 14, "sampler": "k_euler_ancestral", "cfg_rescale": 0, "uncond_scale": 1, "sm": False, "sm_dyn": False, "params_version": 4}.items():
+        if key in params and params[key] != required:
+            raise HTTPException(status_code=400, detail=f"Medium model requires {key}={required}")
+    if params.get("service_tier") == "priority":
+        raise HTTPException(status_code=400, detail="Medium model does not support priority service")
+    if any(value for key, value in params.items() if key.startswith(("reference_", "director_reference_", "controlnet_")) and key not in {"controlnet_strength"}):
+        raise HTTPException(status_code=400, detail="Medium model does not support reference images or ControlNet")
+    if params.get("references") or params.get("characters") or params.get("upscale") or params.get("upscaled_enhance"):
+        raise HTTPException(status_code=400, detail="Medium model does not support paid image tools")
+    if any(value and value != MEDIUM_NEGATIVE_PROMPT for value in (params.get("negative_prompt"), params.get("negativePrompt"))):
+        raise HTTPException(status_code=400, detail="Medium model does not support custom negative prompts")
+    if any(item.get("negativePrompt") or item.get("negative") for item in params.get("characterPrompts", []) if isinstance(item, dict)):
+        raise HTTPException(status_code=400, detail="Medium model does not support character negative prompts")
+    if params.get("ucPresetId", "heavy") != "heavy" or params.get("ucPreset", 0) != 0 or params.get("tag_hint_uc_preset", 2) != 2:
+        raise HTTPException(status_code=400, detail="Medium model requires the Heavy UC preset")
+    params.update({"steps": 14, "sampler": "k_euler_ancestral", "cfg_rescale": 0, "uncond_scale": 1, "sm": False, "sm_dyn": False, "params_version": 4, "ucPreset": 0, "ucPresetId": "heavy", "tag_hint_uc_preset": 2, "negative_prompt": MEDIUM_NEGATIVE_PROMPT})
+    negative_structure = params.get("v4_negative_prompt")
+    if isinstance(negative_structure, dict):
+        caption = negative_structure.get("caption", {})
+        if isinstance(caption, dict):
+            if caption.get("base_caption") and caption["base_caption"] != MEDIUM_NEGATIVE_PROMPT:
+                raise HTTPException(status_code=400, detail="Medium model does not support custom negative prompts")
+            if any(item.get("char_caption") for item in caption.get("char_captions", []) if isinstance(item, dict)):
+                raise HTTPException(status_code=400, detail="Medium model does not support character negative prompts")
+            caption["base_caption"] = MEDIUM_NEGATIVE_PROMPT
 
 
 def _validate_image_params(
@@ -100,6 +184,8 @@ def _validate_image_params(
         raise HTTPException(status_code=400, detail=f"width 必须在 {MIN_IMAGE_DIM}-{MAX_IMAGE_DIM} 之间，当前 {width}")
     if not (MIN_IMAGE_DIM <= height <= MAX_IMAGE_DIM):
         raise HTTPException(status_code=400, detail=f"height 必须在 {MIN_IMAGE_DIM}-{MAX_IMAGE_DIM} 之间，当前 {height}")
+    if width * height > MAX_IMAGE_PIXELS:
+        raise HTTPException(status_code=400, detail=f"图像面积必须 <= {MAX_IMAGE_PIXELS} 像素，当前 {width}x{height}")
     if width % 64 != 0:
         raise HTTPException(status_code=400, detail=f"width 必须是 64 的倍数，当前 {width}")
     if height % 64 != 0:
@@ -120,6 +206,22 @@ def _validate_image_params(
         logger.warning(f"noise_schedule 不在白名单: {noise_schedule}，合法值: {VALID_NOISE_SCHEDULES}（仍透传给 NAI）")
     if response_format is not None and response_format not in VALID_RESPONSE_FORMATS:
         raise HTTPException(status_code=400, detail=f"response_format 非法，当前 {response_format}，合法值: {VALID_RESPONSE_FORMATS}")
+
+
+def validate_nai_canvas(model: str, params: dict[str, Any], action: str = "generate") -> None:
+    """Shared preflight for native and compatible generation requests."""
+    width = _safe_int(params.get("width", 1024), 1024)
+    height = _safe_int(params.get("height", 1024), 1024)
+    steps = _safe_int(params.get("steps", 14 if is_medium_model(model) else 28), 28)
+    samples = _safe_int(params.get("n_samples", params.get("n", 1)), 1)
+    _validate_image_params(width, height, steps, samples, strength=_pricing_strength(params, action))
+    if is_limit_model(model):
+        _enforce_limit_model(model, {**params, "action": action})
+    cost = _calc_anlas_cost(width, height, steps, strength=_pricing_strength(params, action),
+                            uncond_scale=params.get("uncond_scale", 1),
+                            price_multiplier=_v5_price_multiplier(model), medium=is_medium_model(model))
+    if cost > 140:
+        raise HTTPException(status_code=400, detail="These settings exceed 140 Anlas per image; reduce resolution or steps")
 
 
 # ── 自定义参数透传（模型感知 + extra_params + 全量透传） ──────────
@@ -249,7 +351,7 @@ def _absorb_extra_params(body: dict[str, Any], extra_params_json: str | None = N
     body.update(merged)
 
 
-def _apply_custom_params(body: dict[str, Any], params: dict[str, Any], nai_model: str) -> None:
+def _apply_custom_params(body: dict[str, Any], params: dict[str, Any], nai_model: str, action: str | None = None) -> None:
     """模型感知的参数放行与全量透传，在各生成端点 params 构建完成后调用。
 
     1. 一等公民参数：straight_alpha / transparent_background（映射为
@@ -259,6 +361,8 @@ def _apply_custom_params(body: dict[str, Any], params: dict[str, Any], nai_model
        （extra_params 已在入口由 _absorb_extra_params 并入 body）。
     3. 模型门控：V5 专属参数仅对 V5 系模型放行，其他模型族剔除并记 DEBUG。
     """
+    if "qualityToggle" in body:
+        params["qualityToggle"] = _quality_enabled(body)
     if "straight_alpha" in body:
         params["straight_alpha"] = bool(body["straight_alpha"])
     elif _is_v5_model(nai_model):
@@ -286,6 +390,13 @@ def _apply_custom_params(body: dict[str, Any], params: dict[str, Any], nai_model
         for key in _V5_ONLY_PARAMS & params.keys():
             params.pop(key)
             logger.debug(f"[custom-params] {key} 为 V5 专属参数，{nai_model} 已剔除")
+    action = action or str(body.get("action", "generate"))
+    if "width" in params and "height" in params:
+        validate_nai_canvas(nai_model, params, action)
+    if is_medium_model(nai_model):
+        enforce_medium_model(nai_model, body, action)
+        params["negative_prompt"] = MEDIUM_NEGATIVE_PROMPT
+        enforce_medium_model(nai_model, params, action)
 
 
 def _normalize_vibe_reference_images(body: dict[str, Any]) -> list[str]:
@@ -329,7 +440,8 @@ def is_limit_model(model_identifier: str | None) -> bool:
 
 def _is_v5_model(nai_model: str) -> bool:
     """判断内部模型名是否为 V5 系模型（nai-diffusion-5-*）。"""
-    return "diffusion-5" in nai_model
+    normalized = nai_model.lower()
+    return "diffusion-5" in normalized or "nai-v5" in normalized
 
 
 def _is_v4_family(nai_model: str) -> bool:
@@ -341,6 +453,49 @@ def _is_v4_family(nai_model: str) -> bool:
     return "diffusion-4" in nai_model or _is_v5_model(nai_model)
 
 
+def _requires_anlas_for_account(nai_model: str, body: dict[str, Any], action: str | None = None) -> bool:
+    """Classify the final upstream payload, including top-level service tier."""
+    if "parameters" in body:
+        parameters = body["parameters"]
+        if not isinstance(parameters, dict):
+            return True
+        action = body.get("action", "generate") if action is None else action
+        parameters = dict(parameters)
+        if body.get("service_tier") == "priority":
+            parameters["service_tier"] = "priority"
+        body = parameters
+    normalized = nai_model.lower()
+    is_opus_model = _is_v5_model(normalized) or "diffusion-4-5" in normalized or "nai-v4.5" in normalized
+    if not is_opus_model:
+        return True
+    if any(body.get(key) for key in (
+        "director_reference_images", "director_reference_images_cached",
+        "director_reference_descriptions", "controlnet_condition", "upscale",
+        "upscaled_enhance", "references",
+    )):
+        return True
+    cached_references = body.get("reference_image_multiple_cached") or []
+    if not isinstance(cached_references, list) or len(cached_references) > MAX_VIBE_REFERENCE_IMAGES:
+        return True
+    if any(
+        not isinstance(item, dict) or (item.get("data") and not _is_encoded_vibe(item["data"]))
+        for item in cached_references
+    ):
+        return True
+    # Native arrays and character-reference images must not be hidden by another
+    # reference alias. Raw images incur encode-vibe fees before generation.
+    references = list(body.get("reference_image_multiple") or [])
+    references.extend(
+        item.get("reference_image") for item in body.get("characters", [])
+        if isinstance(item, dict) and item.get("reference_image")
+    )
+    if len(references) + len(cached_references) > MAX_VIBE_REFERENCE_IMAGES:
+        return True
+    if references and not _in_opus_free_envelope({**body, "reference_images": references}, action):
+        return True
+    return not _in_opus_free_envelope(body, action)
+
+
 def _resolve_infill_model(nai_model: str) -> str:
     """重绘/局部编辑使用对应的 inpainting 上游模型。
 
@@ -350,6 +505,8 @@ def _resolve_infill_model(nai_model: str) -> str:
     """
     if nai_model.endswith("-inpainting"):
         return nai_model
+    if is_medium_model(nai_model):
+        return "nai-diffusion-5-full-medium-inpainting"
     if _is_v5_model(nai_model):
         return "nai-diffusion-5-full-inpainting"
     if "diffusion-4-5" in nai_model:
@@ -358,12 +515,46 @@ def _resolve_infill_model(nai_model: str) -> str:
 
 
 def _v5_price_multiplier(nai_model: str) -> float:
-    """V5 非 limit 模型销售倍率。
+    """Official model compute factor; the V5 sales markup belongs to downstream pricing."""
+    return 1.5 if _is_v5_model(nai_model) else 1.0
 
-    用户定价：非 limit 使用积分按 V4.5 × 2（上游实际为 ×1.5，销售按 ×2 收取）。
-    -limit 模型走 Opus 免费额度（is_opus=True 折扣后 total=0），倍率不产生作用。
-    """
-    return 2.0 if _is_v5_model(nai_model) else 1.0
+
+def _vibe_references(body: dict[str, Any]) -> list[Any]:
+    cached = body.get("reference_image_multiple_cached", [])
+    cached = cached if isinstance(cached, list) else []
+    for key in ("reference_image_multiple", "reference_images", "vibe"):
+        value = body.get(key)
+        if isinstance(value, list) and value:
+            return value + cached
+    if body.get("reference_image"):
+        return [body["reference_image"]] + cached
+    characters = body.get("characters", [])
+    return ([item["reference_image"] for item in characters if isinstance(item, dict) and item.get("reference_image")] if isinstance(characters, list) else []) + cached
+
+
+def _precise_references(body: dict[str, Any]) -> list[Any]:
+    cached = body.get("director_reference_images_cached", [])
+    cached = cached if isinstance(cached, list) else []
+    for key in ("references", "director_reference_images"):
+        value = body.get(key)
+        if isinstance(value, list) and value:
+            return value + cached
+    return cached
+
+
+def _encoded_vibe_reference(value: Any) -> bool:
+    if isinstance(value, dict) and not value.get("data") and isinstance(value.get("cache_secret_key"), str) and value["cache_secret_key"]:
+        return True
+    data = value.get("data", value.get("reference_image", "")) if isinstance(value, dict) else value
+    return isinstance(data, str) and _is_encoded_vibe(data)
+
+
+def _pricing_strength(params: dict[str, Any], action: str) -> float | None:
+    if action == "img2img":
+        return _safe_float(params.get("strength"), 0.7)
+    if action == "infill":
+        return _safe_float(params.get("inpaintImg2ImgStrength"), 1.0)
+    return None
 
 
 def _enforce_limit_model(model: str, body: dict[str, Any]) -> None:
@@ -388,27 +579,23 @@ def _enforce_limit_model(model: str, body: dict[str, Any]) -> None:
     # references（precise-reference）每张样本必扣 5 Anlas，必然超额度，始终拦截。
     # 注意：_is_encoded_vibe 定义在本函数之后，Python 模块加载后运行期查找，无顺序问题。
     action = body.get("action", "generate")
-    for key in ("reference_image", "reference_images"):
-        value = body.get(key)
-        if not value:
-            continue
-        items = value if isinstance(value, list) else [value]
-        if not all(isinstance(item, str) and _is_encoded_vibe(item) for item in items):
+    items = _vibe_references(body)
+    if items:
+        if not all(_encoded_vibe_reference(item) for item in items):
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"-limit 模型 '{model}' 的 {key} 仅支持已编码的 vibe 数据"
+                    f"-limit 模型 '{model}' 仅支持已编码的 vibe 数据"
                     "（原始图片编码需消耗 2 Anlas/张，超出免费额度），"
                     "请先用完整模型获取 vibe 编码，或改用原版模型（去掉 -limit 后缀）"
                 ),
             )
-        # 上限 16 张
-        if len(items) > MAX_VIBE_REFERENCE_IMAGES:
+        if len(items) > 4:
             raise HTTPException(
                 status_code=400,
-                detail=f"vibe 参考图最多 {MAX_VIBE_REFERENCE_IMAGES} 张，当前 {len(items)} 张",
+                detail="Limit 模型最多复用 4 张 Vibe；更多参考会产生额外 Anlas，请使用完整模型",
             )
-    if body.get("references"):
+    if _precise_references(body):
         raise HTTPException(
             status_code=400,
             detail=f"-limit 模型 '{model}' 不支持 Precise Reference（每张参考图每样本消耗 5 Anlas），请改用原版模型（去掉 -limit 后缀）",
@@ -469,7 +656,7 @@ def _reject_limit_model_for_paid_endpoint(model: str) -> None:
     免费额度，因此由各端点转换为通用生成参数后调用 ``_enforce_limit_model``。
     放大和 Director 工具仍必然产生额外 Anlas 费用。
     """
-    if is_limit_model(model):
+    if is_limit_model(model) or is_medium_model(model):
         raise HTTPException(
             status_code=400,
             detail=f"-limit 模型 '{model}' 不允许此端点（该操作必然消耗 Anlas），请改用原版模型（去掉 -limit 后缀）",
@@ -540,16 +727,10 @@ def _in_opus_free_envelope(body: dict[str, Any], action: str | None = None) -> b
     if action is None:
         action = body.get("action", "generate")
     # 参考图：仅已编码 vibe（复用不计编码费）可留在档内
-    for key in ("reference_image", "reference_images"):
-        value = body.get(key)
-        if not value:
-            continue
-        items = value if isinstance(value, list) else [value]
-        if not all(isinstance(item, str) and _is_encoded_vibe(item) for item in items):
-            return False
-        if len(items) > MAX_VIBE_REFERENCE_IMAGES:
-            return False
-    if body.get("references"):
+    items = _vibe_references(body)
+    if len(items) > 4 or not all(_encoded_vibe_reference(item) for item in items):
+        return False
+    if _precise_references(body):
         return False
     if action == "generate" and body.get("image"):
         return False
@@ -614,11 +795,8 @@ def _parse_size(size_str: str, default_w: int = 1024, default_h: int = 1024) -> 
 
 
 def _clamp_dimensions(width: int, height: int) -> tuple[int, int]:
-    """将宽高限制在 NAI 允许范围内，并确保为 64 的倍数。"""
-    width = max(MIN_IMAGE_DIM, min(MAX_IMAGE_DIM, width))
-    height = max(MIN_IMAGE_DIM, min(MAX_IMAGE_DIM, height))
-    width = (width // 64) * 64
-    height = (height // 64) * 64
+    """Validate requested dimensions without silently resizing the paid canvas."""
+    _validate_image_params(width, height, 1)
     return width, height
 
 
@@ -628,6 +806,12 @@ def _safe_int(value, default: int) -> int:
         return int(value)
     except (ValueError, TypeError):
         return default
+
+
+def _request_seed(value) -> int:
+    """将未指定或 0 的种子转换为随机的非零种子。"""
+    seed = _safe_int(value, 0)
+    return seed if seed != 0 else secrets.randbelow(2**32 - 1) + 1
 
 
 def _safe_float(value, default: float) -> float:
@@ -646,9 +830,32 @@ def _normalize_token(raw_token: str) -> str:
     return raw_token.strip().strip("'\"")
 
 
-def _get_auth_token(request: Request) -> str:
-    """获取当前请求的共享凭据，多 API Key 时复用本请求已轮到的 Key。"""
-    return get_request_auth_token(request)
+def _get_auth_token(request: Request, need_v5: bool = False, need_anlas: bool = False) -> str:
+    """获取当前请求的共享凭据，多 API Key 时复用本请求已轮到的 Key。
+
+    need_v5 / need_anlas 用于选号和缓存凭据的权限复核。
+    """
+    return get_request_auth_token(request, need_v5=need_v5, need_anlas=need_anlas)
+
+
+def _preflight_account(request: Request, nai_model: str, allow_anlas: bool) -> None:
+    """按账号计费能力预检生图请求，并把请求要求传给后续选号。
+
+    账号关闭 allow_v5 时拒绝 V5 请求；关闭 allow_anlas 时拒绝会消耗
+    Anlas 的请求。该校验在排队前进行，超限直接拒绝，不消耗上游额度。
+    """
+    from .account_pool import account_pool
+
+    need_v5 = _is_v5_model(nai_model) or bool(getattr(request.state, "gateway_need_v5", False))
+    allow_anlas = allow_anlas or bool(getattr(request.state, "gateway_need_anlas", False))
+    ok, message = account_pool.check_request(need_v5=need_v5, need_anlas=allow_anlas)
+    if not ok:
+        logger.warning(
+            f"⛔ 账号能力预检拒绝 | {nai_model} | need_v5={need_v5} | need_anlas={allow_anlas} | {message}"
+        )
+        raise HTTPException(status_code=409, detail=message)
+    request.state.gateway_need_v5 = need_v5
+    request.state.gateway_need_anlas = allow_anlas
 
 
 def _get_image_url(request: Request, filename: str) -> str:
@@ -889,117 +1096,55 @@ def _calc_anlas_cost(
     reference_mode: str = "vibe",
     reference_image_encoded_count: int = 0,
     price_multiplier: float = 1.0,
+    medium: bool = False,
+    precise_reference_image_count: int | None = None,
+    vibe_reference_image_count: int | None = None,
 ) -> int:
-    """根据 NovelAI V4.5 计费规则计算 Anlas 消耗。
+    """Official Anlas: round model/strength cost per image, then add unscaled references.
 
-    公式 (version=3, V4/V4.5):
-        per_sample = ceil(2.951823174884865e-6 * r + 5.753298233447344e-7 * r * steps)
-        per_sample = max(ceil(per_sample * strength), 2)  # img2img 时
-        per_sample = ceil(per_sample * uncond_scale)       # uncond_scale != 1.0 时
-        opus_discount = is_opus && steps <= 28 && r <= 1024*1024
-        total = per_sample * (n_samples - int(opus_discount))
-
-    V5 (version=4) 销售定价 = V4.5 × price_multiplier（默认 2.0，见 _v5_price_multiplier）。
-    倍率作用于最终 total（含参考图附加费），-limit 模型免费时 total=0 不受影响。
-
-    Vibe Transfer 额外计费 (V4+):
-        - 每张参考图首次编码: 2 Anlas
-        - 超过 4 张后，每增加 1 张额外 2 Anlas
-        - 即: ref_cost = 2 * count + max(0, count - 4) * 2 = 2 * count + 2 * max(0, count - 4)
-
-    Precise Reference (Director Reference) 额外计费 (V4.5+):
-        - 每张参考图、每个请求样本: 5 Anlas (不走 encode-vibe)
-        - 即: ref_cost = 5 * count * n_samples
-
-    Args:
-        width: 图像宽度
-        height: 图像高度
-        steps: 生成步数
-        n_samples: 生成数量
-        strength: img2img 强度 (None 或 1.0 表示非 img2img)
-        uncond_scale: uncond_scale 值 (默认 1.0)
-        is_opus: 是否 Opus 会员 (免费额度折扣)
-        reference_image_count: Vibe Transfer / Character Reference 参考图数量
-            （含已编码复用部分；编码费用只对未复用部分收取）
-        reference_mode: 参考图模式 - "vibe" (默认) 或 "precise"
-        reference_image_encoded_count: Vibe 模式下复用上游已编码 vibe 的参考图数量。
-            这部分无需再次调用 encode-vibe，不计 2 Anlas 编码费。
-            Precise Reference 模式下此参数被忽略。
-        price_multiplier: 销售倍率（V5 非 limit = 2.0，其余 = 1.0）
-
-    Returns:
-        Anlas 消耗量 (整数)
+    V5's model factor is 1.5; the independent 1.25 sales markup and RMB
+    conversion are applied downstream, never included in X-Anlas-Cost.
+    Cached vibes still incur the surcharge for references beyond four.
     """
-    r = max(width * height, 65536)  # 最小 65536
-
-    # V4.5 per_sample 计算；系数来自 NovelAI 官方前端价格计算器。
-    per_sample = math.ceil(
-        2.951823174884865e-6 * r + 5.753298233447344e-7 * r * steps
+    r = max(width * height, 65536)
+    effective_steps = 14 if medium else steps
+    base = math.ceil(
+        2.951823174884865e-6 * r + 5.753298233447344e-7 * r * effective_steps * (1 / 1.06521739 if medium else 1)
     )
-
-    # img2img strength 折扣
-    if strength is not None and strength < 1.0:
-        per_sample = max(math.ceil(per_sample * strength), 2)
-
-    # uncond_scale 折扣/加价
-    if uncond_scale != 1.0:
-        per_sample = math.ceil(per_sample * uncond_scale)
-
-    # Opus 免费额度折扣 (第一张免费)
-    opus_discount = 1 if (is_opus and steps <= 28 and r <= 1024 * 1024) else 0
-
-    total = per_sample * (n_samples - opus_discount)
-
-    # 参考图额外计费
-    if reference_image_count > 0:
-        if reference_mode == "precise":
-            # Precise Reference: 每张参考图对每个请求样本收取 5 Anlas。
-            total += 5 * reference_image_count * n_samples
-        else:
-            # Vibe Transfer: 仅对未复用编码的参考图收取 2 Anlas 编码费。
-            # 复用上游已编码 vibe 的参考图不调用 encode-vibe，不计编码费。
-            billable_count = max(0, reference_image_count - reference_image_encoded_count)
-            ref_cost = 2 * billable_count
-            if billable_count > 4:
-                ref_cost += 2 * (billable_count - 4)
-            total += ref_cost
-
-    # V5 销售倍率（V4.5 × 2）
-    if price_multiplier != 1.0:
-        total = int(total * price_multiplier)
-
+    factor = 1.5 if medium else price_multiplier
+    per_sample = max(2, math.ceil(base * factor * (strength if strength is not None else 1)))
+    per_sample = math.ceil(per_sample * uncond_scale)
+    opus_discount = int(is_opus and effective_steps <= 28 and r <= OPUS_FREE_MAX_PIXELS)
+    total = per_sample * max(0, n_samples - opus_discount)
+    precise_count = precise_reference_image_count if precise_reference_image_count is not None else reference_image_count if reference_mode == "precise" else 0
+    vibe_count = vibe_reference_image_count if vibe_reference_image_count is not None else reference_image_count if reference_mode != "precise" else 0
+    total += 5 * precise_count * n_samples
+    total += 2 * max(0, vibe_count - reference_image_encoded_count)
+    total += 2 * max(0, vibe_count - 4)
     return max(total, 0)
 
 
 def _anlas_to_tokens(anlas: int) -> int:
-    """将 Anlas 消耗映射为 prompt_tokens 供 NewAPI tiered_expr 计费。
+    """Map official Anlas to usage at 50 tokens per Anlas.
 
-    base case: 20 Anlas → 1000 prompt_tokens
-    tiered_expr: tier("base", p * 4800)
-    → 1000 * 4800 / 1M * 500K = 2,400,000 = $4.8
-
-    Args:
-        anlas: Anlas 消耗量
-
-    Returns:
-        prompt_tokens 值
+    RMB conversion and the independent V5 1.25 sales markup are applied by
+    downstream pricing, not included in the official consumption metadata.
     """
     return max(1, round(anlas / _BASE_ANLAS * _BASE_TOKENS))
 
 
-# ── 两档计费（-limit 模型已并入完整版模型的档内定价）───────────
-# 档内 = Opus 免费额度边界内（_in_opus_free_envelope）→ 固定档内价（即原 -limit 价）；
-# 档外 = 超出边界或付费操作 → 不改写 usage，沿用 Anlas 动态换算旧口径，
-#        由 NewAPI 按 token 动态计费（V5: p * 130000 / V4.5: p * 100000，见 TIERED_PRICING.md）。
-# NewAPI 侧表达式形如 p < 100 ? tier("limit", p * 1000000) : tier("full", p * 130000)，
-# 其中 p < 100 的分支承载档内固定价（档内 usage 即价格单位；动态档 usage 恒 ≥ 250）。
-# 调价须与 NewAPI 表达式同步修改。
-_BILLING_LIMIT_UNITS_V45 = 0  # V4.5 档内免费（= 原 nai-v4.5-*-limit 价格）
-_BILLING_LIMIT_UNITS_V5 = 8   # V5 档内固定价（= 原 nai-v5-*-limit 价格）
+# Fixed-envelope usage markers are retained for existing per-image pricing.
+# Dynamic requests return official Anlas * 50; these small markers are not Anlas.
+# NewAPI dynamic expressions and this Gateway must be deployed together.
+_BILLING_LIMIT_UNITS_V45 = 0
+_BILLING_LIMIT_UNITS_V5 = 25
+_BILLING_MEDIUM_UNITS_V5 = 18
 
 
 def _tiered_billing_units(model_name: str) -> int | None:
     """按上游模型名或网关模型名返回档内固定价；不参与两档计费返回 None。"""
+    if is_medium_model(model_name):
+        return _BILLING_MEDIUM_UNITS_V5
     if "diffusion-5" in model_name or "nai-v5" in model_name:
         return _BILLING_LIMIT_UNITS_V5
     if "diffusion-4-5" in model_name or "nai-v4.5" in model_name:
@@ -1024,6 +1169,92 @@ def _billing_prompt_tokens(model_name: str, body: dict[str, Any] | None = None) 
     return None
 
 
+def _billing_image_samples(model_name: str, samples: int) -> int:
+    """Completion usage carries the per-image base-fee quantity, not Anlas."""
+    return max(0, samples) if _tiered_billing_units(model_name) is not None else 0
+
+
+def native_anlas_quote(api_path: str, body: dict[str, Any]) -> tuple[int, int] | None:
+    """Return Gateway Anlas and billing-token metadata for known native image operations."""
+    if api_path == "/ai/upscale":
+        image = body.get("image")
+        if not isinstance(image, str) or Image is None:
+            return None
+        try:
+            raw = base64.b64decode(_strip_data_prefix(image))
+            with Image.open(io.BytesIO(raw)) as source:
+                pixels = source.width * source.height
+        except Exception:
+            return None
+        if pixels <= 0 or pixels > 3_145_728:
+            return None
+        anlas = 1 if pixels <= 1_048_576 else 2 if pixels <= 1_747_627 else 3 if pixels <= 2_446_678 else 4
+        return anlas, _anlas_to_tokens(anlas)
+
+    if api_path in {"/ai/generate-image", "/ai/generate-image-stream"}:
+        params = body.get("parameters")
+        if not isinstance(params, dict):
+            params = body
+        model = body.get("model")
+        if not isinstance(model, str) or not model:
+            return None
+        width, height = _parse_size(str(params.get("size", "")), 1024, 1024)
+        width = _safe_int(params.get("width", width), width)
+        height = _safe_int(params.get("height", height), height)
+        action = str(body.get("action", "generate"))
+        steps = _safe_int(params.get("steps", 28), 28)
+        samples = _safe_int(params.get("n_samples", params.get("n", 1)), 1)
+        precise_refs = _precise_references(params)
+        vibe_refs = _vibe_references(params)
+        is_precise = bool(precise_refs)
+        references = precise_refs if is_precise else vibe_refs
+        encoded_count = sum(_encoded_vibe_reference(item) for item in vibe_refs)
+        strength = _pricing_strength(params, action)
+        anlas = _calc_anlas_cost(
+            width=width,
+            height=height,
+            steps=steps,
+            n_samples=samples,
+            strength=strength,
+            uncond_scale=_safe_float(params.get("uncond_scale"), 1.0),
+            is_opus=is_limit_model(model),
+            reference_image_count=len(references),
+            reference_mode="precise" if is_precise else "vibe",
+            reference_image_encoded_count=encoded_count,
+            price_multiplier=_v5_price_multiplier(model),
+            medium=is_medium_model(model),
+            precise_reference_image_count=len(precise_refs),
+            vibe_reference_image_count=len(vibe_refs),
+        )
+        billing_body = {
+            **body,
+            **params,
+            "action": action,
+            "width": width,
+            "height": height,
+            "steps": steps,
+            "n_samples": samples,
+        }
+        billing_tokens = _billing_prompt_tokens(model, billing_body)
+        prompt_tokens = (
+            billing_tokens
+            if billing_tokens is not None
+            else _anlas_to_tokens(anlas) if anlas > 0 else _BASE_TOKENS
+        )
+        return anlas, prompt_tokens
+
+    if api_path == "/ai/encode-vibe":
+        return 2, _anlas_to_tokens(2)
+    if api_path == "/ai/augment-image":
+        try:
+            tool = str(body.get("req_type", ""))
+            anlas = _DIRECTOR_TOOLS_INFO[tool]["anlas"]
+        except (KeyError, TypeError):
+            return None
+        return anlas, _anlas_to_tokens(anlas)
+    return None
+
+
 def _build_image_response_v2(
     request: Request,
     content: bytes,
@@ -1036,6 +1267,7 @@ def _build_image_response_v2(
     reference_strengths: list[float] | None = None,
     reference_information_extracted: list[float] | None = None,
     billing_prompt_tokens: int | None = None,
+    billing_image_samples: int = 0,
 ) -> Response:
     """
     统一图像响应构建，支持 4 种返回格式。
@@ -1049,8 +1281,8 @@ def _build_image_response_v2(
     所有 JSON 响应都会附带 ``usage`` 字段，供 NewAPI tiered_expr 计费：
     - ``prompt_tokens`` = 根据 Anlas 消耗动态计算（base 17 Anlas → 1000 tokens → $4.8）
     - ``billing_prompt_tokens`` 非空时直接作为 prompt_tokens（两档计费，见 TIERED_PRICING.md）
-    - ``completion_tokens`` = 0
-    - ``total_tokens`` = prompt_tokens
+    - ``completion_tokens`` = billable generation images (standalone tools: 0)
+    - ``total_tokens`` = prompt_tokens + completion_tokens
 
     Anlas 消耗由 gateway 根据 NovelAI V4.5 计费公式计算，
     NewAPI tiered_expr 应按 20 Anlas = 1000 prompt tokens 配置。
@@ -1073,7 +1305,13 @@ def _build_image_response_v2(
     else:
         prompt_tokens = _BASE_TOKENS
 
-    usage = {"prompt_tokens": prompt_tokens, "completion_tokens": 0, "total_tokens": prompt_tokens}
+    completion_tokens = max(0, billing_image_samples)
+    usage = {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": prompt_tokens + completion_tokens}
+    billing_headers = {"Access-Control-Allow-Origin": "*"}
+    if anlas_cost is not None:
+        billing_headers["X-Anlas-Cost"] = str(max(0, anlas_cost))
+    billing_headers["X-Prompt-Tokens"] = str(prompt_tokens)
+    billing_headers["X-Completion-Tokens"] = str(completion_tokens)
 
     # 构造 vibe 复用信息（仅当存在已编码 vibe 时）
     vibe_payload: list[dict[str, Any]] | None = None
@@ -1092,16 +1330,21 @@ def _build_image_response_v2(
             content=content,
             status_code=200,
             media_type="application/zip",
-            headers={"Access-Control-Allow-Origin": "*"},
+            headers=billing_headers,
         )
 
     if response_format == "nai_json":
-        # 直接透传 NAI 的 JSON 响应
+        # Preserve native fields while exposing the same billing usage as the
+        # other JSON formats. Otherwise NewAPI cannot settle the base fee.
+        payload = json.loads(content)
+        if isinstance(payload, dict):
+            payload["usage"] = usage
+            content = json.dumps(payload).encode("utf-8")
         return Response(
             content=content,
             status_code=200,
             media_type="application/json",
-            headers={"Access-Control-Allow-Origin": "*"},
+            headers=billing_headers,
         )
 
     # 对于 b64_json 和 url，需要从上游响应中提取全部 PNG。
@@ -1127,7 +1370,7 @@ def _build_image_response_v2(
             content=json.dumps(result),
             status_code=200,
             media_type="application/json",
-            headers={"Access-Control-Allow-Origin": "*"},
+            headers=billing_headers,
         )
 
     # b64_json (默认)
@@ -1147,7 +1390,7 @@ def _build_image_response_v2(
         content=json.dumps(result),
         status_code=200,
         media_type="application/json",
-        headers={"Access-Control-Allow-Origin": "*"},
+        headers=billing_headers,
     )
 
 
@@ -1181,7 +1424,11 @@ def _build_png_image_response(
         content=json.dumps(result),
         status_code=200,
         media_type="application/json",
-        headers={"Access-Control-Allow-Origin": "*"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "X-Anlas-Cost": str(max(0, anlas_cost)),
+            "X-Prompt-Tokens": str(prompt_tokens),
+        },
     )
 
 
@@ -1329,7 +1576,7 @@ def _build_multipart_form(
                 else:
                     cached_list.append({"cache_secret_key": field_name})
             # 用 cached 格式替换，删除原字段
-            params["reference_image_multiple_cached"] = cached_list
+            params["reference_image_multiple_cached"] = cached_list + list(params.get("reference_image_multiple_cached") or [])
             del params["reference_image_multiple"]
 
         # 5. parameters.reference_image_multiple_cached (已有 cached 格式)
@@ -1425,7 +1672,7 @@ async def _encode_vibe(
     from .forwarder import get_client
     from .account_pool import account_pool
 
-    token = _get_auth_token(request)
+    token = _get_auth_token(request, need_v5=_is_v5_model(model), need_anlas=True)
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}",
@@ -1534,12 +1781,13 @@ async def _send_nai_request(
     if target_url is None:
         target_url = settings.get_upstream_url("/ai/generate-image")
 
+    nai_model = str(payload.get("model", ""))
+    _preflight_account(request, nai_model, _requires_anlas_for_account(nai_model, payload))
     token = _get_auth_token(request)
     headers = dict(_NAI_HEADERS_TEMPLATE)
     headers["Authorization"] = f"Bearer {token}"
 
     # v4/v4.5/v5 模型只支持 application/json 响应，强制覆盖 Accept
-    nai_model = str(payload.get("model", ""))
     if _is_v4_family(nai_model):
         headers["Accept"] = "application/json"
     elif accept_format == "json":
@@ -1562,41 +1810,58 @@ async def _send_nai_request(
             noise_schedule=params.get("noise_schedule"),
         )
 
+    if isinstance(params, dict) and "width" in params and "height" in params:
+        validate_nai_canvas(nai_model, params, str(payload.get("action", "generate")))
     client = await get_client()
 
     # 前置检测：如果 payload 包含 base64 图片数据，自动切换到 multipart/form-data
     # 对齐 NAI 网页端的行为：带图片的请求用 multipart，纯文生图用 JSON
     use_multipart = _has_base64_image(payload)
 
-    try:
-        if use_multipart:
-            # 转换为 multipart 格式
-            mp_headers, files = _build_multipart_form(payload)
-            # multipart 时不设 Content-Type，由 httpx 自动设置 boundary
-            send_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
-            resp = await client.post(
-                target_url,
-                files=files,
-                headers=send_headers,
-                timeout=settings.upstream_timeout,
-            )
-        else:
-            resp = await client.post(
-                target_url,
-                json=payload,
-                headers=headers,
-                timeout=settings.upstream_timeout,
-            )
-    except Exception as e:
-        account_id = getattr(request.state, "gateway_account_id", None)
-        if account_id:
-            account_pool.failure(account_id, str(e))
-        logger.error(f"❌ NAI 请求失败 ({target_url}): {e}")
-        raise HTTPException(status_code=502, detail=f"上游请求失败: {e}")
+    async with account_generation_gate(request):
+        await _check_v5_account_quota(request, nai_model, client)
+        generation_started = time.monotonic()
+        for attempt in range(3):
+            try:
+                if use_multipart:
+                    mp_headers, files = _build_multipart_form(payload)
+                    send_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+                    resp = await client.post(
+                        target_url,
+                        files=files,
+                        headers=send_headers,
+                        timeout=settings.upstream_timeout,
+                    )
+                else:
+                    resp = await client.post(
+                        target_url,
+                        json=payload,
+                        headers=headers,
+                        timeout=settings.upstream_timeout,
+                    )
+            except Exception as e:
+                error_detail = f"{type(e).__name__}: {e!r}"
+                account_id = getattr(request.state, "gateway_account_id", None)
+                if account_id:
+                    account_pool.failure(account_id, error_detail)
+                logger.error(f"❌ NAI 请求失败 ({target_url}): {error_detail}")
+                raise HTTPException(status_code=502, detail=f"上游请求失败: {error_detail}")
+            error_text = resp.content[:500].decode("utf-8", errors="replace")
+            if resp.status_code != 429 or "Concurrent generation is locked" not in error_text or attempt == 2:
+                break
+            delay = 2 ** (attempt + 1)
+            logger.warning(f"⚠️ NAI 生成锁定，{delay} 秒后重试 ({attempt + 1}/2)")
+            await asyncio.sleep(delay)
 
     if resp.status_code != 200:
         error_text = resp.content[:500].decode("utf-8", errors="replace")
+        quota_exhausted = is_v5_quota_exhausted_error(resp.status_code, error_text)
         account_id = getattr(request.state, "gateway_account_id", None)
+        if _is_v5_model(nai_model) and quota_exhausted and account_id:
+            account_pool.disable_v5_for_quota(account_id, "V5 免费额度已耗尽")
+            logger.warning("⛔ 账号 %s V5 免费额度已耗尽，已自动关闭该账号的 V5 能力", account_id)
+        if resp.status_code == 429 and "Concurrent generation is locked" in error_text:
+            logger.warning("⚠️ NAI 上游仍处于生成锁定，当前请求已按账号串行化；请稍后重试")
         if account_id:
             account_pool.failure(account_id, error_text)
         logger.error(f"❌ NAI 返回错误 {resp.status_code}: {error_text}")
@@ -1608,7 +1873,59 @@ async def _send_nai_request(
     account_id = getattr(request.state, "gateway_account_id", None)
     if account_id:
         account_pool.success(account_id)
+    record_model_latency(nai_model, time.monotonic() - generation_started)
     return resp.content
+
+
+async def _check_v5_account_quota(request: Request, nai_model: str, client: Any) -> None:
+    """生成 V5 图片前确认当前 Opus 账号仍有免费额度。"""
+    if not _is_v5_model(nai_model):
+        return
+    from .account_pool import account_pool
+
+    account_id = getattr(request.state, "gateway_account_id", None)
+    if not account_id:
+        return
+    token = _get_auth_token(request)
+    try:
+        response = await client.get(
+            f"{settings.novelai_image_url}/user/subscription",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=min(settings.upstream_timeout, 20.0),
+        )
+        response.raise_for_status()
+        subscription = response.json()
+        usage = subscription.get("usage") if isinstance(subscription, dict) else None
+        tier = subscription.get("tier") if isinstance(subscription, dict) else None
+        if tier is None:
+            raise ValueError("上游订阅信息缺少 tier")
+        if int(tier) != 3:
+            if not getattr(request.state, "gateway_need_anlas", False):
+                raise HTTPException(status_code=409, detail="当前账号没有 Opus 免费生成权益，已阻止请求以避免消耗 Anlas")
+            return
+        percent = usage.get("percent") if isinstance(usage, dict) else None
+        if percent is None:
+            raise ValueError("Opus 订阅信息缺少 usage.percent")
+        remaining_percent = float(percent)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("⚠️ 无法确认账号 %s 的 V5 免费额度，拒绝本次生成: %s", account_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="暂时无法确认 NovelAI V5 免费额度状态，请稍后重试",
+        ) from exc
+
+    if remaining_percent <= 0:
+        reason = "V5 免费额度已耗尽"
+        account_pool.disable_v5_for_quota(account_id, reason)
+        logger.warning("⛔ 账号 %s V5 免费额度为 0，已自动关闭该账号的 V5 能力", account_id)
+        raise HTTPException(
+            status_code=429,
+            detail=f"当前账号的 V5 免费额度已耗尽，已自动停用此账号的 V5；请使用 V4.5 或检查其他账号",
+        )
+    if is_v5_quota_recovered(remaining_percent):
+        account_pool.restore_v5_after_quota(account_id)
 
 
 async def _send_nai_binary_request(
@@ -1625,6 +1942,8 @@ async def _send_nai_binary_request(
     from .forwarder import get_client
     from .account_pool import account_pool
 
+    if target_url.rstrip("/").endswith(("/ai/augment-image", "/ai/upscale")):
+        _preflight_account(request, str(payload.get("model") or ""), allow_anlas=True)
     token = _get_auth_token(request)
     headers = {
         "Content-Type": "application/json",
@@ -1640,29 +1959,37 @@ async def _send_nai_binary_request(
     # 但某些端点（如 annotate-image）需要纯 JSON，通过 force_json 跳过 multipart
     use_multipart = (not force_json) and _has_base64_image(payload)
 
-    try:
-        if use_multipart:
-            mp_headers, files = _build_multipart_form(payload)
-            send_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
-            resp = await client.post(
-                target_url,
-                files=files,
-                headers=send_headers,
-                timeout=settings.upstream_timeout,
-            )
-        else:
-            resp = await client.post(
-                target_url,
-                json=payload,
-                headers=headers,
-                timeout=settings.upstream_timeout,
-            )
-    except Exception as e:
-        account_id = getattr(request.state, "gateway_account_id", None)
-        if account_id:
-            account_pool.failure(account_id, str(e))
-        logger.error(f"❌ NAI 请求失败 ({target_url}): {e}")
-        raise HTTPException(status_code=502, detail=f"上游请求失败: {e}")
+    async with account_generation_gate(request):
+        for attempt in range(3):
+            try:
+                if use_multipart:
+                    mp_headers, files = _build_multipart_form(payload)
+                    send_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+                    resp = await client.post(
+                        target_url,
+                        files=files,
+                        headers=send_headers,
+                        timeout=settings.upstream_timeout,
+                    )
+                else:
+                    resp = await client.post(
+                        target_url,
+                        json=payload,
+                        headers=headers,
+                        timeout=settings.upstream_timeout,
+                    )
+            except Exception as e:
+                account_id = getattr(request.state, "gateway_account_id", None)
+                if account_id:
+                    account_pool.failure(account_id, str(e))
+                logger.error(f"❌ NAI 请求失败 ({target_url}): {e}")
+                raise HTTPException(status_code=502, detail=f"上游请求失败: {e}")
+            error_text = resp.content[:500].decode("utf-8", errors="replace")
+            if resp.status_code != 429 or "Concurrent generation is locked" not in error_text or attempt == 2:
+                break
+            delay = 2 ** (attempt + 1)
+            logger.warning(f"⚠️ NAI 生成锁定，{delay} 秒后重试 ({attempt + 1}/2)")
+            await asyncio.sleep(delay)
 
     if resp.status_code != 200:
         error_text = resp.content[:500].decode("utf-8", errors="replace")
@@ -1793,7 +2120,10 @@ def _build_generation_payload(
     if registry:
         nai_model = registry.resolve_image_model(model)
     else:
-        nai_model = model
+        nai_model = MEDIUM_MODELS.get(model, model)
+    if is_medium_model(nai_model):
+        enforce_medium_model(nai_model, body)
+        negative_prompt = MEDIUM_NEGATIVE_PROMPT
 
     # 尺寸解析
     size_str = body.get("size", "")
@@ -1816,8 +2146,7 @@ def _build_generation_payload(
     )
 
     # 质量标签
-    quality_tags = body.get("quality_tags", QUALITY_TAGS)
-    full_prompt = prompt + quality_tags if quality_tags else prompt
+    full_prompt = _generation_prompt(body, prompt)
 
     # 构建参数（对齐原项目 tt-P607/novelai-gateway 的默认值）
     # OpenAI API 用 "n" 表示生成数量，NovelAI 用 "n_samples"
@@ -1826,7 +2155,7 @@ def _build_generation_payload(
         "width": width,
         "height": height,
         "n_samples": n_samples,
-        "seed": body.get("seed", int(time.time()) % 2**32),
+        "seed": _request_seed(body.get("seed")),
         "steps": body.get("steps", 28),
         "scale": body.get("scale", body.get("guidance_scale", 5.0)),
         "sampler": body.get("sampler", "k_euler_ancestral"),
@@ -2140,7 +2469,7 @@ async def handle_openai_generations(request: Request) -> Response:
             ),
         )
     if operation not in {"", "generate", "precise-reference"}:
-        if operation in {"upscale", "annotate"}:
+        if operation == "annotate":
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -2180,6 +2509,9 @@ async def handle_openai_generations(request: Request) -> Response:
     # 确定 accept_format
     accept_format = "json" if response_format == "nai_json" else "zip"
 
+    # 账号能力预检（allow_v5 / allow_anlas）
+    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, nai_payload))
+
     # V5 每日限额预检（超限直接拒绝，不消耗上游额度）
     try:
         check_v5_quota(nai_model, n_samples)
@@ -2187,7 +2519,7 @@ async def handle_openai_generations(request: Request) -> Response:
         raise HTTPException(status_code=429, detail=str(e))
 
     # 走排队门控
-    async with gate:
+    async with gate.for_request(request):
         # 编码参考图同样是重负载上游请求，必须和生成共用门控，避免多个
         # Vibe/角色参考请求在生成排队前同时占满 CPU、内存和上游连接。
         if pending_ref_multiple is not None:
@@ -2216,9 +2548,12 @@ async def handle_openai_generations(request: Request) -> Response:
         uncond_scale=params.get("uncond_scale", 1.0),
         is_opus=is_limit_model(body.get("model", "")),
         reference_image_count=precise_ref_count or ref_count,
+        precise_reference_image_count=precise_ref_count,
+        vibe_reference_image_count=ref_count,
         reference_mode="precise" if precise_ref_count else "vibe",
-        reference_image_encoded_count=encoded_reuse_count if not precise_ref_count else 0,
+        reference_image_encoded_count=encoded_reuse_count,
         price_multiplier=_v5_price_multiplier(nai_model),
+        medium=is_medium_model(nai_model),
     )
 
     # V5 生成成功计数（当日累计）
@@ -2227,6 +2562,7 @@ async def handle_openai_generations(request: Request) -> Response:
     return _build_image_response_v2(
         request, content, prompt, response_format,
         anlas_cost=anlas_cost,
+        billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
         billing_prompt_tokens=_billing_prompt_tokens(nai_model, body),
         encoded_vibes=encoded_vibes_for_response,
         reference_strengths=ref_strengths_for_response,
@@ -2244,6 +2580,7 @@ async def handle_nai_inpainting(request: Request) -> Response:
     prompt = body.get("prompt", body.get("input", ""))
     model = body.get("model", "nai-diffusion-4-5-full-inpainting")
     _enforce_limit_model(model, {**body, "action": "infill"})
+    enforce_medium_model(model, body, "infill")
     negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
     response_format = body.get("response_format", "b64_json")
     image = body.get("image", "")
@@ -2264,14 +2601,13 @@ async def handle_nai_inpainting(request: Request) -> Response:
     height = _safe_int(body.get("height", 1024), 1024)
     width, height = _clamp_dimensions(width, height)
 
-    quality_tags = body.get("quality_tags", QUALITY_TAGS)
-    full_prompt = prompt + quality_tags if quality_tags else prompt
+    full_prompt = _generation_prompt(body, prompt)
 
     params = {
         "width": width,
         "height": height,
-        "n_samples": 1,
-        "seed": body.get("seed", int(time.time()) % 2**32),
+        "n_samples": _safe_int(body.get("n_samples", body.get("n", 1)), 1),
+        "seed": _request_seed(body.get("seed")),
         "steps": body.get("steps", 28),
         "scale": body.get("scale", 5.0),
         "sampler": body.get("sampler", "k_euler_ancestral"),
@@ -2332,22 +2668,25 @@ async def handle_nai_inpainting(request: Request) -> Response:
         params.setdefault("prefer_brownian", True)
         params.setdefault("normalize_reference_strength_multiple", True)
         params.setdefault("use_coords", False)
-        params.setdefault("inpaintImg2ImgStrength", 1)
+        params.setdefault("inpaintImg2ImgStrength", _safe_float(body.get("inpaintImg2ImgStrength"), 1.0))
         params.setdefault("deliberate_euler_ancestral_bug", False)
         params.setdefault("skip_cfg_above_sigma", None)
         params.setdefault("characterPrompts", [])
 
-    _apply_custom_params(body, params, nai_model)
+    _apply_custom_params(body, params, nai_model, 'infill')
 
     accept_format = "json" if response_format == "nai_json" else "zip"
 
+    # 账号能力预检（allow_v5 / allow_anlas）
+    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, nai_payload))
+
     # V5 每日限额预检
     try:
-        check_v5_quota(nai_model, 1)
+        check_v5_quota(nai_model, params.get("n_samples", 1))
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
 
-    async with gate:
+    async with gate.for_request(request):
         content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
 
     record_generation(content, "/ai/generate-image", width, height)
@@ -2359,20 +2698,25 @@ async def handle_nai_inpainting(request: Request) -> Response:
         width=width,
         height=height,
         steps=params.get("steps", 28),
-        n_samples=1,
+        n_samples=params.get("n_samples", 1),
         strength=params.get("inpaintImg2ImgStrength", 1.0),
         uncond_scale=params.get("uncond_scale", 1.0),
         is_opus=is_limit_model(model),
         reference_image_count=ref_count,
+        precise_reference_image_count=len(_precise_references(params)),
+        vibe_reference_image_count=ref_count,
+        reference_image_encoded_count=sum(_encoded_vibe_reference(item) for item in _vibe_references(params)),
         price_multiplier=_v5_price_multiplier(nai_model),
+        medium=is_medium_model(nai_model),
     )
 
     # V5 生成成功计数
-    log_generation(nai_model, 1, params)
+    log_generation(nai_model, params.get("n_samples", 1), params)
 
     return _build_image_response_v2(
         request, content, prompt, response_format,
         anlas_cost=anlas_cost,
+        billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
         billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "action": "infill"}),
     )
 
@@ -2391,7 +2735,7 @@ async def handle_openai_image_edits(request: Request) -> Response:
         _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
         prompt = body.get("prompt", "")
         model = body.get("model", "nai-diffusion-4-5-full-inpainting")
-        negative_prompt = body.get("negative_prompt", "") or DEFAULT_NEGATIVE_PROMPT
+        negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
         response_format = body.get("response_format", "b64_json")
         size_str = body.get("size", "1024x1024")
         width, height = _parse_size(size_str)
@@ -2426,7 +2770,7 @@ async def handle_openai_image_edits(request: Request) -> Response:
         prompt = body.get("prompt", "")
         model = body.get("model", "nai-diffusion-4-5-full-inpainting")
         _enforce_limit_model(model, {**body, "action": "infill"})
-        negative_prompt = body.get("negative_prompt", "") or DEFAULT_NEGATIVE_PROMPT
+        negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
         response_format = body.get("response_format", "b64_json")
         size_str = body.get("size", "1024x1024")
         width, height = _parse_size(size_str)
@@ -2448,6 +2792,8 @@ async def handle_openai_image_edits(request: Request) -> Response:
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"从 image alpha 通道提取 mask 失败: {e}")
 
+    _enforce_limit_model(model, {**body, "width": width, "height": height, "action": "infill"})
+
     # 通过 registry 解析模型名
     registry = get_registry()
     if registry:
@@ -2456,8 +2802,17 @@ async def handle_openai_image_edits(request: Request) -> Response:
         nai_model = model
     nai_model = _resolve_infill_model(nai_model)
 
-    quality_tags = QUALITY_TAGS
-    full_prompt = prompt + quality_tags if quality_tags else prompt
+    if is_medium_model(nai_model):
+        for key in ("steps", "n_samples", "width", "height", "params_version", "ucPreset", "tag_hint_uc_preset"):
+            if key in body and isinstance(body[key], str):
+                try:
+                    body[key] = int(body[key])
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"Medium model requires an integer {key}")
+        enforce_medium_model(nai_model, body, "infill")
+        negative_prompt = MEDIUM_NEGATIVE_PROMPT
+
+    full_prompt = _generation_prompt(body, prompt)
 
     # 统一参数来源：multipart 分支的文本字段已并入 body（值为字符串），
     # JSON 分支从 body 读取。可选参数收集到 edit_params 供 params 构造使用，
@@ -2471,7 +2826,7 @@ async def handle_openai_image_edits(request: Request) -> Response:
     params = {
         "width": width,
         "height": height,
-        "n_samples": 1,
+        "n_samples": _safe_int(body.get("n_samples", body.get("n", 1)), 1),
         "seed": _safe_int(edit_params.get("seed"), int(time.time()) % 2**32),
         "steps": _safe_int(edit_params.get("steps"), 28),
         "scale": _safe_float(edit_params.get("scale"), 5.0),
@@ -2533,22 +2888,25 @@ async def handle_openai_image_edits(request: Request) -> Response:
         params.setdefault("prefer_brownian", True)
         params.setdefault("normalize_reference_strength_multiple", True)
         params.setdefault("use_coords", False)
-        params.setdefault("inpaintImg2ImgStrength", 1)
+        params.setdefault("inpaintImg2ImgStrength", _safe_float(body.get("inpaintImg2ImgStrength"), 1.0))
         params.setdefault("deliberate_euler_ancestral_bug", False)
         params.setdefault("skip_cfg_above_sigma", None)
         params.setdefault("characterPrompts", [])
 
-    _apply_custom_params(body, params, nai_model)
+    _apply_custom_params(body, params, nai_model, 'infill')
 
     accept_format = "json" if response_format == "nai_json" else "zip"
 
+    # 账号能力预检（allow_v5 / allow_anlas）
+    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, nai_payload))
+
     # V5 每日限额预检
     try:
-        check_v5_quota(nai_model, 1)
+        check_v5_quota(nai_model, params.get("n_samples", 1))
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
 
-    async with gate:
+    async with gate.for_request(request):
         content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
 
     record_generation(content, "/ai/generate-image", width, height)
@@ -2560,20 +2918,25 @@ async def handle_openai_image_edits(request: Request) -> Response:
         width=width,
         height=height,
         steps=params.get("steps", 28),
-        n_samples=1,
+        n_samples=params.get("n_samples", 1),
         strength=params.get("inpaintImg2ImgStrength", 1.0),
         uncond_scale=params.get("uncond_scale", 1.0),
         is_opus=is_limit_model(model),
         reference_image_count=ref_count,
+        precise_reference_image_count=len(_precise_references(params)),
+        vibe_reference_image_count=ref_count,
+        reference_image_encoded_count=sum(_encoded_vibe_reference(item) for item in _vibe_references(params)),
         price_multiplier=_v5_price_multiplier(nai_model),
+        medium=is_medium_model(nai_model),
     )
 
     # V5 生成成功计数
-    log_generation(nai_model, 1, params)
+    log_generation(nai_model, params.get("n_samples", 1), params)
 
     return _build_image_response_v2(
         request, content, prompt, response_format,
         anlas_cost=anlas_cost,
+        billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
         billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "action": "infill"}),
     )
 
@@ -2588,6 +2951,7 @@ async def handle_img2img(request: Request) -> Response:
     prompt = body.get("prompt", "")
     model = body.get("model", "nai-diffusion-4-5-full")
     _enforce_limit_model(model, {**body, "action": "img2img"})
+    enforce_medium_model(model, body, "img2img")
     negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
     response_format = body.get("response_format", "b64_json")
     image = body.get("image", "")
@@ -2596,20 +2960,19 @@ async def handle_img2img(request: Request) -> Response:
         raise HTTPException(status_code=400, detail="image (base64) is required")
 
     registry = get_registry()
-    nai_model = registry.resolve_image_model(model) if registry else model
+    nai_model = registry.resolve_image_model(model) if registry else MEDIUM_MODELS.get(model, model)
 
     width = _safe_int(body.get("width", 1024), 1024)
     height = _safe_int(body.get("height", 1024), 1024)
     width, height = _clamp_dimensions(width, height)
 
-    quality_tags = body.get("quality_tags", QUALITY_TAGS)
-    full_prompt = prompt + quality_tags if quality_tags else prompt
+    full_prompt = _generation_prompt(body, prompt)
 
     params = {
         "width": width,
         "height": height,
-        "n_samples": 1,
-        "seed": body.get("seed", int(time.time()) % 2**32),
+        "n_samples": _safe_int(body.get("n_samples", body.get("n", 1)), 1),
+        "seed": _request_seed(body.get("seed")),
         "steps": body.get("steps", 28),
         "scale": body.get("scale", 5.0),
         "sampler": body.get("sampler", "k_euler_ancestral"),
@@ -2621,7 +2984,7 @@ async def handle_img2img(request: Request) -> Response:
         "strength": body.get("strength", 0.7),
         "noise": body.get("noise", 0.0),
         "cfg_rescale": body.get("cfg_rescale", 0.0),
-        "extra_noise_seed": body.get("extra_noise_seed", body.get("seed", int(time.time()) % 2**32)),
+        "extra_noise_seed": _request_seed(body.get("extra_noise_seed", body.get("seed"))),
     }
 
     nai_payload = {
@@ -2674,17 +3037,20 @@ async def handle_img2img(request: Request) -> Response:
         params.setdefault("skip_cfg_above_sigma", None)
         params.setdefault("characterPrompts", [])
 
-    _apply_custom_params(body, params, nai_model)
+    _apply_custom_params(body, params, nai_model, 'img2img')
 
     accept_format = "json" if response_format == "nai_json" else "zip"
 
+    # 账号能力预检（allow_v5 / allow_anlas）
+    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, nai_payload))
+
     # V5 每日限额预检
     try:
-        check_v5_quota(nai_model, 1)
+        check_v5_quota(nai_model, params.get("n_samples", 1))
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
 
-    async with gate:
+    async with gate.for_request(request):
         content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
 
     record_generation(content, "/ai/generate-image", width, height)
@@ -2696,20 +3062,25 @@ async def handle_img2img(request: Request) -> Response:
         width=width,
         height=height,
         steps=params.get("steps", 28),
-        n_samples=1,
+        n_samples=params.get("n_samples", 1),
         strength=params.get("strength", 0.7),
         uncond_scale=params.get("uncond_scale", 1.0),
         is_opus=is_limit_model(model),
         reference_image_count=ref_count,
+        precise_reference_image_count=len(_precise_references(params)),
+        vibe_reference_image_count=ref_count,
+        reference_image_encoded_count=sum(_encoded_vibe_reference(item) for item in _vibe_references(params)),
         price_multiplier=_v5_price_multiplier(nai_model),
+        medium=is_medium_model(nai_model),
     )
 
     # V5 生成成功计数
-    log_generation(nai_model, 1, params)
+    log_generation(nai_model, params.get("n_samples", 1), params)
 
     return _build_image_response_v2(
         request, content, prompt, response_format,
         anlas_cost=anlas_cost,
+        billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
         billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "action": "img2img"}),
     )
 
@@ -2746,8 +3117,7 @@ async def handle_vibe_transfer(request: Request) -> Response:
     height = _safe_int(body.get("height", 1024), 1024)
     width, height = _clamp_dimensions(width, height)
 
-    quality_tags = body.get("quality_tags", QUALITY_TAGS)
-    full_prompt = prompt + quality_tags if quality_tags else prompt
+    full_prompt = _generation_prompt(body, prompt)
 
     # V4/V4.5/V5 模型需要先通过 encode-vibe 编码参考图
     is_v4_model = _is_v4_family(nai_model)
@@ -2757,8 +3127,8 @@ async def handle_vibe_transfer(request: Request) -> Response:
     params = {
         "width": width,
         "height": height,
-        "n_samples": 1,
-        "seed": body.get("seed", int(time.time()) % 2**32),
+        "n_samples": _safe_int(body.get("n_samples", body.get("n", 1)), 1),
+        "seed": _request_seed(body.get("seed")),
         "steps": body.get("steps", 28),
         "scale": body.get("scale", 5.0),
         "sampler": body.get("sampler", "k_euler_ancestral"),
@@ -2824,13 +3194,16 @@ async def handle_vibe_transfer(request: Request) -> Response:
 
     accept_format = "json" if response_format == "nai_json" else "zip"
 
+    # 账号能力预检（allow_v5 / allow_anlas）
+    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, nai_payload))
+
     # V5 每日限额预检
     try:
-        check_v5_quota(nai_model, 1)
+        check_v5_quota(nai_model, params.get("n_samples", 1))
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
 
-    async with gate:
+    async with gate.for_request(request):
         if is_v4_model:
             encoded_vibes, encoded_reuse_count = await _encode_vibe_batch(
                 request, ref_images, nai_model, ref_infos
@@ -2848,19 +3221,21 @@ async def handle_vibe_transfer(request: Request) -> Response:
         width=width,
         height=height,
         steps=params.get("steps", 28),
-        n_samples=1,
+        n_samples=params.get("n_samples", 1),
         uncond_scale=params.get("uncond_scale", 1.0),
         reference_image_count=ref_count,
         reference_image_encoded_count=encoded_reuse_count,
         price_multiplier=_v5_price_multiplier(nai_model),
+        medium=is_medium_model(nai_model),
     )
 
     # V5 生成成功计数
-    log_generation(nai_model, 1, params)
+    log_generation(nai_model, params.get("n_samples", 1), params)
 
     return _build_image_response_v2(
         request, content, prompt, response_format,
         anlas_cost=anlas_cost,
+        billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
         billing_prompt_tokens=_billing_prompt_tokens(nai_model, body),
         encoded_vibes=encoded_vibes_for_response,
         reference_strengths=ref_strengths,
@@ -2965,8 +3340,7 @@ async def handle_character_reference(request: Request) -> Response:
     height = _safe_int(body.get("height", 1024), 1024)
     width, height = _clamp_dimensions(width, height)
 
-    quality_tags = body.get("quality_tags", QUALITY_TAGS)
-    full_prompt = prompt + quality_tags if quality_tags else prompt
+    full_prompt = _generation_prompt(body, prompt)
 
     # V4/V4.5/V5 模型需要先通过 encode-vibe 编码参考图
     is_v4_model = _is_v4_family(nai_model)
@@ -2976,8 +3350,8 @@ async def handle_character_reference(request: Request) -> Response:
     params: dict[str, Any] = {
         "width": width,
         "height": height,
-        "n_samples": 1,
-        "seed": body.get("seed", int(time.time()) % 2**32),
+        "n_samples": _safe_int(body.get("n_samples", body.get("n", 1)), 1),
+        "seed": _request_seed(body.get("seed")),
         "steps": body.get("steps", 28),
         "scale": body.get("scale", 5.0),
         "sampler": body.get("sampler", "k_euler_ancestral"),
@@ -3060,13 +3434,16 @@ async def handle_character_reference(request: Request) -> Response:
 
     accept_format = "json" if response_format == "nai_json" else "zip"
 
+    # 账号能力预检（allow_v5 / allow_anlas）
+    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, nai_payload))
+
     # V5 每日限额预检
     try:
-        check_v5_quota(nai_model, 1)
+        check_v5_quota(nai_model, params.get("n_samples", 1))
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
 
-    async with gate:
+    async with gate.for_request(request):
         if is_v4_model:
             encoded_vibes, encoded_reuse_count = await _encode_vibe_batch(
                 request, ref_images, nai_model, ref_infos
@@ -3084,20 +3461,22 @@ async def handle_character_reference(request: Request) -> Response:
         width=width,
         height=height,
         steps=params.get("steps", 28),
-        n_samples=1,
+        n_samples=params.get("n_samples", 1),
         uncond_scale=params.get("uncond_scale", 1.0),
         reference_image_count=ref_count,
         reference_image_encoded_count=encoded_reuse_count,
         price_multiplier=_v5_price_multiplier(nai_model),
+        medium=is_medium_model(nai_model),
     )
 
     # V5 生成成功计数
-    log_generation(nai_model, 1, params)
+    log_generation(nai_model, params.get("n_samples", 1), params)
 
     # 参考图来自 characters[].reference_image，显式并入判档输入
     return _build_image_response_v2(
         request, content, prompt, response_format,
         anlas_cost=anlas_cost,
+        billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
         billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "reference_images": ref_images}),
         encoded_vibes=encoded_vibes_for_response,
         reference_strengths=ref_strengths,
@@ -3213,14 +3592,13 @@ async def handle_precise_reference(request: Request) -> Response:
     height = _safe_int(body.get("height", 1024), 1024)
     width, height = _clamp_dimensions(width, height)
 
-    quality_tags = body.get("quality_tags", QUALITY_TAGS)
-    full_prompt = prompt + quality_tags if quality_tags else prompt
+    full_prompt = _generation_prompt(body, prompt)
 
     params: dict[str, Any] = {
         "width": width,
         "height": height,
-        "n_samples": 1,
-        "seed": body.get("seed", int(time.time()) % 2**32),
+        "n_samples": _safe_int(body.get("n_samples", body.get("n", 1)), 1),
+        "seed": _request_seed(body.get("seed")),
         "steps": body.get("steps", 28),
         "scale": body.get("scale", 5.0),
         "sampler": body.get("sampler", "k_euler_ancestral"),
@@ -3279,13 +3657,16 @@ async def handle_precise_reference(request: Request) -> Response:
 
     accept_format = "json" if response_format == "nai_json" else "zip"
 
+    # 账号能力预检（allow_v5 / allow_anlas）
+    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, nai_payload))
+
     # V5 每日限额预检
     try:
-        check_v5_quota(nai_model, 1)
+        check_v5_quota(nai_model, params.get("n_samples", 1))
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
 
-    async with gate:
+    async with gate.for_request(request):
         content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
 
     record_generation(content, "/ai/generate-image", width, height)
@@ -3296,20 +3677,22 @@ async def handle_precise_reference(request: Request) -> Response:
         width=width,
         height=height,
         steps=params.get("steps", 28),
-        n_samples=1,
+        n_samples=params.get("n_samples", 1),
         uncond_scale=params.get("uncond_scale", 1.0),
         reference_image_count=ref_count,
         reference_mode="precise",
         price_multiplier=_v5_price_multiplier(nai_model),
+        medium=is_medium_model(nai_model),
     )
 
     # V5 生成成功计数
-    log_generation(nai_model, 1, params)
+    log_generation(nai_model, params.get("n_samples", 1), params)
 
     # Precise Reference 每样本必扣 5 Anlas，必然档外
     return _build_image_response_v2(
         request, content, prompt, response_format,
         anlas_cost=anlas_cost,
+        billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
         billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "references": ref_images}),
     )
 
@@ -3337,6 +3720,7 @@ def _build_upscale_payload(body: dict) -> dict:
         )
 
     model = body.get("model") or "nai-diffusion-5-curated"
+    model = {"nai-v5-full": "nai-diffusion-5-full", "nai-v5-curated": "nai-diffusion-5-curated"}.get(model, model)
     if model not in _UPSCALE_VALID_MODELS:
         raise HTTPException(
             status_code=400,
@@ -3362,10 +3746,11 @@ async def handle_upscale(request: Request) -> Response:
     body = await request.json()
     _reject_limit_model_for_paid_endpoint(body.get("model", ""))
     payload = _build_upscale_payload(body)
+    _preflight_account(request, str(payload.get("model") or ""), allow_anlas=True)
 
     target_url = settings.get_upstream_url("/ai/upscale")
 
-    async with gate:
+    async with gate.for_request(request):
         content = await _send_nai_binary_request(request, payload, target_url, force_json=True)
     png_data = _extract_png_from_zip(content)
 
@@ -3724,6 +4109,11 @@ async def _dispatch_image_operation(
         raise HTTPException(status_code=400, detail=f"Unsupported image operation: {operation}")
 
     handler, anlas_cost = png_handler_info
+    if operation == "upscale":
+        quote = native_anlas_quote("/ai/upscale", body)
+        if quote is None:
+            raise HTTPException(status_code=400, detail="Upscale requires a valid PNG image within 3145728 pixels")
+        anlas_cost = quote[0]
     binary_response = await handler(request_copy)
     png_data = binary_response.body
     # 工具端点必然超出 Opus 免费额度（body=None → 档外）→ None → 沿用 Anlas 动态口径
@@ -4106,7 +4496,7 @@ async def handle_tts(request: Request) -> Response:
     target_url = settings.get_upstream_url("/ai/generate-voice")
 
     # 走排队门控
-    async with gate:
+    async with gate.for_request(request):
         content = await _send_nai_binary_request(request, payload, target_url)
 
     # 返回音频

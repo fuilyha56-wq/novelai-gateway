@@ -138,7 +138,7 @@ class Settings(BaseSettings):
     queue_max_waiters: int = 8
     cooldown_min: float = 0.5
     cooldown_max: float = 1.0
-    upstream_timeout: float = 120.0
+    upstream_timeout: float = 420.0
 
     # V5 图片生成限额
     v5_quota_enabled: bool = True
@@ -174,9 +174,6 @@ class Settings(BaseSettings):
         if self.shared_api_keys.strip():
             _account_id, token = account_pool.choose()
             return token
-
-        if self.shared_api_key:
-            return _normalize_credential(self.shared_api_key)
 
         if self.shared_token:
             token_str = _normalize_credential(self.shared_token)
@@ -246,19 +243,43 @@ class Settings(BaseSettings):
         return f"{self.novelai_api_url}{api_path}"
 
 
-def get_request_auth_token(request: Any) -> str:
-    """为一个下游请求选择并缓存共享凭据，避免内部子请求跨 Key。"""
+def get_request_auth_token(
+    request: Any,
+    need_v5: bool = False,
+    need_anlas: bool = False,
+) -> str:
+    """为一个下游请求选择并缓存共享凭据，避免内部子请求跨 Key。
+
+    计费能力要求在整个请求中累积，缓存凭据也必须通过当前账号权限校验。
+    """
+    need_v5 = need_v5 or bool(getattr(request.state, "gateway_need_v5", False))
+    need_anlas = need_anlas or bool(getattr(request.state, "gateway_need_anlas", False))
+    request.state.gateway_need_v5 = need_v5
+    request.state.gateway_need_anlas = need_anlas
     cached_token = getattr(request.state, "gateway_auth_token", None)
+    account_id = getattr(request.state, "gateway_account_id", None)
+    if settings.shared_api_keys.strip() and account_id:
+        from fastapi import HTTPException
+
+        try:
+            token = account_pool.get_permitted_secret(
+                account_id, need_v5, need_anlas, expected_token=cached_token,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        request.state.gateway_auth_token = token
+        return token
     if isinstance(cached_token, str) and cached_token:
         return cached_token
 
     if settings.shared_api_keys.strip():
-        account_id = getattr(request.state, "gateway_account_id", None)
-        if account_id:
-            token = account_pool.get_secret(account_id)
-        else:
-            account_id, token = account_pool.choose()
-            request.state.gateway_account_id = account_id
+        from fastapi import HTTPException
+
+        try:
+            account_id, token = account_pool.choose(need_v5=need_v5, need_anlas=need_anlas)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        request.state.gateway_account_id = account_id
     else:
         token = settings.get_shared_auth_token()
     if not token:

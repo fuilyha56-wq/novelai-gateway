@@ -119,11 +119,12 @@ class GatewayRegressionTests(unittest.TestCase):
             self.assertTrue(base64.b64decode(item["b64_json"]).startswith(b"\x89PNG"))
 
     def test_openai_n_cannot_bypass_sample_limit(self) -> None:
+        # MAX_N_SAMPLES 已放宽到 8（2026-09-14 批量张数改动），n 用 9 保持"超上限必须 400"语义
         with self.assertRaises(HTTPException) as raised:
             _build_generation_payload({
                 "model": "nai-diffusion-4-5-full",
                 "prompt": "test",
-                "n": 7,
+                "n": 9,
             })
         self.assertEqual(raised.exception.status_code, 400)
 
@@ -175,18 +176,18 @@ class GatewayRegressionTests(unittest.TestCase):
             [0.1, 0.3, 0.5, 0.7],
         )
 
-    def test_generation_payload_rejects_more_than_four_vibe_references(self) -> None:
-        """Vibe 参考图数量不能超过 4 张。"""
+    def test_generation_payload_rejects_more_than_sixteen_vibe_references(self) -> None:
+        """Vibe 参考图数量不能超过官网 16 张上限。"""
         with self.assertRaises(HTTPException) as raised:
             _build_generation_payload(
                 {
                     "model": "nai-v4.5-full",
                     "prompt": "test",
-                    "reference_images": [f"image-{index}" for index in range(5)],
+                    "reference_images": [f"image-{index}" for index in range(17)],
                 }
             )
         self.assertEqual(raised.exception.status_code, 400)
-        self.assertIn("最多 4 张", str(raised.exception.detail))
+        self.assertIn("最多 16 张", str(raised.exception.detail))
 
     def test_precise_reference_cannot_combine_multiple_vibe_references(self) -> None:
         """Precise Reference 与 Vibe 多图必须互斥。"""
@@ -235,7 +236,7 @@ class GatewayRegressionTests(unittest.TestCase):
             reference_image_count=5, reference_mode="vibe",
             reference_image_encoded_count=2,
         )
-        self.assertEqual(mixed, 5 + 2 * 3)
+        self.assertEqual(mixed, 5 + 2 * 3 + 2)  # 第五张参考图额外 2 Anlas
 
         # 全部 5 张复用: 编码费为 0
         all_reuse = _calc_anlas_cost(
@@ -243,7 +244,7 @@ class GatewayRegressionTests(unittest.TestCase):
             reference_image_count=5, reference_mode="vibe",
             reference_image_encoded_count=5,
         )
-        self.assertEqual(all_reuse, 5)
+        self.assertEqual(all_reuse, 7)
 
     def test_calc_anlas_cost_precise_mode_ignores_encoded_count(self) -> None:
         """Precise Reference 模式下 reference_image_encoded_count 应被忽略。"""
