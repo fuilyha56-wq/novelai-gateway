@@ -53,3 +53,14 @@ config/models_suggested.toml
 .rsh*.py
 .upload*.py
 .*.py
+
+config/accounts.json
+config/plugins/
+*.sql
+*.db
+%SystemDrive%/
+tests/
+scripts/
+README.md
+*.md
+*.js

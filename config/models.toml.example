@@ -33,16 +33,15 @@ model_identifier = "nai-v4.5-inpaint"
 name = "nai-diffusion-4-5-full-inpainting"
 
 # ── 限制版（-limit 后缀，不允许消耗 Anlas）──
-# 仅允许走 Opus 免费额度的文生图路径，任一超出 → HTTP 400：
+# 仅允许 Opus 免费边界内的生成，任一超出 → HTTP 400：
 #   - n_samples = 1
 #   - steps ≤ 28
-#   - 尺寸 ≤ 1024×1024（width*height ≤ 1048576）
-#   - action = generate（非 img2img/infill）
-#   - 无 image / reference_image / reference_images
+#   - width*height ≤ 1048576
+#   - action 为 generate / img2img / infill
+#   - 无精密参考，Vibe 最多四张且全部为已编码数据
 #   - service_tier ≠ priority
-# 仅在 /v1/images/generations 端点生效；img2img/inpaint/vibe/upscale/director
-# 等端点入口直接拒绝 -limit 模型（这些操作必然消耗 Anlas）。
-# 适合给 NewAPI 渠道用作"免费额度专用"模型，倍率设为 1 即可。
+# 在统一生成入口及各生成别名生效。付费工具、原始 Vibe 编码等会拒绝。
+# -limit 不代表下游销售价为零；usage 与价格配置见 README.md。
 [[image.models]]
 type = "image"
 model_identifier = "nai-v4.5-full-limit"
@@ -59,8 +58,8 @@ model_identifier = "nai-v4.5-inpaint-limit"
 name = "nai-diffusion-4-5-full-inpainting"
 
 # ── V5 系列（nai-diffusion-5-*，params_version=4）──
-# 上游定价 = V4.5 × 1.5；本站销售定价 = V4.5 × 2（见 TIERED_PRICING.md）。
-# V5 每周限额 1730 张（每日 247 张），由网关统一计数限制。
+# 生成估算倍率为 1.5；销售单价由下游决定，见 README.md。
+# 默认 V5 全局每日 190、滚动 7 天 1730 张，可通过环境变量调整。
 [[image.models]]
 type = "image"
 model_identifier = "nai-v5-full"
@@ -87,8 +86,8 @@ model_identifier = "nai-v5-inpaint-medium"
 name = "nai-diffusion-5-full-medium-inpainting"
 
 # ── V5 限制版（-limit 后缀，不允许消耗 Anlas）──
-# 与 V4.5 -limit 规则一致：仅允许 Opus 免费额度文生图路径。
-# NewAPI 渠道固定价 0.07 元/张（见 newapi-pricing.md）。
+# 与 V4.5 -limit 规则一致；允许边界内图生图与重绘。
+# 下游按次价与完整版分档计费配置见 README.md。
 [[image.models]]
 type = "image"
 model_identifier = "nai-v5-full-limit"

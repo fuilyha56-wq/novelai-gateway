@@ -246,7 +246,7 @@ _RESERVED_BODY_KEYS = frozenset({
     "operation", "novelai_operation", "service_tier", "extra_params",
     "references", "characters", "reference_image", "reference_images",
     "reference_strength", "reference_information_extracted",
-    "image", "mask", "stream", "image_format",
+    "image", "mask", "stream", "image_format", "parameters",
 })
 
 # 计费/限额关键参数：extra_params 允许覆盖，但逐项做与顶层字段相同的校验
@@ -255,6 +255,7 @@ _CRITICAL_OVERRIDE_KEYS = frozenset({
     "width", "height", "steps", "n_samples", "scale", "strength", "seed",
     "uncond_scale", "cfg_rescale", "noise",
 })
+_IMAGE_INPUT_KEYS = frozenset({"image", "mask", "references", "characters", "reference_image", "reference_images", "reference_strength", "reference_information_extracted"})
 
 
 def _validate_critical_override(key: str, value: Any) -> Any:
@@ -315,6 +316,17 @@ def _absorb_extra_params(body: dict[str, Any], extra_params_json: str | None = N
     - 计费/限额关键参数允许覆盖，逐项校验后写入顶层；
     - 其余字段原样并入顶层，最终由 _apply_custom_params 全量透传。
     """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
+    native = body.get("parameters")
+    if native is not None:
+        if not isinstance(native, dict):
+            raise HTTPException(status_code=400, detail="parameters must be an object")
+        illegal = set(native) & (_RESERVED_BODY_KEYS - _IMAGE_INPUT_KEYS - {"image_format"})
+        if illegal:
+            raise HTTPException(status_code=400, detail=f"parameters contains protocol fields: {', '.join(sorted(illegal))}")
+        for key, value in native.items():
+            body.setdefault(key, _validate_critical_override(key, value) if key in _CRITICAL_OVERRIDE_KEYS else value)
     sources: list[dict[str, Any]] = []
     body_extra = body.get("extra_params")
     if body_extra is not None:
@@ -337,7 +349,7 @@ def _absorb_extra_params(body: dict[str, Any], extra_params_json: str | None = N
     for source in sources:
         merged.update(source)
 
-    illegal = sorted(str(key) for key in merged if key in _RESERVED_BODY_KEYS)
+    illegal = sorted(str(key) for key in merged if key in _RESERVED_BODY_KEYS - _IMAGE_INPUT_KEYS)
     if illegal:
         raise HTTPException(
             status_code=400,
@@ -429,6 +441,176 @@ def _normalize_vibe_reference_images(body: dict[str, Any]) -> list[str]:
             detail="reference_images must contain only non-empty image strings",
         )
     return images
+
+
+def _centers_for_character(value: Any) -> list[dict[str, float]]:
+    """Normalize a character center into the V4 caption shape."""
+    if isinstance(value, dict):
+        try:
+            x = float(value.get("x", 0.5))
+            y = float(value.get("y", 0.5))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="character center coordinates must be numbers")
+        if not 0 <= x <= 1 or not 0 <= y <= 1:
+            raise HTTPException(status_code=400, detail="character center coordinates must be between 0 and 1")
+        return [{"x": x, "y": y}]
+    if isinstance(value, list):
+        centers: list[dict[str, float]] = []
+        for index, center in enumerate(value):
+            if not isinstance(center, dict):
+                raise HTTPException(status_code=400, detail=f"centers[{index}] must be an object")
+            centers.extend(_centers_for_character(center))
+        return centers
+    if value is None:
+        return []
+    raise HTTPException(status_code=400, detail="center/centers must be an object or list")
+
+
+def _apply_character_controls(
+    body: dict[str, Any],
+    params: dict[str, Any],
+    full_prompt: str,
+    negative_prompt: str,
+) -> None:
+    """Apply NovelAI multi-character and ControlNet fields to one image payload.
+
+    Character reference images intentionally share the same ``reference_image_multiple``
+    field as Vibe references. The caller is responsible for encoding that list before
+    sending a V4-family request; the input image remains in ``parameters.image``.
+    """
+    characters = body.get("characters")
+    if characters is not None:
+        if not isinstance(characters, list) or not characters:
+            raise HTTPException(status_code=400, detail="characters must be a non-empty list")
+        if len(characters) > 22:
+            raise HTTPException(
+                status_code=400,
+                detail="characters 最多 22 个（实际模型限制由上游决定）",
+            )
+
+        reference_images: list[str] = []
+        strengths: list[Any] = []
+        information: list[Any] = []
+        character_captions: list[dict[str, Any]] = []
+        for index, character in enumerate(characters):
+            if not isinstance(character, dict):
+                raise HTTPException(status_code=400, detail=f"characters[{index}] must be an object")
+            image = character.get("reference_image")
+            if image is not None:
+                if not isinstance(image, str) or not image:
+                    raise HTTPException(status_code=400, detail=f"characters[{index}].reference_image must be a non-empty string")
+                reference_images.append(image)
+                strengths.append(character.get("reference_strength", 0.6))
+                information.append(character.get("reference_information_extracted", 1.0))
+            character_captions.append({
+                "char_caption": character.get("prompt", character.get("char_caption", "")),
+                "centers": _centers_for_character(character.get("center", character.get("centers"))),
+            })
+
+        if reference_images:
+            existing = params.get("reference_image_multiple", [])
+            params["reference_image_multiple"] = existing + reference_images
+            params["reference_strength_multiple"] = params.get("reference_strength_multiple", [0.6] * len(existing)) + strengths
+            params["reference_information_extracted_multiple"] = params.get("reference_information_extracted_multiple", [1.0] * len(existing)) + information
+
+        if "v4_prompt" not in params:
+            params["v4_prompt"] = {
+                "caption": {"base_caption": full_prompt, "char_captions": character_captions},
+                "use_coords": body.get("use_coords", True),
+                "use_order": True,
+            }
+            params["v4_negative_prompt"] = {
+                "caption": {"base_caption": negative_prompt, "char_captions": [
+                    {"char_caption": c.get("negative_prompt", c.get("negativePrompt", c.get("negative", ""))), "centers": caption["centers"]}
+                    for c, caption in zip(characters, character_captions)
+                ]},
+                "legacy_uc": False,
+            }
+        params.setdefault("use_coords", body.get("use_coords", True))
+
+    if "use_coords" in body:
+        params["use_coords"] = body["use_coords"]
+
+    if "characterPrompts" in body:
+        character_prompts = body["characterPrompts"]
+        if not isinstance(character_prompts, list):
+            raise HTTPException(status_code=400, detail="characterPrompts must be a list")
+        params["characterPrompts"] = character_prompts
+        if "v4_prompt" not in params and character_prompts:
+            char_captions = []
+            for index, character in enumerate(character_prompts):
+                if not isinstance(character, dict):
+                    raise HTTPException(status_code=400, detail=f"characterPrompts[{index}] must be an object")
+                char_captions.append({
+                    "char_caption": character.get("prompt", character.get("char_caption", "")),
+                    "centers": _centers_for_character(character.get("center", character.get("centers"))),
+                })
+            params["v4_prompt"] = {
+                "caption": {"base_caption": full_prompt, "char_captions": char_captions},
+                "use_coords": body.get("use_coords", True),
+                "use_order": True,
+            }
+            params["v4_negative_prompt"] = {
+                "caption": {"base_caption": negative_prompt, "char_captions": [
+                    {"char_caption": c.get("negative_prompt", c.get("negativePrompt", c.get("negative", ""))), "centers": caption["centers"]}
+                    for c, caption in zip(character_prompts, char_captions)
+                ]}, "legacy_uc": False,
+            }
+            params.setdefault("use_coords", body.get("use_coords", True))
+
+    if "v4_prompt" in body:
+        if not isinstance(body["v4_prompt"], dict):
+            raise HTTPException(status_code=400, detail="v4_prompt must be an object")
+        params["v4_prompt"] = body["v4_prompt"]
+    if "v4_negative_prompt" in body:
+        if not isinstance(body["v4_negative_prompt"], dict):
+            raise HTTPException(status_code=400, detail="v4_negative_prompt must be an object")
+        params["v4_negative_prompt"] = body["v4_negative_prompt"]
+
+    for key in (
+        "director_reference_images", "director_reference_images_cached",
+        "director_reference_descriptions", "director_reference_information_extracted",
+        "director_reference_strength_values", "director_reference_secondary_strength_values",
+    ):
+        if key in body:
+            if not isinstance(body[key], list):
+                raise HTTPException(status_code=400, detail=f"{key} must be a list")
+            params[key] = body[key]
+
+    if "controlnet_condition" in body:
+        condition = body["controlnet_condition"]
+        if not isinstance(condition, str) or not condition:
+            raise HTTPException(status_code=400, detail="controlnet_condition must be a non-empty base64 string")
+        params["controlnet_condition"] = condition
+        params["controlnet_model"] = body.get("controlnet_model", "hed")
+        params["controlnet_strength"] = body.get("controlnet_strength", 1.0)
+
+    references = body.get("references")
+    if references is not None:
+        if not isinstance(references, list) or not references:
+            raise HTTPException(status_code=400, detail="references must be a non-empty list")
+        images, descriptions, strengths, fidelities = [], [], [], []
+        for index, reference in enumerate(references):
+            if not isinstance(reference, dict) or not isinstance(reference.get("reference_image"), str) or not reference["reference_image"]:
+                raise HTTPException(status_code=400, detail=f"references[{index}] requires reference_image")
+            kind = reference.get("reference_type", "character&style")
+            if kind not in {"character", "style", "character&style"}:
+                raise HTTPException(status_code=400, detail=f"references[{index}] has invalid reference_type")
+            try:
+                strength = float(reference.get("strength", 1.0))
+                fidelity = float(reference.get("fidelity", 1.0))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"references[{index}] strength and fidelity must be numbers") from None
+            if not math.isfinite(strength) or not math.isfinite(fidelity):
+                raise HTTPException(status_code=400, detail=f"references[{index}] strength and fidelity must be finite")
+            images.append(_normalize_precise_reference_image(reference["reference_image"]))
+            descriptions.append({"caption": {"base_caption": kind, "char_captions": []}, "legacy_uc": False})
+            strengths.append(strength)
+            fidelities.append(fidelity)
+        params.update({"director_reference_images": images, "director_reference_descriptions": descriptions,
+                       "director_reference_information_extracted": [1.0] * len(images),
+                       "director_reference_strength_values": strengths,
+                       "director_reference_secondary_strength_values": [1.0 - v for v in fidelities]})
 
 
 # ── -limit 模型校验 ─────────────────────────────────────────────
@@ -890,7 +1072,7 @@ def _extract_raw_pngs(response_bytes: bytes) -> list[bytes]:
             images = [
                 zf.read(name)
                 for name in zf.namelist()
-                if name.lower().endswith(".png")
+                if name.lower().endswith((".png", ".webp"))
             ]
             if images:
                 return images
@@ -944,7 +1126,7 @@ def _flatten_to_rgb(png_bytes: bytes) -> bytes:
         from PIL.PngImagePlugin import PngInfo
 
         img = Image.open(io.BytesIO(png_bytes))
-        if img.mode == "RGB":
+        if img.format == "WEBP" or img.mode == "RGB":
             return png_bytes  # 已经是 RGB，无需转换
 
         # 实质性透明（V5 透明背景）→ 原样保留，透明通道不能丢
@@ -1279,8 +1461,8 @@ def _build_image_response_v2(
       - url: ZIP→PNG→落盘→返回 URL JSON
 
     所有 JSON 响应都会附带 ``usage`` 字段，供 NewAPI tiered_expr 计费：
-    - ``prompt_tokens`` = 根据 Anlas 消耗动态计算（base 17 Anlas → 1000 tokens → $4.8）
-    - ``billing_prompt_tokens`` 非空时直接作为 prompt_tokens（两档计费，见 TIERED_PRICING.md）
+    - ``prompt_tokens`` = 根据 Anlas 消耗动态计算（50 tokens per Anlas）
+    - ``billing_prompt_tokens`` 非空时直接作为 prompt_tokens（两档计费，见 README.md）
     - ``completion_tokens`` = billable generation images (standalone tools: 0)
     - ``total_tokens`` = prompt_tokens + completion_tokens
 
@@ -1354,7 +1536,8 @@ def _build_image_response_v2(
         # 落盘并返回 URL
         data = []
         for png_data in png_images:
-            filename = f"{uuid.uuid4().hex}.png"
+            suffix = "webp" if png_data[:4] == b"RIFF" and png_data[8:12] == b"WEBP" else "png"
+            filename = f"{uuid.uuid4().hex}.{suffix}"
             filepath = settings.image_dir / filename
             filepath.write_bytes(png_data)
             item: dict[str, Any] = {"url": _get_image_url(request, filename), "revised_prompt": prompt}
@@ -1471,7 +1654,7 @@ def _has_base64_image(payload: dict[str, Any]) -> bool:
         return False
 
     # parameters 下的简单图片字段
-    if params.get("image") or params.get("mask") or params.get("reference_image"):
+    if params.get("image") or params.get("mask") or params.get("reference_image") or params.get("controlnet_condition"):
         return True
 
     # reference_image_multiple (base64 字符串列表)
@@ -1553,9 +1736,11 @@ def _build_multipart_form(
         if params.get("mask"):
             params["mask"] = _extract_b64(params["mask"], "mask")
 
-        # 3. parameters.reference_image
+        # 3. parameters.reference_image / controlnet_condition
         if params.get("reference_image"):
             params["reference_image"] = _extract_b64(params["reference_image"], "reference_image")
+        if params.get("controlnet_condition"):
+            params["controlnet_condition"] = _extract_b64(params["controlnet_condition"], "controlnet_condition")
 
         # 4. parameters.reference_image_multiple → 转成 reference_image_multiple_cached 格式
         # 对齐 NAI 网页端 applyCacheTransformation 的逻辑：
@@ -1654,6 +1839,7 @@ async def _encode_vibe(
     image_b64: str,
     model: str,
     information_extracted: float = 1.0,
+    options: dict[str, Any] | None = None,
 ) -> str:
     """调用 NAI /ai/encode-vibe 端点编码参考图。
 
@@ -1686,6 +1872,10 @@ async def _encode_vibe(
         "information_extracted": information_extracted,
         "model": model,
     }
+    if options:
+        for key in ("mask", "crop_to_mask", "focus_seed", "info_extract_seed"):
+            if key in options:
+                payload[key] = options[key]
 
     target_url = settings.get_upstream_url("/ai/encode-vibe")
 
@@ -1720,6 +1910,7 @@ async def _encode_vibe_batch(
     images: list[str],
     model: str,
     information_extracted_list: list[float] | None = None,
+    options: dict[str, Any] | None = None,
 ) -> tuple[list[str], int]:
     """批量编码多张参考图，自动跳过已编码的 vibe。
 
@@ -1755,7 +1946,7 @@ async def _encode_vibe_batch(
             results.append(img_b64)
             reuse_count += 1
             continue
-        vibe_b64 = await _encode_vibe(request, img_b64, model, ie)
+        vibe_b64 = await _encode_vibe(request, img_b64, model, ie, options)
         results.append(vibe_b64)
     return results, reuse_count
 
@@ -2008,6 +2199,38 @@ async def _send_nai_binary_request(
     return resp.content
 
 
+async def _send_nai_text_api_request(
+    request: Request,
+    api_path: str,
+    payload: dict[str, Any],
+    stream: bool = False,
+):
+    """Send an OpenAI-shaped text request to NovelAI's native text API."""
+    from .forwarder import get_client
+
+    token = _get_auth_token(request)
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream" if stream else "application/json",
+        "Authorization": f"Bearer {token}",
+        "Origin": "https://novelai.net",
+        "Referer": "https://novelai.net/",
+    }
+    client = await get_client()
+    target_url = settings.get_upstream_url(api_path)
+    try:
+        req = client.build_request("POST", target_url, json=payload, headers=headers)
+        response = await client.send(req, stream=stream)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"上游请求失败: {exc}") from exc
+    if response.status_code != 200:
+        await response.aread()
+        detail = response.content[:500].decode("utf-8", errors="replace")
+        await response.aclose()
+        raise HTTPException(status_code=response.status_code, detail=f"NovelAI error {response.status_code}: {detail}")
+    return response
+
+
 async def _send_nai_text_request(
     request: Request,
     payload: dict[str, Any],
@@ -2110,7 +2333,7 @@ def _build_generation_payload(
 
     返回: (nai_payload, prompt, response_format)
     """
-    prompt = body.get("prompt", "")
+    prompt = body.get("prompt", body.get("input", ""))
     model = body.get("model", "nai-diffusion-4-5-full")
     negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
     response_format = body.get("response_format", "b64_json")
@@ -2186,6 +2409,10 @@ def _build_generation_payload(
 
     # 可选: 单张或多张 Vibe 参考图。
     vibe_images = _normalize_vibe_reference_images(body)
+    if not vibe_images and body.get("reference_image_multiple"):
+        vibe_images = body["reference_image_multiple"]
+        if not isinstance(vibe_images, list) or not all(isinstance(image, str) and image for image in vibe_images):
+            raise HTTPException(status_code=400, detail="reference_image_multiple must contain image strings")
     if vibe_images:
         params["reference_image_multiple"] = vibe_images
         params["reference_strength_multiple"] = body.get(
@@ -2199,121 +2426,34 @@ def _build_generation_payload(
 
     # NewAPI 等中转通常只放行 /v1/images/generations。通过透传请求头显式
     # 选择 Precise Reference，避免把普通扩展字段误解为精密参考请求。
-    references = body.get("references")
-    if operation == "precise-reference":
-        if not isinstance(references, list) or not references:
-            raise HTTPException(status_code=400, detail="references must be a non-empty list")
-        if vibe_images:
-            raise HTTPException(
-                status_code=400,
-                detail="references cannot be combined with Vibe reference images",
-            )
-        if not _is_v4_family(nai_model):
-            raise HTTPException(
-                status_code=400,
-                detail="Precise Reference is only available on V4/V4.5/V5 models",
-            )
+    _apply_character_controls(body, params, full_prompt, negative_prompt)
+    if len(_vibe_references({**body, **params})) > MAX_VIBE_REFERENCE_IMAGES:
+        raise HTTPException(status_code=400, detail="Vibe references 最多 16 张（包含角色参考与缓存参考）")
+    for key in ("reference_strength_multiple", "reference_information_extracted_multiple"):
+        if key in params and (not isinstance(params[key], list) or len(params[key]) != len(params.get("reference_image_multiple", []))):
+            raise HTTPException(status_code=400, detail=f"{key} must match the number of Vibe images")
 
-        reference_images: list[str] = []
-        reference_strengths: list[float] = []
-        reference_fidelities: list[float] = []
-        reference_descriptions: list[dict[str, Any]] = []
-        valid_types = {"character", "style", "character&style"}
-        for index, reference in enumerate(references):
-            if not isinstance(reference, dict):
-                raise HTTPException(status_code=400, detail=f"references[{index}] must be an object")
-            image = reference.get("reference_image")
-            if not isinstance(image, str) or not image:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"references[{index}] missing reference_image",
-                )
-            reference_type = reference.get("reference_type", "character&style")
-            if reference_type not in valid_types:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"references[{index}].reference_type must be one of: "
-                        f"{', '.join(sorted(valid_types))}"
-                    ),
-                )
-            strength = float(reference.get("strength", 1.0))
-            fidelity = float(reference.get("fidelity", 1.0))
-            if not 0 <= strength <= 1 or not 0 <= fidelity <= 1:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"references[{index}] strength and fidelity must be between 0 and 1",
-                )
-            reference_images.append(_normalize_precise_reference_image(image))
-            reference_strengths.append(strength)
-            reference_fidelities.append(fidelity)
-            reference_descriptions.append({
-                "caption": {"base_caption": reference_type, "char_captions": []},
-                "legacy_uc": False,
-            })
-
-        params.update({
-            "director_reference_images": reference_images,
-            "director_reference_descriptions": reference_descriptions,
-            "director_reference_information_extracted": reference_fidelities,
-            "director_reference_strength_values": reference_strengths,
-            "director_reference_secondary_strength_values": [
-                1.0 - fidelity for fidelity in reference_fidelities
-            ],
-        })
-    elif references is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="references requires X-NovelAI-Operation: precise-reference",
-        )
-
-    # 可选: controlnet
-    if "controlnet_condition" in body:
-        params["controlnet_condition"] = body["controlnet_condition"]
-        params["controlnet_model"] = body.get("controlnet_model", "hed")
-        params["controlnet_strength"] = body.get("controlnet_strength", 1.0)
-
-    # V4 角色位置坐标
-    if "characterPrompts" in body:
-        params["characterPrompts"] = body["characterPrompts"]
-    if "v4_prompt" in body:
-        params["v4_prompt"] = body["v4_prompt"]
-    if "v4_negative_prompt" in body:
-        params["v4_negative_prompt"] = body["v4_negative_prompt"]
-    if "use_coords" in body:
-        params["use_coords"] = body["use_coords"]
-
-    # 便捷功能：如果用户传了 characterPrompts 但没传 v4_prompt，
-    # 自动从 characterPrompts 构造 v4_prompt 的 char_captions
-    # characterPrompts 格式: [{"prompt": "1girl, ...", "center": {"x": 0.3, "y": 0.4}}, ...]
-    if "characterPrompts" in body and "v4_prompt" not in params:
-        char_prompts = body["characterPrompts"]
-        if isinstance(char_prompts, list) and char_prompts:
-            char_captions = []
-            for cp in char_prompts:
-                if not isinstance(cp, dict):
-                    continue
-                center = cp.get("center", cp.get("centers", {}))
-                centers_list = []
-                if isinstance(center, dict):
-                    centers_list = [{"x": center.get("x", 0.5), "y": center.get("y", 0.5)}]
-                elif isinstance(center, list):
-                    centers_list = center
-                char_captions.append({
-                    "char_caption": cp.get("prompt", cp.get("char_caption", "")),
-                    "centers": centers_list,
-                })
-            if char_captions:
-                params["v4_prompt"] = {
-                    "caption": {
-                        "base_caption": full_prompt,
-                        "char_captions": char_captions,
-                    },
-                    "use_coords": params.get("use_coords", True),
-                    "use_order": True,
-                }
-
-    action = body.get("action", "generate")
+    if operation == "precise-reference" and not body.get("references"):
+        raise HTTPException(status_code=400, detail="references must be a non-empty list")
+    if body.get("references") and not _is_v4_family(nai_model):
+        raise HTTPException(status_code=400, detail="Precise Reference requires a compatible V4/V4.5/V5 model")
+    action = body.get("action") or ("infill" if body.get("mask") else "img2img" if body.get("image") else "generate")
+    if action not in {"generate", "img2img", "infill"}:
+        raise HTTPException(status_code=400, detail="action must be generate, img2img, or infill")
+    if action == "generate" and body.get("image"):
+        raise HTTPException(status_code=400, detail="image requires action=img2img or infill")
+    if action in {"img2img", "infill"}:
+        if not isinstance(body.get("image"), str) or not body["image"]:
+            raise HTTPException(status_code=400, detail="image is required")
+        params["image"] = _strip_data_prefix(body["image"])
+        params["strength"] = body.get("strength", 0.7)
+        params["extra_noise_seed"] = _request_seed(body.get("extra_noise_seed", body.get("seed")))
+        if action == "infill":
+            if not isinstance(body.get("mask"), str) or not body["mask"]:
+                raise HTTPException(status_code=400, detail="mask is required for infill")
+            nai_model = _resolve_infill_model(nai_model)
+            params["mask"] = _strip_data_prefix(body["mask"])
+            params["inpaintImg2ImgStrength"] = body.get("inpaintImg2ImgStrength", 1.0)
 
     nai_payload = {
         "input": full_prompt,
@@ -2337,7 +2477,7 @@ def _build_generation_payload(
     # v4/v4.5/v5 模型必须带 v4_prompt 结构，否则 NAI 返回 500
     # 如果用户没传，自动用 prompt/negative_prompt 构造一个空的 base_caption
     is_v4_model = _is_v4_family(nai_model)
-    if is_v4_model and action == "generate":
+    if is_v4_model:
         # v4/v4.5/v5 不支持 SMEA，强制关闭
         params["sm"] = False
         params["sm_dyn"] = False
@@ -2384,23 +2524,47 @@ def _build_generation_payload(
         params.setdefault("characterPrompts", [])
 
     _apply_custom_params(body, params, nai_model)
+    if "image_format" in body:
+        if body["image_format"] not in {"png", "webp"}:
+            raise HTTPException(status_code=400, detail="image_format must be png or webp")
+        params["image_format"] = body["image_format"]
 
     return nai_payload, prompt, response_format
 
 
 # ── /v1/images/generations ────────────────────────────────────
 
-async def handle_openai_generations(request: Request) -> Response:
-    """处理 OpenAI 兼容的图像生成请求。
+async def _read_image_body(request: Request) -> dict[str, Any]:
+    if "multipart/form-data" not in request.headers.get("content-type", ""):
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(status_code=400, detail="request body must be valid JSON") from None
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be a JSON object")
+        return body
+    form = await request.form()
+    body: dict[str, Any] = {}
+    text_fields = {"model", "prompt", "input", "negative_prompt", "quality_tags", "sampler", "noise_schedule", "size", "action", "response_format", "novelai_operation", "service_tier", "image", "mask", "reference_image", "controlnet_condition"}
+    try:
+        for key, value in form.multi_items():
+            if isinstance(value, StarletteUploadFile):
+                value = base64.b64encode(await value.read()).decode("ascii")
+                if key in {"reference_images", "reference_images[]"}:
+                    body.setdefault("reference_images", []).append(value)
+                    continue
+            elif key not in text_fields:
+                try:
+                    value = json.loads(value)
+                except (TypeError, ValueError):
+                    pass
+            body[key] = value
+    finally:
+        await form.close()
+    return body
 
-    支持从请求 body 和 HTTP Header 读取采样参数。
-    NewAPI 等中转站可能过滤 body 里的非标准 OpenAI 字段（sampler/noise_schedule/scale 等），
-    因此同时支持从 Header 读取（X-Sampler / X-Noise-Schedule / X-Scale / X-Steps），
-    Header 优先级高于 body。
-    """
-    body = await request.json()
-    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
 
+def _apply_sampling_headers(request: Request, body: dict[str, Any]) -> None:
     # 从 Header 读取采样参数（NewAPI 中转兼容）
     # Header 优先级高于 body，这样用户可以通过 Header 强制指定参数
     # 注意：Header 值都是字符串，需要按目标类型转换
@@ -2437,6 +2601,20 @@ async def handle_openai_generations(request: Request) -> Response:
             except ValueError:
                 pass
 
+
+async def handle_openai_generations(request: Request) -> Response:
+    """处理 OpenAI 兼容的图像生成请求。
+
+    支持从请求 body 和 HTTP Header 读取采样参数。
+    NewAPI 等中转站可能过滤 body 里的非标准 OpenAI 字段（sampler/noise_schedule/scale 等），
+    因此同时支持从 Header 读取（X-Sampler / X-Noise-Schedule / X-Scale / X-Steps），
+    Header 优先级高于 body。
+    """
+    body = await _read_image_body(request)
+    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
+
+    _apply_sampling_headers(request, body)
+
     header_operation = request.headers.get("x-novelai-operation", "").strip().lower()
     body_operation = body.pop("novelai_operation", "")
     if not isinstance(body_operation, str):
@@ -2457,7 +2635,7 @@ async def handle_openai_generations(request: Request) -> Response:
         operation = header_operation
     supported_operations = {
         "", "generate", "precise-reference", "img2img", "inpainting", "edits",
-        "vibe-transfer", "character-reference", "upscale", "annotate",
+        "vibe-transfer", "character-reference", "upscale", "annotate", "encode-vibe", "suggest-tags",
         "director-declutter", "director-bg-remover", "director-lineart", "director-sketch",
         "director-colorize", "director-emotion",
     }
@@ -2465,32 +2643,27 @@ async def handle_openai_generations(request: Request) -> Response:
         raise HTTPException(
             status_code=400,
             detail=(
-                "Unsupported novelai_operation. See API_REQUEST_DOC.md for supported values."
+                "Unsupported novelai_operation. See README.md for supported values."
             ),
         )
     if operation not in {"", "generate", "precise-reference"}:
-        if operation == "annotate":
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"novelai_operation='{operation}' is not available through "
-                    "/v1/images/generations because its NewAPI billing mapping is "
-                    "not configured; call its dedicated Gateway endpoint instead"
-                ),
-            )
         return await _dispatch_image_operation(request, body, operation)
+
+    body["action"] = body.get("action") or ("infill" if body.get("mask") else "img2img" if body.get("image") else "generate")
+    if body.get("stream"):
+        return await handle_openai_generations_stream(await _clone_json_request(request, body))
 
     # -limit 模型校验：只允许走 Opus 免费额度的文生图路径
     _enforce_limit_model(body.get("model", ""), body)
     if operation == "precise-reference":
         _reject_limit_model_for_paid_endpoint(body.get("model", ""))
-        body["response_format"] = "b64_json"
     nai_payload, prompt, response_format = _build_generation_payload(body, operation)
 
     # V4/V4.5/V5 模型带参考图时，需要先通过 encode-vibe 编码
     nai_model = str(nai_payload.get("model", ""))
     params = nai_payload.get("parameters", {})
     n_samples = int(params.get("n_samples", 1)) if isinstance(params, dict) else 1
+    billing_body = {**params, "action": nai_payload["action"], "service_tier": nai_payload.get("service_tier")}
     encoded_vibes_for_response: list[str] | None = None
     ref_strengths_for_response: list[float] | None = None
     ref_infos_for_response: list[float] | None = None
@@ -2536,10 +2709,11 @@ async def handle_openai_generations(request: Request) -> Response:
     height = params.get("height", 0)
     record_generation(content, "/ai/generate-image", width, height)
 
-    # 计算 Anlas 消耗 (action=generate, 无 strength 折扣)
+    # 按最终生成模式计算 Anlas，包括图生图/重绘强度与参考图费用。
     # Vibe 参考图会产生编码费用；Precise Reference 按参考数与样本数计费。
-    precise_ref_count = len(params.get("director_reference_images", []))
-    ref_count = len(params.get("reference_image_multiple", []))
+    precise_ref_count = len(_precise_references(params))
+    ref_count = len(_vibe_references(params))
+    encoded_reuse_count += len(params.get("reference_image_multiple_cached", []))
     anlas_cost = _calc_anlas_cost(
         width=width,
         height=height,
@@ -2548,6 +2722,7 @@ async def handle_openai_generations(request: Request) -> Response:
         uncond_scale=params.get("uncond_scale", 1.0),
         is_opus=is_limit_model(body.get("model", "")),
         reference_image_count=precise_ref_count or ref_count,
+        strength=_pricing_strength(params, nai_payload["action"]),
         precise_reference_image_count=precise_ref_count,
         vibe_reference_image_count=ref_count,
         reference_mode="precise" if precise_ref_count else "vibe",
@@ -2563,1138 +2738,236 @@ async def handle_openai_generations(request: Request) -> Response:
         request, content, prompt, response_format,
         anlas_cost=anlas_cost,
         billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
-        billing_prompt_tokens=_billing_prompt_tokens(nai_model, body),
+        billing_prompt_tokens=_billing_prompt_tokens(nai_model, billing_body),
         encoded_vibes=encoded_vibes_for_response,
         reference_strengths=ref_strengths_for_response,
         reference_information_extracted=ref_infos_for_response,
     )
 
 
-# ── /v1/images/inpainting (NAI SDK 格式) ──────────────────────
+async def handle_openai_generations_stream(request: Request) -> StreamingResponse:
+    """Keep the account reserved until the last image or a disconnect/error."""
+    from starlette.background import BackgroundTask
+
+    body = await _read_image_body(request)
+    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
+    _apply_sampling_headers(request, body)
+    model = body.get("model", "nai-diffusion-4-5-full")
+    body["action"] = body.get("action") or ("infill" if body.get("mask") else "img2img" if body.get("image") else "generate")
+    _enforce_limit_model(model, body)
+    payload, prompt, _ = _build_generation_payload(body)
+    nai_model, params = payload["model"], payload["parameters"]
+    if not _is_v4_family(nai_model):
+        raise HTTPException(status_code=400, detail="image streaming requires a V4/V4.5/V5 model")
+    params["stream"] = "sse"
+    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, payload))
+    try:
+        check_v5_quota(nai_model, params["n_samples"])
+    except ValueError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    quote_model = nai_model + ("-limit" if is_limit_model(model) and not is_limit_model(nai_model) else "")
+    quote = native_anlas_quote("/ai/generate-image-stream", {**payload, "model": quote_model})
+    anlas, prompt_tokens = quote
+    completion_tokens = _billing_image_samples(nai_model, params["n_samples"])
+    usage = {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": prompt_tokens + completion_tokens}
+    lease = gate.for_request(request)
+    await lease.__aenter__()
+    response = None
+    released = False
+
+    async def release():
+        nonlocal released
+        if released:
+            return
+        released = True
+        try:
+            if response is not None:
+                await response.aclose()
+        finally:
+            await lease.__aexit__(None, None, None)
+
+    try:
+        refs = params.get("reference_image_multiple")
+        if isinstance(refs, list) and refs:
+            params["reference_image_multiple"], _ = await _encode_vibe_batch(request, refs, nai_model, params.get("reference_information_extracted_multiple"))
+        response = await _send_nai_image_stream_request(request, payload)
+    except BaseException:
+        await release()
+        raise
+
+    async def events():
+        data, name = [], ""
+        async for line in response.aiter_lines():
+            if line.startswith(":"):
+                continue
+            if line.startswith("event:"):
+                name = line[6:].strip()
+            elif line.startswith("data:"):
+                data.append(line[5:].lstrip())
+            elif not line and data:
+                yield name, "\n".join(data)
+                data, name = [], ""
+            elif line.startswith("{") and not data:
+                yield name, line
+        if data:
+            yield name, "\n".join(data)
+
+    def event(kind, data):
+        return f"event: {kind}\ndata: {json.dumps({'type': kind, **data})}\n\n"
+
+    async def stream_events():
+        finals = {}
+        try:
+            yield event("image_generation.started", {"prompt": prompt})
+            async for name, raw in events():
+                if raw == "[DONE]":
+                    break
+                parsed = json.loads(raw)
+                if not isinstance(parsed, dict):
+                    raise ValueError("Invalid upstream image event")
+                kind = str(parsed.get("event_type", parsed.get("type", name))).lower()
+                if "error" in kind or parsed.get("error"):
+                    raise ValueError(str(parsed.get("error", parsed.get("message", "Upstream image generation failed"))))
+                image = parsed.get("b64_json", parsed.get("image", parsed.get("image_data")))
+                index = _safe_int(parsed.get("samp_ix", parsed.get("sample_index", 0)), 0)
+                if kind in {"final", "done", "image_generation.completed"}:
+                    if not 0 <= index < params["n_samples"]:
+                        raise ValueError("Invalid upstream sample index")
+                    if not isinstance(image, str) or not image:
+                        raise ValueError("Final upstream image event has no image")
+                    raw_image = base64.b64decode(_strip_data_prefix(image), validate=True)
+                    if not (raw_image.startswith(b"\x89PNG\r\n\x1a\n") or (raw_image[:4] == b"RIFF" and raw_image[8:12] == b"WEBP")):
+                        raise ValueError("Final upstream event is not a PNG/WebP image")
+                    finals[index] = {"b64_json": _strip_data_prefix(image), "revised_prompt": prompt}
+                    # Count each successful final once, even if a later sample fails.
+                    if len(finals) == params["n_samples"]:
+                        break
+                else:
+                    yield event("image_generation.partial_image", {"sample_index": index, "b64_json": image, "novelai": parsed})
+            if len(finals) != params["n_samples"]:
+                raise ValueError("Upstream stream ended before all final images arrived")
+            rows = [finals[i] for i in sorted(finals)]
+            yield event("image_generation.completed", {"data": rows, **({"b64_json": rows[0]["b64_json"]} if len(rows) == 1 else {}), "usage": usage})
+            yield "data: [DONE]\n\n"
+        except Exception as exc:
+            yield event("error", {"error": {"message": str(exc), "type": "upstream_error"}})
+            yield "data: [DONE]\n\n"
+        finally:
+            try:
+                if finals:
+                    log_generation(nai_model, len(finals), params)
+                    for item in finals.values():
+                        record_generation(base64.b64decode(item["b64_json"]), "/ai/generate-image-stream", params["width"], params["height"])
+            finally:
+                await release()
+
+    return StreamingResponse(stream_events(), media_type="text/event-stream", background=BackgroundTask(release), headers={
+        "Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+        "X-Anlas-Cost": str(anlas), "X-Prompt-Tokens": str(prompt_tokens), "X-Completion-Tokens": str(completion_tokens),
+    })
+
+
+async def _send_nai_image_stream_request(request: Request, payload: dict[str, Any]):
+    from .forwarder import get_client
+    client = await get_client()
+    nai_model = str(payload.get("model", ""))
+    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, payload))
+    if _is_v5_model(nai_model):
+        await _check_v5_account_quota(request, nai_model, client)
+    target_url = settings.get_upstream_url("/ai/generate-image-stream")
+    headers = dict(_NAI_HEADERS_TEMPLATE)
+    headers["Accept"] = "text/event-stream"
+    headers["Authorization"] = f"Bearer {_get_auth_token(request, need_v5=_is_v5_model(nai_model), need_anlas=_requires_anlas_for_account(nai_model, payload))}"
+    req = client.build_request("POST", target_url, json=payload, headers=headers)
+    response = await client.send(req, stream=True)
+    if response.status_code != 200:
+        await response.aread()
+        detail = response.content[:500].decode("utf-8", errors="replace")
+        await response.aclose()
+        raise HTTPException(status_code=response.status_code, detail=f"NovelAI error {response.status_code}: {detail}")
+    return response
+
+
+async def handle_encode_vibe(request: Request) -> Response:
+    """Encode one image into reusable NovelAI Vibe data."""
+    body = await request.json()
+    image = body.get("image")
+    model = body.get("model", "nai-diffusion-4-5-full")
+    if not isinstance(image, str) or not image:
+        raise HTTPException(status_code=400, detail="image (base64) is required")
+    if not isinstance(model, str) or not model:
+        raise HTTPException(status_code=400, detail="model is required")
+    information_extracted = _safe_float(body.get("information_extracted"), 1.0)
+    if not 0 <= information_extracted <= 1:
+        raise HTTPException(status_code=400, detail="information_extracted must be between 0 and 1")
+    options = {key: body[key] for key in ("mask", "crop_to_mask", "focus_seed", "info_extract_seed") if key in body}
+    _preflight_account(request, model, allow_anlas=True)
+    async with gate.for_request(request):
+        encoded = await _encode_vibe(request, image, model, information_extracted, options)
+    prompt_tokens = _anlas_to_tokens(2)
+    return Response(
+        content=json.dumps({
+            "object": "vibe",
+            "reference_image": encoded,
+            "information_extracted": information_extracted,
+            "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": 0, "total_tokens": prompt_tokens},
+        }),
+        status_code=200,
+        media_type="application/json",
+        headers={"Access-Control-Allow-Origin": "*", "X-Anlas-Cost": "2", "X-Prompt-Tokens": str(prompt_tokens)},
+    )
+
+
+async def _generation_alias(request: Request, *, action: str | None = None, require: str | None = None, edits: bool = False) -> Response:
+    """All generation routes share the same composition, validation and billing."""
+    body = await _read_image_body(request)
+    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
+    if require == "vibe" and not (_vibe_references(body)):
+        raise HTTPException(status_code=400, detail="At least one Vibe reference image is required")
+    if require in {"characters", "references"} and not body.get(require):
+        raise HTTPException(status_code=400, detail=f"{require} must be a non-empty list")
+    if action:
+        body["action"] = action
+    if edits:
+        if not body.get("image"):
+            raise HTTPException(status_code=400, detail="image is required")
+        if not body.get("mask"):
+            try:
+                body["image"], body["mask"] = _extract_mask_from_alpha(base64.b64decode(_strip_data_prefix(body["image"])))
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"Cannot extract alpha mask: {exc}") from exc
+    if action == "infill":
+        body.setdefault("model", "nai-diffusion-4-5-full-inpainting")
+    body.pop("novelai_operation", None)
+    clone = await _clone_json_request(request, body)
+    clone.scope["headers"] = [(k, v) for k, v in clone.scope["headers"] if k.lower() != b"x-novelai-operation"]
+    return await handle_openai_generations(clone)
+
 
 async def handle_nai_inpainting(request: Request) -> Response:
-    """处理 NAI SDK 风格的局部重绘请求。"""
-    body = await request.json()
-    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
+    return await _generation_alias(request, action="infill")
 
-    prompt = body.get("prompt", body.get("input", ""))
-    model = body.get("model", "nai-diffusion-4-5-full-inpainting")
-    _enforce_limit_model(model, {**body, "action": "infill"})
-    enforce_medium_model(model, body, "infill")
-    negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
-    response_format = body.get("response_format", "b64_json")
-    image = body.get("image", "")
-    mask = body.get("mask", "")
-
-    if not image or not mask:
-        raise HTTPException(status_code=400, detail="image and mask are required")
-
-    # 通过 registry 解析模型名
-    registry = get_registry()
-    if registry:
-        nai_model = registry.resolve_image_model(model)
-    else:
-        nai_model = model
-    nai_model = _resolve_infill_model(nai_model)
-
-    width = _safe_int(body.get("width", 1024), 1024)
-    height = _safe_int(body.get("height", 1024), 1024)
-    width, height = _clamp_dimensions(width, height)
-
-    full_prompt = _generation_prompt(body, prompt)
-
-    params = {
-        "width": width,
-        "height": height,
-        "n_samples": _safe_int(body.get("n_samples", body.get("n", 1)), 1),
-        "seed": _request_seed(body.get("seed")),
-        "steps": body.get("steps", 28),
-        "scale": body.get("scale", 5.0),
-        "sampler": body.get("sampler", "k_euler_ancestral"),
-        "negative_prompt": negative_prompt,
-        "sm": body.get("sm", True),
-        "sm_dyn": body.get("sm_dyn", False),
-        "noise_schedule": body.get("noise_schedule", "karras"),
-        "image": image,
-        "mask": mask,
-        "add_original_image": body.get("add_original_image", True),
-        "cfg_rescale": body.get("cfg_rescale", 0.0),
-        "noise": body.get("noise", 0.0),
-        "strength": body.get("strength", 0.7),
-    }
-
-    nai_payload = {
-        "input": full_prompt,
-        "model": nai_model,
-        "action": "infill",
-        "parameters": params,
-    }
-
-    # v4/v4.5/v5 inpaint 模型也需要 v4_prompt 结构
-    is_v4_model = _is_v4_family(nai_model)
-    if is_v4_model:
-        # v4/v4.5/v5 不支持 SMEA，强制关闭
-        params["sm"] = False
-        params["sm_dyn"] = False
-        if "v4_prompt" not in params:
-            params["v4_prompt"] = {
-                "caption": {"base_caption": full_prompt, "char_captions": []},
-                "use_coords": params.get("use_coords", False),
-                "use_order": True,
-            }
-        if "v4_negative_prompt" not in params:
-            # 从 v4_prompt 的 char_captions 中提取角色数量和 centers，
-            # 确保 v4_negative_prompt 的 char_captions 与 v4_prompt 一一对应
-            v4_char_captions = (
-                params.get("v4_prompt", {})
-                .get("caption", {})
-                .get("char_captions", [])
-            )
-            neg_char_captions = [
-                {"char_caption": "", "centers": cc.get("centers", [])}
-                for cc in v4_char_captions
-            ]
-            params["v4_negative_prompt"] = {
-                "caption": {"base_caption": negative_prompt, "char_captions": neg_char_captions},
-                "legacy_uc": False,
-            }
-        params.setdefault("params_version", 4 if _is_v5_model(nai_model) else 3)
-        params.setdefault("legacy", False)
-        params.setdefault("legacy_v3_extend", False)
-        params.setdefault("legacy_uc", False)
-        params.setdefault("add_original_image", True)
-        params.setdefault("controlnet_strength", 1)
-        params.setdefault("dynamic_thresholding", False)
-        params.setdefault("prefer_brownian", True)
-        params.setdefault("normalize_reference_strength_multiple", True)
-        params.setdefault("use_coords", False)
-        params.setdefault("inpaintImg2ImgStrength", _safe_float(body.get("inpaintImg2ImgStrength"), 1.0))
-        params.setdefault("deliberate_euler_ancestral_bug", False)
-        params.setdefault("skip_cfg_above_sigma", None)
-        params.setdefault("characterPrompts", [])
-
-    _apply_custom_params(body, params, nai_model, 'infill')
-
-    accept_format = "json" if response_format == "nai_json" else "zip"
-
-    # 账号能力预检（allow_v5 / allow_anlas）
-    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, nai_payload))
-
-    # V5 每日限额预检
-    try:
-        check_v5_quota(nai_model, params.get("n_samples", 1))
-    except ValueError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-
-    async with gate.for_request(request):
-        content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
-
-    record_generation(content, "/ai/generate-image", width, height)
-
-    # 计算 Anlas 消耗 (action=infill, 有 strength 折扣)
-    # inpainting 也可能带 reference_image_multiple
-    ref_count = len(params.get("reference_image_multiple", []))
-    anlas_cost = _calc_anlas_cost(
-        width=width,
-        height=height,
-        steps=params.get("steps", 28),
-        n_samples=params.get("n_samples", 1),
-        strength=params.get("inpaintImg2ImgStrength", 1.0),
-        uncond_scale=params.get("uncond_scale", 1.0),
-        is_opus=is_limit_model(model),
-        reference_image_count=ref_count,
-        precise_reference_image_count=len(_precise_references(params)),
-        vibe_reference_image_count=ref_count,
-        reference_image_encoded_count=sum(_encoded_vibe_reference(item) for item in _vibe_references(params)),
-        price_multiplier=_v5_price_multiplier(nai_model),
-        medium=is_medium_model(nai_model),
-    )
-
-    # V5 生成成功计数
-    log_generation(nai_model, params.get("n_samples", 1), params)
-
-    return _build_image_response_v2(
-        request, content, prompt, response_format,
-        anlas_cost=anlas_cost,
-        billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
-        billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "action": "infill"}),
-    )
-
-
-# ── /v1/images/edits (OpenAI 兼容格式) ────────────────────────
 
 async def handle_openai_image_edits(request: Request) -> Response:
-    """处理 OpenAI 兼容格式的图像编辑（局部重绘）请求。支持 multipart/form-data。"""
-    content_type = request.headers.get("content-type", "")
+    return await _generation_alias(request, action="infill", edits=True)
 
-    if "multipart/form-data" in content_type:
-        form = await request.form()
-        # 表单文本字段统一进 body（值均为字符串），文件字段单独读取；
-        # 先 absorb extra_params 再取值，保证与 JSON 分支走同一套校验
-        body = {key: value for key, value in form.multi_items() if isinstance(value, str)}
-        _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
-        prompt = body.get("prompt", "")
-        model = body.get("model", "nai-diffusion-4-5-full-inpainting")
-        negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
-        response_format = body.get("response_format", "b64_json")
-        size_str = body.get("size", "1024x1024")
-        width, height = _parse_size(size_str)
-        width, height = _clamp_dimensions(width, height)
-
-        # 读取图片文件
-        image_file = form.get("image")
-        mask_file = form.get("mask")
-
-        if not image_file:
-            raise HTTPException(status_code=400, detail="image file is required")
-
-        if isinstance(image_file, StarletteUploadFile):
-            image_bytes = await image_file.read()
-        else:
-            image_bytes = image_file.encode() if isinstance(image_file, str) else bytes(image_file)
-
-        if mask_file:
-            if isinstance(mask_file, StarletteUploadFile):
-                mask_bytes = await mask_file.read()
-            else:
-                mask_bytes = mask_file.encode() if isinstance(mask_file, str) else bytes(mask_file)
-            mask_b64 = base64.b64encode(mask_bytes).decode("ascii")
-            image_b64 = base64.b64encode(image_bytes).decode("ascii")
-        else:
-            # 省略 mask：从 image alpha 通道提取 mask（透明=重绘）
-            image_b64, mask_b64 = _extract_mask_from_alpha(image_bytes)
-        await form.close()
-    else:
-        body = await request.json()
-        _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
-        prompt = body.get("prompt", "")
-        model = body.get("model", "nai-diffusion-4-5-full-inpainting")
-        _enforce_limit_model(model, {**body, "action": "infill"})
-        negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
-        response_format = body.get("response_format", "b64_json")
-        size_str = body.get("size", "1024x1024")
-        width, height = _parse_size(size_str)
-        width = body.get("width", width)
-        height = body.get("height", height)
-        width, height = _clamp_dimensions(_safe_int(width, 1024), _safe_int(height, 1024))
-        image_b64 = body.get("image", "")
-        mask_b64 = body.get("mask", "")
-
-        if not image_b64:
-            raise HTTPException(status_code=400, detail="image is required")
-
-        if not mask_b64:
-            # 省略 mask：从 image alpha 通道提取
-            try:
-                image_bytes = base64.b64decode(_strip_data_prefix(image_b64))
-                image_b64_clean, mask_b64 = _extract_mask_from_alpha(image_bytes)
-                image_b64 = image_b64_clean
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"从 image alpha 通道提取 mask 失败: {e}")
-
-    _enforce_limit_model(model, {**body, "width": width, "height": height, "action": "infill"})
-
-    # 通过 registry 解析模型名
-    registry = get_registry()
-    if registry:
-        nai_model = registry.resolve_image_model(model)
-    else:
-        nai_model = model
-    nai_model = _resolve_infill_model(nai_model)
-
-    if is_medium_model(nai_model):
-        for key in ("steps", "n_samples", "width", "height", "params_version", "ucPreset", "tag_hint_uc_preset"):
-            if key in body and isinstance(body[key], str):
-                try:
-                    body[key] = int(body[key])
-                except ValueError:
-                    raise HTTPException(status_code=400, detail=f"Medium model requires an integer {key}")
-        enforce_medium_model(nai_model, body, "infill")
-        negative_prompt = MEDIUM_NEGATIVE_PROMPT
-
-    full_prompt = _generation_prompt(body, prompt)
-
-    # 统一参数来源：multipart 分支的文本字段已并入 body（值为字符串），
-    # JSON 分支从 body 读取。可选参数收集到 edit_params 供 params 构造使用，
-    # 类型转换统一在 params 构造处完成（extra_params 覆盖值已在入口校验）。
-    edit_params: dict[str, Any] = {}
-    for key in ("steps", "scale", "sampler", "noise_schedule",
-                "cfg_rescale", "noise", "strength", "seed"):
-        if key in body:
-            edit_params[key] = body[key]
-
-    params = {
-        "width": width,
-        "height": height,
-        "n_samples": _safe_int(body.get("n_samples", body.get("n", 1)), 1),
-        "seed": _safe_int(edit_params.get("seed"), int(time.time()) % 2**32),
-        "steps": _safe_int(edit_params.get("steps"), 28),
-        "scale": _safe_float(edit_params.get("scale"), 5.0),
-        "sampler": str(edit_params.get("sampler") or "k_euler_ancestral"),
-        "negative_prompt": negative_prompt,
-        "sm": True,
-        "sm_dyn": False,
-        "noise_schedule": str(edit_params.get("noise_schedule") or "karras"),
-        "image": image_b64,
-        "mask": mask_b64,
-        "add_original_image": True,
-        "cfg_rescale": _safe_float(edit_params.get("cfg_rescale"), 0.0),
-        "noise": _safe_float(edit_params.get("noise"), 0.0),
-        "strength": _safe_float(edit_params.get("strength"), 0.7),
-    }
-
-    nai_payload = {
-        "input": full_prompt,
-        "model": nai_model,
-        "action": "infill",
-        "parameters": params,
-    }
-
-    # v4/v4.5/v5 inpaint 模型也需要 v4_prompt 结构
-    is_v4_model = _is_v4_family(nai_model)
-    if is_v4_model:
-        # v4/v4.5/v5 不支持 SMEA，强制关闭
-        params["sm"] = False
-        params["sm_dyn"] = False
-        if "v4_prompt" not in params:
-            params["v4_prompt"] = {
-                "caption": {"base_caption": full_prompt, "char_captions": []},
-                "use_coords": params.get("use_coords", False),
-                "use_order": True,
-            }
-        if "v4_negative_prompt" not in params:
-            # 从 v4_prompt 的 char_captions 中提取角色数量和 centers，
-            # 确保 v4_negative_prompt 的 char_captions 与 v4_prompt 一一对应
-            v4_char_captions = (
-                params.get("v4_prompt", {})
-                .get("caption", {})
-                .get("char_captions", [])
-            )
-            neg_char_captions = [
-                {"char_caption": "", "centers": cc.get("centers", [])}
-                for cc in v4_char_captions
-            ]
-            params["v4_negative_prompt"] = {
-                "caption": {"base_caption": negative_prompt, "char_captions": neg_char_captions},
-                "legacy_uc": False,
-            }
-        params.setdefault("params_version", 4 if _is_v5_model(nai_model) else 3)
-        params.setdefault("legacy", False)
-        params.setdefault("legacy_v3_extend", False)
-        params.setdefault("legacy_uc", False)
-        params.setdefault("add_original_image", True)
-        params.setdefault("controlnet_strength", 1)
-        params.setdefault("dynamic_thresholding", False)
-        params.setdefault("prefer_brownian", True)
-        params.setdefault("normalize_reference_strength_multiple", True)
-        params.setdefault("use_coords", False)
-        params.setdefault("inpaintImg2ImgStrength", _safe_float(body.get("inpaintImg2ImgStrength"), 1.0))
-        params.setdefault("deliberate_euler_ancestral_bug", False)
-        params.setdefault("skip_cfg_above_sigma", None)
-        params.setdefault("characterPrompts", [])
-
-    _apply_custom_params(body, params, nai_model, 'infill')
-
-    accept_format = "json" if response_format == "nai_json" else "zip"
-
-    # 账号能力预检（allow_v5 / allow_anlas）
-    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, nai_payload))
-
-    # V5 每日限额预检
-    try:
-        check_v5_quota(nai_model, params.get("n_samples", 1))
-    except ValueError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-
-    async with gate.for_request(request):
-        content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
-
-    record_generation(content, "/ai/generate-image", width, height)
-
-    # 计算 Anlas 消耗 (action=infill, 有 strength 折扣)
-    # image edits 也可能带 reference_image_multiple
-    ref_count = len(params.get("reference_image_multiple", []))
-    anlas_cost = _calc_anlas_cost(
-        width=width,
-        height=height,
-        steps=params.get("steps", 28),
-        n_samples=params.get("n_samples", 1),
-        strength=params.get("inpaintImg2ImgStrength", 1.0),
-        uncond_scale=params.get("uncond_scale", 1.0),
-        is_opus=is_limit_model(model),
-        reference_image_count=ref_count,
-        precise_reference_image_count=len(_precise_references(params)),
-        vibe_reference_image_count=ref_count,
-        reference_image_encoded_count=sum(_encoded_vibe_reference(item) for item in _vibe_references(params)),
-        price_multiplier=_v5_price_multiplier(nai_model),
-        medium=is_medium_model(nai_model),
-    )
-
-    # V5 生成成功计数
-    log_generation(nai_model, params.get("n_samples", 1), params)
-
-    return _build_image_response_v2(
-        request, content, prompt, response_format,
-        anlas_cost=anlas_cost,
-        billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
-        billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "action": "infill"}),
-    )
-
-
-# ── /v1/images/img2img ────────────────────────────────────────
 
 async def handle_img2img(request: Request) -> Response:
-    """处理图生图请求 (action=img2img)。"""
-    body = await request.json()
-    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
+    return await _generation_alias(request, action="img2img")
 
-    prompt = body.get("prompt", "")
-    model = body.get("model", "nai-diffusion-4-5-full")
-    _enforce_limit_model(model, {**body, "action": "img2img"})
-    enforce_medium_model(model, body, "img2img")
-    negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
-    response_format = body.get("response_format", "b64_json")
-    image = body.get("image", "")
-
-    if not image:
-        raise HTTPException(status_code=400, detail="image (base64) is required")
-
-    registry = get_registry()
-    nai_model = registry.resolve_image_model(model) if registry else MEDIUM_MODELS.get(model, model)
-
-    width = _safe_int(body.get("width", 1024), 1024)
-    height = _safe_int(body.get("height", 1024), 1024)
-    width, height = _clamp_dimensions(width, height)
-
-    full_prompt = _generation_prompt(body, prompt)
-
-    params = {
-        "width": width,
-        "height": height,
-        "n_samples": _safe_int(body.get("n_samples", body.get("n", 1)), 1),
-        "seed": _request_seed(body.get("seed")),
-        "steps": body.get("steps", 28),
-        "scale": body.get("scale", 5.0),
-        "sampler": body.get("sampler", "k_euler_ancestral"),
-        "negative_prompt": negative_prompt,
-        "sm": body.get("sm", True),
-        "sm_dyn": body.get("sm_dyn", False),
-        "noise_schedule": body.get("noise_schedule", "karras"),
-        "image": image,
-        "strength": body.get("strength", 0.7),
-        "noise": body.get("noise", 0.0),
-        "cfg_rescale": body.get("cfg_rescale", 0.0),
-        "extra_noise_seed": _request_seed(body.get("extra_noise_seed", body.get("seed"))),
-    }
-
-    nai_payload = {
-        "input": full_prompt,
-        "model": nai_model,
-        "action": "img2img",
-        "parameters": params,
-    }
-
-    # v4/v4.5/v5 模型 img2img 也需要 v4_prompt 结构
-    is_v4_model = _is_v4_family(nai_model)
-    if is_v4_model:
-        # v4/v4.5/v5 不支持 SMEA，强制关闭
-        params["sm"] = False
-        params["sm_dyn"] = False
-        if "v4_prompt" not in params:
-            params["v4_prompt"] = {
-                "caption": {"base_caption": full_prompt, "char_captions": []},
-                "use_coords": params.get("use_coords", False),
-                "use_order": True,
-            }
-        if "v4_negative_prompt" not in params:
-            # 从 v4_prompt 的 char_captions 中提取角色数量和 centers，
-            # 确保 v4_negative_prompt 的 char_captions 与 v4_prompt 一一对应
-            v4_char_captions = (
-                params.get("v4_prompt", {})
-                .get("caption", {})
-                .get("char_captions", [])
-            )
-            neg_char_captions = [
-                {"char_caption": "", "centers": cc.get("centers", [])}
-                for cc in v4_char_captions
-            ]
-            params["v4_negative_prompt"] = {
-                "caption": {"base_caption": negative_prompt, "char_captions": neg_char_captions},
-                "legacy_uc": False,
-            }
-        params.setdefault("params_version", 4 if _is_v5_model(nai_model) else 3)
-        params.setdefault("legacy", False)
-        params.setdefault("legacy_v3_extend", False)
-        params.setdefault("legacy_uc", False)
-        params.setdefault("add_original_image", True)
-        params.setdefault("controlnet_strength", 1)
-        params.setdefault("dynamic_thresholding", False)
-        params.setdefault("prefer_brownian", True)
-        params.setdefault("normalize_reference_strength_multiple", True)
-        params.setdefault("use_coords", False)
-        params.setdefault("inpaintImg2ImgStrength", 1)
-        params.setdefault("deliberate_euler_ancestral_bug", False)
-        params.setdefault("skip_cfg_above_sigma", None)
-        params.setdefault("characterPrompts", [])
-
-    _apply_custom_params(body, params, nai_model, 'img2img')
-
-    accept_format = "json" if response_format == "nai_json" else "zip"
-
-    # 账号能力预检（allow_v5 / allow_anlas）
-    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, nai_payload))
-
-    # V5 每日限额预检
-    try:
-        check_v5_quota(nai_model, params.get("n_samples", 1))
-    except ValueError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-
-    async with gate.for_request(request):
-        content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
-
-    record_generation(content, "/ai/generate-image", width, height)
-
-    # 计算 Anlas 消耗 (action=img2img, 有 strength 折扣)
-    # img2img 也可能带 reference_image_multiple
-    ref_count = len(params.get("reference_image_multiple", []))
-    anlas_cost = _calc_anlas_cost(
-        width=width,
-        height=height,
-        steps=params.get("steps", 28),
-        n_samples=params.get("n_samples", 1),
-        strength=params.get("strength", 0.7),
-        uncond_scale=params.get("uncond_scale", 1.0),
-        is_opus=is_limit_model(model),
-        reference_image_count=ref_count,
-        precise_reference_image_count=len(_precise_references(params)),
-        vibe_reference_image_count=ref_count,
-        reference_image_encoded_count=sum(_encoded_vibe_reference(item) for item in _vibe_references(params)),
-        price_multiplier=_v5_price_multiplier(nai_model),
-        medium=is_medium_model(nai_model),
-    )
-
-    # V5 生成成功计数
-    log_generation(nai_model, params.get("n_samples", 1), params)
-
-    return _build_image_response_v2(
-        request, content, prompt, response_format,
-        anlas_cost=anlas_cost,
-        billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
-        billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "action": "img2img"}),
-    )
-
-
-# ── /v1/images/vibe-transfer ──────────────────────────────────
 
 async def handle_vibe_transfer(request: Request) -> Response:
-    """处理 Vibe Transfer 风格迁移请求。"""
-    body = await request.json()
-    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
+    return await _generation_alias(request, require="vibe")
 
-    prompt = body.get("prompt", "")
-    model = body.get("model", "nai-diffusion-4-5-full")
-    negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
-    response_format = body.get("response_format", "b64_json")
-
-    ref_images = _normalize_vibe_reference_images(body)
-    if not ref_images:
-        raise HTTPException(status_code=400, detail="At least one reference_image is required")
-    # -limit 模型：参考图全为已编码 vibe 时放行（复用不计编码费）
-    _enforce_limit_model_for_encoded_vibe(model, body, ref_images)
-
-    ref_strength = body.get("reference_strength", 0.6)
-    ref_info_extracted = body.get("reference_information_extracted", 1.0)
-
-    # 如果是列表形式的 strength/info
-    ref_strengths = body.get("reference_strength_multiple", [ref_strength] * len(ref_images))
-    ref_infos = body.get("reference_information_extracted_multiple", [ref_info_extracted] * len(ref_images))
-
-    registry = get_registry()
-    nai_model = registry.resolve_image_model(model) if registry else model
-
-    width = _safe_int(body.get("width", 1024), 1024)
-    height = _safe_int(body.get("height", 1024), 1024)
-    width, height = _clamp_dimensions(width, height)
-
-    full_prompt = _generation_prompt(body, prompt)
-
-    # V4/V4.5/V5 模型需要先通过 encode-vibe 编码参考图
-    is_v4_model = _is_v4_family(nai_model)
-    encoded_reuse_count = 0
-    encoded_vibes_for_response: list[str] | None = None
-
-    params = {
-        "width": width,
-        "height": height,
-        "n_samples": _safe_int(body.get("n_samples", body.get("n", 1)), 1),
-        "seed": _request_seed(body.get("seed")),
-        "steps": body.get("steps", 28),
-        "scale": body.get("scale", 5.0),
-        "sampler": body.get("sampler", "k_euler_ancestral"),
-        "negative_prompt": negative_prompt,
-        "sm": body.get("sm", True),
-        "sm_dyn": body.get("sm_dyn", False),
-        "noise_schedule": body.get("noise_schedule", "karras"),
-        "cfg_rescale": body.get("cfg_rescale", 0.0),
-        "reference_image_multiple": ref_images,
-        "reference_strength_multiple": ref_strengths,
-        "reference_information_extracted_multiple": ref_infos,
-    }
-
-    nai_payload = {
-        "input": full_prompt,
-        "model": nai_model,
-        "action": "generate",
-        "parameters": params,
-    }
-
-    # v4/v4.5/v5 模型 vibe-transfer 也需要 v4_prompt 结构
-    if is_v4_model:
-        params["sm"] = False
-        params["sm_dyn"] = False
-        if "v4_prompt" not in params:
-            params["v4_prompt"] = {
-                "caption": {"base_caption": full_prompt, "char_captions": []},
-                "use_coords": params.get("use_coords", False),
-                "use_order": True,
-            }
-        if "v4_negative_prompt" not in params:
-            # 从 v4_prompt 的 char_captions 中提取角色数量和 centers，
-            # 确保 v4_negative_prompt 的 char_captions 与 v4_prompt 一一对应
-            v4_char_captions = (
-                params.get("v4_prompt", {})
-                .get("caption", {})
-                .get("char_captions", [])
-            )
-            neg_char_captions = [
-                {"char_caption": "", "centers": cc.get("centers", [])}
-                for cc in v4_char_captions
-            ]
-            params["v4_negative_prompt"] = {
-                "caption": {"base_caption": negative_prompt, "char_captions": neg_char_captions},
-                "legacy_uc": False,
-            }
-        params.setdefault("params_version", 4 if _is_v5_model(nai_model) else 3)
-        params.setdefault("legacy", False)
-        params.setdefault("legacy_v3_extend", False)
-        params.setdefault("legacy_uc", False)
-        params.setdefault("add_original_image", True)
-        params.setdefault("controlnet_strength", 1)
-        params.setdefault("dynamic_thresholding", False)
-        params.setdefault("prefer_brownian", True)
-        params.setdefault("normalize_reference_strength_multiple", True)
-        params.setdefault("use_coords", False)
-        params.setdefault("inpaintImg2ImgStrength", 1)
-        params.setdefault("deliberate_euler_ancestral_bug", False)
-        params.setdefault("skip_cfg_above_sigma", None)
-        params.setdefault("characterPrompts", [])
-
-    _apply_custom_params(body, params, nai_model)
-
-    accept_format = "json" if response_format == "nai_json" else "zip"
-
-    # 账号能力预检（allow_v5 / allow_anlas）
-    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, nai_payload))
-
-    # V5 每日限额预检
-    try:
-        check_v5_quota(nai_model, params.get("n_samples", 1))
-    except ValueError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-
-    async with gate.for_request(request):
-        if is_v4_model:
-            encoded_vibes, encoded_reuse_count = await _encode_vibe_batch(
-                request, ref_images, nai_model, ref_infos
-            )
-            params["reference_image_multiple"] = encoded_vibes
-            ref_images = encoded_vibes
-            encoded_vibes_for_response = encoded_vibes
-        content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
-
-    record_generation(content, "/ai/generate-image", width, height)
-
-    # 计算 Anlas 消耗 (action=generate + Vibe Transfer 参考图编码费用)
-    ref_count = len(ref_images)
-    anlas_cost = _calc_anlas_cost(
-        width=width,
-        height=height,
-        steps=params.get("steps", 28),
-        n_samples=params.get("n_samples", 1),
-        uncond_scale=params.get("uncond_scale", 1.0),
-        reference_image_count=ref_count,
-        reference_image_encoded_count=encoded_reuse_count,
-        price_multiplier=_v5_price_multiplier(nai_model),
-        medium=is_medium_model(nai_model),
-    )
-
-    # V5 生成成功计数
-    log_generation(nai_model, params.get("n_samples", 1), params)
-
-    return _build_image_response_v2(
-        request, content, prompt, response_format,
-        anlas_cost=anlas_cost,
-        billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
-        billing_prompt_tokens=_billing_prompt_tokens(nai_model, body),
-        encoded_vibes=encoded_vibes_for_response,
-        reference_strengths=ref_strengths,
-        reference_information_extracted=ref_infos,
-    )
-
-
-# ── /v1/images/character-reference ───────────────────────────
 
 async def handle_character_reference(request: Request) -> Response:
-    """处理角色精确参考 (Character Reference / Precise Reference) 请求。
+    # Historical name: characters[].reference_image uses Vibe encoding.
+    # True Precise Reference uses references[] / director_reference_*.
+    return await _generation_alias(request, require="characters")
 
-    这是 Vibe Transfer 的高级用法：每张参考图对应一个角色，
-    配合 v4_prompt.char_captions 指定角色在画面中的位置。
-
-    请求体格式:
-        {
-            "prompt": "1girl, 1boy, ...",
-            "model": "nai-diffusion-4-5-full",
-            "negative_prompt": "lowres, ...",
-            "width": 832,
-            "height": 1216,
-            "steps": 28,
-            "scale": 6.0,
-            "sampler": "k_dpmpp_2m",
-            "noise_schedule": "karras",
-            "seed": 12345,
-            "response_format": "b64_json",
-            "characters": [
-                {
-                    "reference_image": "<base64>",
-                    "prompt": "1girl, red hair, blue eyes, ...",
-                    "center": {"x": 0.3, "y": 0.4},
-                    "reference_strength": 0.6,
-                    "reference_information_extracted": 1.0
-                },
-                {
-                    "reference_image": "<base64>",
-                    "prompt": "1boy, black hair, ...",
-                    "center": {"x": 0.7, "y": 0.5},
-                    "reference_strength": 0.6,
-                    "reference_information_extracted": 1.0
-                }
-            ]
-        }
-
-    也支持直接传 v4_prompt / v4_negative_prompt 进行高级控制。
-    """
-    body = await request.json()
-    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
-
-    prompt = body.get("prompt", "")
-    model = body.get("model", "nai-diffusion-4-5-full")
-    negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
-    response_format = body.get("response_format", "b64_json")
-
-    # characters 列表（每项包含参考图、角色提示词、位置）
-    characters = body.get("characters", [])
-    if not characters:
-        raise HTTPException(status_code=400, detail="At least one character with reference_image is required")
-
-    # 提取参考图和参数
-    ref_images = []
-    ref_strengths = []
-    ref_infos = []
-    char_captions = []
-
-    for i, char in enumerate(characters):
-        if not isinstance(char, dict):
-            continue
-        ref_img = char.get("reference_image", "")
-        if not ref_img:
-            raise HTTPException(status_code=400, detail=f"characters[{i}] missing reference_image")
-
-        ref_images.append(ref_img)
-        ref_strengths.append(char.get("reference_strength", 0.6))
-        ref_infos.append(char.get("reference_information_extracted", 1.0))
-
-        # 构造 char_caption
-        char_prompt = char.get("prompt", char.get("char_caption", ""))
-        center = char.get("center", char.get("centers", {}))
-        centers_list = []
-        if isinstance(center, dict):
-            centers_list = [{"x": center.get("x", 0.5), "y": center.get("y", 0.5)}]
-        elif isinstance(center, list):
-            centers_list = center
-
-        char_captions.append({
-            "char_caption": char_prompt,
-            "centers": centers_list,
-        })
-
-    if not ref_images:
-        raise HTTPException(status_code=400, detail="No valid character reference images found")
-    # -limit 模型：参考图全为已编码 vibe 时放行（复用不计编码费）
-    _enforce_limit_model_for_encoded_vibe(model, body, ref_images)
-
-    registry = get_registry()
-    nai_model = registry.resolve_image_model(model) if registry else model
-
-    width = _safe_int(body.get("width", 1024), 1024)
-    height = _safe_int(body.get("height", 1024), 1024)
-    width, height = _clamp_dimensions(width, height)
-
-    full_prompt = _generation_prompt(body, prompt)
-
-    # V4/V4.5/V5 模型需要先通过 encode-vibe 编码参考图
-    is_v4_model = _is_v4_family(nai_model)
-    encoded_reuse_count = 0
-    encoded_vibes_for_response: list[str] | None = None
-
-    params: dict[str, Any] = {
-        "width": width,
-        "height": height,
-        "n_samples": _safe_int(body.get("n_samples", body.get("n", 1)), 1),
-        "seed": _request_seed(body.get("seed")),
-        "steps": body.get("steps", 28),
-        "scale": body.get("scale", 5.0),
-        "sampler": body.get("sampler", "k_euler_ancestral"),
-        "negative_prompt": negative_prompt,
-        "sm": body.get("sm", True),
-        "sm_dyn": body.get("sm_dyn", False),
-        "noise_schedule": body.get("noise_schedule", "karras"),
-        "cfg_rescale": body.get("cfg_rescale", 0.0),
-        "reference_image_multiple": ref_images,
-        "reference_strength_multiple": ref_strengths,
-        "reference_information_extracted_multiple": ref_infos,
-    }
-
-    nai_payload = {
-        "input": full_prompt,
-        "model": nai_model,
-        "action": "generate",
-        "parameters": params,
-    }
-
-    # v4/v4.5/v5 模型必须带 v4_prompt 结构
-    if is_v4_model:
-        params["sm"] = False
-        params["sm_dyn"] = False
-
-        # 如果用户传了 v4_prompt，优先使用用户的
-        if "v4_prompt" in body:
-            params["v4_prompt"] = body["v4_prompt"]
-        elif char_captions:
-            # 自动从 characters 构造 v4_prompt
-            params["v4_prompt"] = {
-                "caption": {
-                    "base_caption": full_prompt,
-                    "char_captions": char_captions,
-                },
-                "use_coords": body.get("use_coords", True),
-                "use_order": True,
-            }
-        else:
-            params["v4_prompt"] = {
-                "caption": {"base_caption": full_prompt, "char_captions": []},
-                "use_coords": body.get("use_coords", False),
-                "use_order": True,
-            }
-
-        # v4_negative_prompt
-        if "v4_negative_prompt" in body:
-            params["v4_negative_prompt"] = body["v4_negative_prompt"]
-        else:
-            v4_char_captions = (
-                params.get("v4_prompt", {})
-                .get("caption", {})
-                .get("char_captions", [])
-            )
-            neg_char_captions = [
-                {"char_caption": "", "centers": cc.get("centers", [])}
-                for cc in v4_char_captions
-            ]
-            params["v4_negative_prompt"] = {
-                "caption": {"base_caption": negative_prompt, "char_captions": neg_char_captions},
-                "legacy_uc": False,
-            }
-
-        params.setdefault("params_version", 4 if _is_v5_model(nai_model) else 3)
-        params.setdefault("legacy", False)
-        params.setdefault("legacy_v3_extend", False)
-        params.setdefault("legacy_uc", False)
-        params.setdefault("add_original_image", True)
-        params.setdefault("controlnet_strength", 1)
-        params.setdefault("dynamic_thresholding", False)
-        params.setdefault("prefer_brownian", True)
-        params.setdefault("normalize_reference_strength_multiple", True)
-        params.setdefault("use_coords", True)
-        params.setdefault("inpaintImg2ImgStrength", 1)
-        params.setdefault("deliberate_euler_ancestral_bug", False)
-        params.setdefault("skip_cfg_above_sigma", None)
-        params.setdefault("characterPrompts", [])
-
-    _apply_custom_params(body, params, nai_model)
-
-    accept_format = "json" if response_format == "nai_json" else "zip"
-
-    # 账号能力预检（allow_v5 / allow_anlas）
-    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, nai_payload))
-
-    # V5 每日限额预检
-    try:
-        check_v5_quota(nai_model, params.get("n_samples", 1))
-    except ValueError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-
-    async with gate.for_request(request):
-        if is_v4_model:
-            encoded_vibes, encoded_reuse_count = await _encode_vibe_batch(
-                request, ref_images, nai_model, ref_infos
-            )
-            params["reference_image_multiple"] = encoded_vibes
-            ref_images = encoded_vibes
-            encoded_vibes_for_response = encoded_vibes
-        content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
-
-    record_generation(content, "/ai/generate-image", width, height)
-
-    # 计算 Anlas 消耗 (生成费用 + 角色参考图编码费用)
-    ref_count = len(ref_images)
-    anlas_cost = _calc_anlas_cost(
-        width=width,
-        height=height,
-        steps=params.get("steps", 28),
-        n_samples=params.get("n_samples", 1),
-        uncond_scale=params.get("uncond_scale", 1.0),
-        reference_image_count=ref_count,
-        reference_image_encoded_count=encoded_reuse_count,
-        price_multiplier=_v5_price_multiplier(nai_model),
-        medium=is_medium_model(nai_model),
-    )
-
-    # V5 生成成功计数
-    log_generation(nai_model, params.get("n_samples", 1), params)
-
-    # 参考图来自 characters[].reference_image，显式并入判档输入
-    return _build_image_response_v2(
-        request, content, prompt, response_format,
-        anlas_cost=anlas_cost,
-        billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
-        billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "reference_images": ref_images}),
-        encoded_vibes=encoded_vibes_for_response,
-        reference_strengths=ref_strengths,
-        reference_information_extracted=ref_infos,
-    )
-
-
-# ── /v1/images/precise-reference ──────────────────────────────
 
 async def handle_precise_reference(request: Request) -> Response:
-    """处理 Precise Reference（Director Reference）请求。
-
-    这是 NovelAI V4.5 的 Precise Reference 功能，与 Vibe Transfer 不同：
-    - 不走 encode-vibe 编码，直接传原图
-    - 使用 director_reference_images_cached 字段
-    - 支持三种类型：character / style / character&style
-    - 不绑定角色提示词框（v4_prompt.char_captions 为空）
-    - 每张参考图 5 Anlas（官方文档确认）
-
-    请求体格式:
-        {
-            "prompt": "1girl, ...",
-            "model": "nai-v4.5-full",
-            "negative_prompt": "lowres, ...",
-            "width": 832,
-            "height": 1216,
-            "steps": 28,
-            "scale": 5.0,
-            "sampler": "k_dpmpp_2m",
-            "noise_schedule": "karras",
-            "seed": 12345,
-            "response_format": "b64_json",
-            "references": [
-                {
-                    "reference_image": "<base64>",
-                    "reference_type": "character",  // character / style / character&style
-                    "strength": 1.0,
-                    "fidelity": 1.0
-                }
-            ]
-        }
-    """
-    body = await request.json()
-    _absorb_extra_params(body, request.headers.get("x-novelai-extra-params"))
-
-    prompt = body.get("prompt", "")
-    model = body.get("model", "nai-diffusion-4-5-full")
-    _reject_limit_model_for_paid_endpoint(model)
-    negative_prompt = body.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
-    response_format = body.get("response_format", "b64_json")
-
-    # references 列表
-    references = body.get("references", [])
-    if not references:
-        raise HTTPException(status_code=400, detail="At least one reference with reference_image is required")
-
-    # 提取参考图和参数
-    ref_images: list[str] = []
-    ref_strengths: list[float] = []
-    ref_infos: list[float] = []
-    ref_descriptions: list[dict[str, Any]] = []
-
-    for i, ref in enumerate(references):
-        if not isinstance(ref, dict):
-            continue
-        ref_img = ref.get("reference_image", "")
-        if not ref_img:
-            raise HTTPException(status_code=400, detail=f"references[{i}] missing reference_image")
-
-        ref_images.append(_normalize_precise_reference_image(ref_img))
-        ref_strengths.append(float(ref.get("strength", 1.0)))
-        fidelity = float(ref.get("fidelity", 1.0))
-        # NovelAI 当前上游仅接受精密参考的信息提取值恰为 1.0。
-        if fidelity != 1.0:
-            raise HTTPException(
-                status_code=400,
-                detail=f"references[{i}].fidelity must be exactly 1.0",
-            )
-        ref_infos.append(fidelity)
-
-        # 构造 director_reference_description
-        ref_type = ref.get("reference_type", "character&style")
-        # 校验类型
-        valid_types = {"character", "style", "character&style"}
-        if ref_type not in valid_types:
-            raise HTTPException(
-                status_code=400,
-                detail=f"references[{i}].reference_type must be one of: {', '.join(sorted(valid_types))}",
-            )
-
-        ref_descriptions.append({
-            "caption": {
-                "base_caption": ref_type,
-                "char_captions": [],
-            },
-            "legacy_uc": False,
-        })
-
-    if not ref_images:
-        raise HTTPException(status_code=400, detail="No valid reference images found")
-
-    registry = get_registry()
-    nai_model = registry.resolve_image_model(model) if registry else model
-
-    # Precise Reference 仅支持 V4.5 / V5
-    if not _is_v4_family(nai_model):
-        raise HTTPException(
-            status_code=400,
-            detail="Precise Reference is only available on V4.5/V5 models",
-        )
-
-    width = _safe_int(body.get("width", 1024), 1024)
-    height = _safe_int(body.get("height", 1024), 1024)
-    width, height = _clamp_dimensions(width, height)
-
-    full_prompt = _generation_prompt(body, prompt)
-
-    params: dict[str, Any] = {
-        "width": width,
-        "height": height,
-        "n_samples": _safe_int(body.get("n_samples", body.get("n", 1)), 1),
-        "seed": _request_seed(body.get("seed")),
-        "steps": body.get("steps", 28),
-        "scale": body.get("scale", 5.0),
-        "sampler": body.get("sampler", "k_euler_ancestral"),
-        "negative_prompt": negative_prompt,
-        "sm": False,
-        "sm_dyn": False,
-        "noise_schedule": body.get("noise_schedule", "karras"),
-        "cfg_rescale": body.get("cfg_rescale", 0.0),
-        # Director Reference 核心字段
-        "director_reference_descriptions": ref_descriptions,
-        "director_reference_information_extracted": ref_infos,
-        "director_reference_strength_values": ref_strengths,
-        "director_reference_secondary_strength_values": [1.0 - ri for ri in ref_infos],
-        "director_reference_images": ref_images,
-        # V4.5/V5 必需字段
-        "params_version": 4 if _is_v5_model(nai_model) else 3,
-        "legacy": False,
-        "legacy_v3_extend": False,
-        "legacy_uc": False,
-        "add_original_image": True,
-        "controlnet_strength": 1,
-        "dynamic_thresholding": False,
-        "prefer_brownian": True,
-        "normalize_reference_strength_multiple": True,
-        "use_coords": False,
-        "inpaintImg2ImgStrength": 1,
-        "deliberate_euler_ancestral_bug": False,
-        "skip_cfg_above_sigma": None,
-        "characterPrompts": [],
-        # v4_prompt（char_captions 为空，不绑定角色框）
-        "v4_prompt": {
-            "caption": {
-                "base_caption": full_prompt,
-                "char_captions": [],
-            },
-            "use_coords": False,
-            "use_order": True,
-        },
-        "v4_negative_prompt": {
-            "caption": {
-                "base_caption": negative_prompt,
-                "char_captions": [],
-            },
-            "legacy_uc": False,
-        },
-    }
-
-    nai_payload = {
-        "input": full_prompt,
-        "model": nai_model,
-        "action": "generate",
-        "parameters": params,
-    }
-
-    _apply_custom_params(body, params, nai_model)
-
-    accept_format = "json" if response_format == "nai_json" else "zip"
-
-    # 账号能力预检（allow_v5 / allow_anlas）
-    _preflight_account(request, nai_model, allow_anlas=_requires_anlas_for_account(nai_model, nai_payload))
-
-    # V5 每日限额预检
-    try:
-        check_v5_quota(nai_model, params.get("n_samples", 1))
-    except ValueError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-
-    async with gate.for_request(request):
-        content = await _send_nai_request(request, nai_payload, accept_format=accept_format)
-
-    record_generation(content, "/ai/generate-image", width, height)
-
-    # Precise Reference 计费：每张参考图 5 Anlas（官方文档确认）
-    ref_count = len(ref_images)
-    anlas_cost = _calc_anlas_cost(
-        width=width,
-        height=height,
-        steps=params.get("steps", 28),
-        n_samples=params.get("n_samples", 1),
-        uncond_scale=params.get("uncond_scale", 1.0),
-        reference_image_count=ref_count,
-        reference_mode="precise",
-        price_multiplier=_v5_price_multiplier(nai_model),
-        medium=is_medium_model(nai_model),
-    )
-
-    # V5 生成成功计数
-    log_generation(nai_model, params.get("n_samples", 1), params)
-
-    # Precise Reference 每样本必扣 5 Anlas，必然档外
-    return _build_image_response_v2(
-        request, content, prompt, response_format,
-        anlas_cost=anlas_cost,
-        billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
-        billing_prompt_tokens=_billing_prompt_tokens(nai_model, {**body, "references": ref_images}),
-    )
+    return await _generation_alias(request, require="references")
 
 
 # ── /v1/images/upscale ────────────────────────────────────────
@@ -3879,7 +3152,7 @@ async def handle_suggest_tags(request: Request) -> Response:
     try:
         resp = await client.get(
             target_url,
-            params={"model": model, "prompt": prompt},
+            params={"model": get_registry().resolve_image_model(model) if get_registry() else model, "prompt": prompt, **({"lang": body["lang"]} if "lang" in body else {})},
             headers=headers,
             timeout=15.0,
         )
@@ -4067,7 +3340,10 @@ async def _clone_json_request(request: Request, body: dict[str, Any]) -> Request
         sent = True
         return {"type": "http.request", "body": payload, "more_body": False}
 
-    return Request(dict(request.scope), receive)
+    scope = dict(request.scope)
+    scope["headers"] = [(k, v) for k, v in scope.get("headers", []) if k.lower() not in {b"content-type", b"content-length"}]
+    scope["headers"].extend([(b"content-type", b"application/json"), (b"content-length", str(len(payload)).encode())])
+    return Request(scope, receive)
 
 
 async def _dispatch_image_operation(
@@ -4089,6 +3365,8 @@ async def _dispatch_image_operation(
         "edits": handle_openai_image_edits,
         "vibe-transfer": handle_vibe_transfer,
         "character-reference": handle_character_reference,
+        "encode-vibe": handle_encode_vibe,
+        "suggest-tags": handle_suggest_tags,
     }
     handler = image_handlers.get(operation)
     if handler is not None:
@@ -4117,6 +3395,20 @@ async def _dispatch_image_operation(
     binary_response = await handler(request_copy)
     png_data = binary_response.body
     # 工具端点必然超出 Opus 免费额度（body=None → 档外）→ None → 沿用 Anlas 动态口径
+    if operation == "upscale":
+        return _build_png_image_response(
+            png_data=png_data,
+            prompt=str(body.get("prompt", "")),
+            anlas_cost=anlas_cost,
+            billing_prompt_tokens=None,
+        )
+    if operation == "annotate":
+        return _build_png_image_response(
+            png_data=png_data,
+            prompt=str(body.get("prompt", "")),
+            anlas_cost=0,
+            billing_prompt_tokens=1,
+        )
     return _build_png_image_response(
         png_data=png_data,
         prompt=str(body.get("prompt", "")),
@@ -4190,9 +3482,78 @@ def _build_nai_text_payload(
     }
 
 
+async def _stream_httpx_response(response, media_type: str = "text/event-stream") -> StreamingResponse:
+    """Expose an upstream streaming response without leaking its connection."""
+    async def stream_body():
+        try:
+            async for chunk in response.aiter_bytes():
+                yield chunk
+        finally:
+            await response.aclose()
+    return StreamingResponse(stream_body(), media_type=media_type, headers={"Access-Control-Allow-Origin": "*"})
+
+
+async def handle_openai_completions(request: Request) -> Response:
+    """Handle OpenAI Completions over NovelAI's native OAI text endpoint."""
+    body = await request.json()
+    registry = get_registry()
+    if registry and not registry.is_enabled("chat"):
+        return Response(
+            content=json.dumps({"error": {"message": "Chat is disabled in configuration", "type": "config_error", "code": "chat_disabled"}}),
+            status_code=403,
+            media_type="application/json",
+        )
+    model_id = body.get("model", "nai-chat-erato")
+    entry = registry.lookup(model_id) if registry else None
+    if entry is None or entry.type != "chat":
+        raise HTTPException(status_code=400, detail=f"Unknown or disabled Chat model: {model_id}. Check GET /v1/models.")
+    upstream_body = dict(body)
+    upstream_body["model"] = entry.name
+    response = await _send_nai_text_api_request(request, "/oa/v1/completions", upstream_body, bool(body.get("stream")))
+    if body.get("stream"):
+        return await _stream_httpx_response(response, response.headers.get("content-type", "text/event-stream"))
+    await response.aread()
+    try:
+        payload = json.loads(response.content)
+        if isinstance(payload, dict):
+            payload["model"] = model_id
+            response_body = json.dumps(payload).encode("utf-8")
+        else:
+            response_body = response.content
+    except (ValueError, TypeError):
+        response_body = response.content
+    finally:
+        await response.aclose()
+    return Response(content=response_body, status_code=200, media_type="application/json", headers={"Access-Control-Allow-Origin": "*"})
+
+
+async def handle_openai_token_count(request: Request) -> Response:
+    """Expose NovelAI's token-count extension through an OAI-compatible route."""
+    body = await request.json()
+    registry = get_registry()
+    model_id = body.get("model") if isinstance(body, dict) else None
+    if registry and isinstance(model_id, str):
+        entry = registry.lookup(model_id)
+        if entry and entry.type == "chat":
+            body = {**body, "model": entry.name}
+    response = await _send_nai_text_api_request(request, "/oa/v1/internal/token-count", body, False)
+    await response.aread()
+    content = response.content
+    await response.aclose()
+    return Response(content=content, status_code=200, media_type="application/json", headers={"Access-Control-Allow-Origin": "*"})
+
+
 async def handle_openai_chat_completions(request: Request) -> Response:
     """处理 OpenAI 兼容的 Chat Completions 请求（真文本生成）。"""
     body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="request body must be an object")
+    custom = {}
+    for key in ("parameters", "extra_params"):
+        value = body.get(key, {})
+        if not isinstance(value, dict):
+            raise HTTPException(status_code=400, detail=f"{key} must be an object")
+        custom.update(value)
 
     # 检查 chat 是否启用
     registry = get_registry()
@@ -4210,11 +3571,18 @@ async def handle_openai_chat_completions(request: Request) -> Response:
         )
 
     messages = body.get("messages", [])
-    model_id = body.get("model", "nai-chat")
+    if not isinstance(messages, list) or not messages:
+        raise HTTPException(status_code=400, detail="messages must be a non-empty array")
+    model_id = body.get("model", "nai-chat-erato")
     stream = body.get("stream", False)
-    temperature = body.get("temperature", 1.0)
-    max_tokens = body.get("max_tokens", 200)
-    top_p = body.get("top_p", 0.9)
+    temperature = _safe_float(body.get("temperature"), 1.0)
+    max_tokens = _safe_int(body.get("max_tokens", body.get("max_completion_tokens", custom.get("max_length", 200))), 200)
+    top_p = _safe_float(body.get("top_p"), 0.9)
+    top_k = _safe_int(body.get("top_k"), 3)
+    if max_tokens < 1:
+        raise HTTPException(status_code=400, detail="max_tokens must be positive; the upstream model determines its upper limit")
+    if not 0 <= top_p <= 1:
+        raise HTTPException(status_code=400, detail="top_p must be between 0 and 1")
 
     # Chat 只能使用 models.toml 中显式配置的模型，避免未知 model 静默回退。
     entry = registry.lookup(model_id) if registry else None
@@ -4235,7 +3603,12 @@ async def handle_openai_chat_completions(request: Request) -> Response:
         temperature=temperature,
         max_length=max_tokens,
         top_p=top_p,
+        top_k=top_k,
     )
+    protocol = {"model", "messages", "stream", "max_tokens", "max_completion_tokens", "parameters", "extra_params", "user", "tools", "tool_choice", "response_format"}
+    custom.update({key: value for key, value in body.items() if key not in protocol})
+    nai_payload["parameters"].update(custom)
+    nai_payload["parameters"]["max_length"] = max_tokens
 
     timestamp = int(time.time())
     chat_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -4253,6 +3626,8 @@ async def handle_openai_chat_completions(request: Request) -> Response:
         except (json.JSONDecodeError, Exception):
             output = resp_bytes.decode("utf-8", errors="replace")
 
+        if isinstance(output, list):
+            output = "".join(str(item) for item in output)
         return Response(
             content=json.dumps({
                 "id": chat_id,

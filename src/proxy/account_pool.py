@@ -471,9 +471,13 @@ class AccountPool:
     def public(self) -> list[dict[str, Any]]:
         """返回脱敏账号列表。"""
         with self._lock:
+            credential_groups: dict[str, str] = {}
+            for account in self._accounts.values():
+                credential_groups.setdefault(account.key, account.id)
             return [
                 {
                     **account.public(),
+                    "credential_group": credential_groups[account.key],
                     "classification": self._classification(account),
                     "busy": account.key in self._reserved or bool(
                         self._async_locks.get(account.key) and self._async_locks[account.key].locked()

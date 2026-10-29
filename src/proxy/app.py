@@ -35,8 +35,12 @@ from .openai import (
     handle_img2img,
     handle_nai_inpainting,
     handle_openai_chat_completions,
+    handle_openai_completions,
     handle_openai_generations,
+    handle_openai_token_count,
+    handle_openai_generations_stream,
     handle_openai_image_edits,
+    handle_encode_vibe,
     handle_openai_models,
     handle_precise_reference,
     handle_suggest_tags,
@@ -222,8 +226,14 @@ async def openai_models():
 
 @app.post("/v1/images/generations")
 async def openai_generations(request: Request):
-    """文生图（OpenAI 兼容）。"""
+    """图像生成及 NovelAI 扩展操作（OpenAI 兼容）。"""
     return await handle_openai_generations(request)
+
+
+@app.post("/v1/images/generations/stream")
+async def openai_generations_stream(request: Request):
+    """OpenAI image-generation stream events over NovelAI's image stream API."""
+    return await handle_openai_generations_stream(request)
 
 
 @app.post("/v1/images/inpainting")
@@ -242,6 +252,12 @@ async def openai_image_edits(request: Request):
 async def openai_img2img(request: Request):
     """图生图接口 (action=img2img)。"""
     return await handle_img2img(request)
+
+
+@app.post("/v1/images/encode-vibe")
+async def openai_encode_vibe(request: Request):
+    """Encode a reusable NovelAI Vibe reference as an OAI JSON response."""
+    return await handle_encode_vibe(request)
 
 
 @app.post("/v1/images/vibe-transfer")
@@ -336,6 +352,18 @@ async def openai_audio_speech(request: Request):
 async def openai_chat(request: Request):
     """OpenAI 兼容 Chat Completions（真文本生成）。"""
     return await handle_openai_chat_completions(request)
+
+
+@app.post("/v1/completions")
+async def openai_completions(request: Request):
+    """OpenAI 兼容 Completions，转发到 NovelAI 原生 OAI 文本端点。"""
+    return await handle_openai_completions(request)
+
+
+@app.post("/v1/token-count")
+async def openai_token_count(request: Request):
+    """NovelAI token-count 扩展的 OAI 兼容入口。"""
+    return await handle_openai_token_count(request)
 
 
 # ── 管理端点 ────────────────────────────────────────────────

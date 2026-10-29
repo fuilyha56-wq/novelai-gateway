@@ -32,6 +32,8 @@ inpaint_*_result.png
 *_result.png
 # 远程命令执行脚本（.rsh2.py / .rsh_price.py 等变体），内含明文服务器凭据，绝不入库
 .rsh*.py
+# 新 API 目标机的独立 SSH 脚本，明确保持在本地
+.rsh_newapi.py
 _test_*.py
 .test_*.py
 newapi-pricing.md
@@ -83,3 +85,13 @@ SERVER_CONNECTION_GUIDE.md
 
 # Private dot-prefixed operational scripts may contain live credentials.
 /.*.py
+
+# 本地生成数据与历史调试产物
+.pytest_cache/
+*.egg-info/
+/%SystemDrive%/
+/*.png
+/logs/
+/config/plugins/
+/tmp_*.sql
+/query_user_remote.js

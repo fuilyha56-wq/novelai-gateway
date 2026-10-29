@@ -189,25 +189,24 @@ class GatewayRegressionTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("最多 16 张", str(raised.exception.detail))
 
-    def test_precise_reference_cannot_combine_multiple_vibe_references(self) -> None:
-        """Precise Reference 与 Vibe 多图必须互斥。"""
-        with self.assertRaises(HTTPException) as raised:
-            _build_generation_payload(
+    def test_precise_reference_combines_multiple_vibe_references(self) -> None:
+        """两个参考模式保存在独立字段，交给所选上游模型处理。"""
+        payload, _, _ = _build_generation_payload(
                 {
                     "model": "nai-v4.5-full",
                     "prompt": "test",
                     "reference_images": ["vibe-image"],
                     "references": [
                         {
-                            "reference_image": "precise-image",
+                            "reference_image": base64.b64encode(_png_bytes("red")).decode(),
                             "reference_type": "character",
                         }
                     ],
                 },
                 operation="precise-reference",
             )
-        self.assertEqual(raised.exception.status_code, 400)
-        self.assertIn("cannot be combined", str(raised.exception.detail))
+        self.assertEqual(payload["parameters"]["reference_image_multiple"], ["vibe-image"])
+        self.assertEqual(len(payload["parameters"]["director_reference_images"]), 1)
 
     def test_calc_anlas_cost_vibe_reuse_reduces_encoding_fee(self) -> None:
         """复用已编码氛围不应再收 2 Anlas 编码费。"""

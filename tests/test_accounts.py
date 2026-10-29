@@ -37,6 +37,20 @@ class AccountPoolTests(unittest.TestCase):
         )
         self.assertEqual([pool.choose()[0] for _ in range(8)], ["heavy"] * 8)
 
+    def test_public_groups_exact_credentials_without_merging_mask_collisions(self) -> None:
+        pool = AccountPool(persistence_path=None)
+        pool.configure(
+            '[{"id":"a","key":"pst-same-first-tail"},'
+            '{"id":"duplicate","key":"pst-same-first-tail","enabled":false},'
+            '{"id":"different","key":"pst-same-other-tail"}]'
+        )
+        accounts = pool.public()
+        self.assertEqual(accounts[0]["masked_key"], accounts[2]["masked_key"])
+        self.assertEqual([a["credential_group"] for a in accounts], ["a", "a", "different"])
+        self.assertTrue(all("key" not in a for a in accounts))
+        self.assertNotIn("pst-same-first-tail", str(accounts))
+        self.assertNotIn("pst-same-other-tail", str(accounts))
+
     def test_smooth_weighted_selection_distribution(self) -> None:
         pool = AccountPool()
         pool.configure(

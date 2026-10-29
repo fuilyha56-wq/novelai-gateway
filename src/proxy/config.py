@@ -129,6 +129,8 @@ class Settings(BaseSettings):
         "/ai/generate-voice",
         "/ai/augment-image",
         "/ai/encode-vibe",
+        "/ai/generate-image-stream",
+        "/ai/annotate-image",
     }
 
     # 并发与冷却
@@ -205,6 +207,7 @@ class Settings(BaseSettings):
         "/ai/generate-image",
         "/ai/augment-image",
         "/ai/encode-vibe",
+        "/ai/annotate-image",
         "/ai/upscale",
         "/oa/v1/",
         "/user/data",

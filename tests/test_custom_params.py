@@ -411,9 +411,13 @@ class HandlerIntegrationTests(unittest.TestCase):
 
         openai_module._send_nai_request = fake_send
         self._original_send = original_send
+        from unittest.mock import patch
+        self._quota_patch = patch.object(openai_module, "check_v5_quota")
+        self._quota_patch.start()
         self._client = TestClient(app)
 
     def tearDown(self) -> None:
+        self._quota_patch.stop()
         openai_module._send_nai_request = self._original_send
         for name, value in self._settings.items():
             setattr(settings, name, value)
@@ -580,6 +584,130 @@ class HandlerIntegrationTests(unittest.TestCase):
         params = self._last_params()
         self.assertIs(params["color_correct"], True)
         self.assertIs(params["straight_alpha"], True)
+
+    def test_img2img_combines_image_characters_and_controlnet(self) -> None:
+        image_b64 = base64.b64encode(_rgba_png_bytes(min_alpha=0)).decode()
+        # encode-vibe outputs binary data rather than a normal image; use a
+        # sufficiently long non-image payload to exercise the reuse path without
+        # making this regression test call the real upstream.
+        character_a = base64.b64encode(bytes(2000)).decode()
+        character_b = base64.b64encode(bytes(2100)).decode()
+        response = self._client.post(
+            "/v1/images/img2img",
+            json={
+                "model": "nai-diffusion-5-full",
+                "prompt": "two characters in a cafe",
+                "image": image_b64,
+                "characters": [
+                    {"reference_image": character_a, "prompt": "red hair", "center": {"x": 0.25, "y": 0.5}},
+                    {"reference_image": character_b, "prompt": "blue hair", "center": {"x": 0.75, "y": 0.5}},
+                ],
+                "controlnet_condition": image_b64,
+                "controlnet_model": "openpose",
+                "controlnet_strength": 0.8,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = self.captured[-1]
+        params = payload["parameters"]
+        self.assertEqual(payload["action"], "img2img")
+        self.assertEqual(params["image"], image_b64)
+        self.assertEqual(params["reference_image_multiple"], [character_a, character_b])
+        self.assertEqual(params["controlnet_condition"], image_b64)
+        self.assertEqual(params["controlnet_model"], "openpose")
+        captions = params["v4_prompt"]["caption"]["char_captions"]
+        self.assertEqual([item["char_caption"] for item in captions], ["red hair", "blue hair"])
+        self.assertEqual(captions[0]["centers"], [{"x": 0.25, "y": 0.5}])
+
+    def test_inpainting_combines_characters_and_controlnet(self) -> None:
+        image = base64.b64encode(_rgba_png_bytes(min_alpha=0)).decode()
+        character = base64.b64encode(bytes(2000)).decode()
+        response = self._client.post("/v1/images/inpainting", json={
+            "model": "nai-v5-full", "prompt": "edit scene", "image": image, "mask": image,
+            "characters": [{"reference_image": character, "prompt": "hero", "center": {"x": 0.5, "y": 0.5}}],
+            "controlnet_condition": image, "controlnet_model": "hed",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        params = self._last_params()
+        self.assertEqual(params["image"], image)
+        self.assertEqual(params["mask"], image)
+        self.assertEqual(params["reference_image_multiple"], [character])
+        self.assertEqual(params["controlnet_condition"], image)
+
+    def test_encode_vibe_available_from_openai_operation(self) -> None:
+        from unittest.mock import AsyncMock, patch
+        encoded = base64.b64encode(bytes(2000)).decode()
+        with patch.object(openai_module, "_encode_vibe", new=AsyncMock(return_value=encoded)) as encoder:
+            response = self._client.post(
+                "/v1/images/generations",
+                headers={"X-NovelAI-Operation": "encode-vibe"},
+                json={"model": "nai-diffusion-5-full", "image": base64.b64encode(_rgba_png_bytes(0)).decode()},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["reference_image"], encoded)
+        self.assertEqual(response.headers["X-Anlas-Cost"], "2")
+        encoder.assert_awaited_once()
+
+    def test_oai_text_completions_and_token_count_routes(self) -> None:
+        import httpx
+        from unittest.mock import AsyncMock, patch
+        async def fake_text(_request, api_path, payload, stream=False):
+            self.assertFalse(stream)
+            if api_path.endswith("/completions"):
+                self.assertEqual(payload["model"], "llama-3-erato-v1")
+                return httpx.Response(200, json={"choices": [{"text": "hello"}]})
+            return httpx.Response(200, json={"encoded": [1, 2], "length": 2})
+        from types import SimpleNamespace
+        fake_registry = SimpleNamespace(
+            is_enabled=lambda kind: True,
+            lookup=lambda model: SimpleNamespace(type="chat", name="llama-3-erato-v1") if model == "nai-chat-erato" else None,
+        )
+        with patch.object(openai_module, "get_registry", return_value=fake_registry), patch.object(openai_module, "_send_nai_text_api_request", new=AsyncMock(side_effect=fake_text)) as upstream:
+                completion = self._client.post("/v1/completions", json={"model": "nai-chat-erato", "prompt": "hi"})
+                count = self._client.post("/v1/token-count", json={"model": "nai-chat-erato", "prompt": {"ofString": "hi"}})
+                self.assertEqual(completion.status_code, 200, completion.text)
+                self.assertEqual(completion.json()["model"], "nai-chat-erato")
+                self.assertEqual(count.status_code, 200, count.text)
+                self.assertEqual(count.json()["length"], 2)
+                self.assertEqual(upstream.await_count, 2)
+
+    def test_generation_payload_accepts_all_combined_control_fields(self) -> None:
+        image = base64.b64encode(_rgba_png_bytes(min_alpha=0)).decode()
+        payload, _, _ = _build_generation_payload({
+            "model": "nai-diffusion-5-full",
+            "prompt": "combined controls",
+            "image": image,
+            "characters": [{"reference_image": base64.b64encode(bytes(2000)).decode(), "prompt": "hero"}],
+            "controlnet_condition": image,
+            "director_reference_images": [image],
+            "director_reference_descriptions": [{"caption": {"base_caption": "character", "char_captions": []}}],
+        })
+        params = payload["parameters"]
+        self.assertEqual(params["controlnet_condition"], image)
+        self.assertEqual(params["director_reference_images"], [image])
+        self.assertEqual(params["reference_image_multiple"], [base64.b64encode(bytes(2000)).decode()])
+        self.assertEqual(params["v4_prompt"]["caption"]["char_captions"][0]["char_caption"], "hero")
+
+    def test_unified_img2img_operation_combines_controls(self) -> None:
+        image_b64 = base64.b64encode(_rgba_png_bytes(min_alpha=0)).decode()
+        character = base64.b64encode(bytes(2000)).decode()
+        response = self._client.post(
+            "/v1/images/generations",
+            headers={"X-NovelAI-Operation": "img2img"},
+            json={
+                "model": "nai-v4.5-full",
+                "prompt": "character with pose",
+                "image": image_b64,
+                "characters": [{"reference_image": character, "prompt": "main character", "center": {"x": 0.5, "y": 0.5}}],
+                "controlnet_condition": image_b64,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = self.captured[-1]
+        self.assertEqual(payload["action"], "img2img")
+        self.assertEqual(payload["parameters"]["image"], image_b64)
+        self.assertEqual(payload["parameters"]["reference_image_multiple"], [character])
+        self.assertEqual(payload["parameters"]["controlnet_condition"], image_b64)
 
     def test_medium_edit_endpoints_default_to_official_fixed_settings(self) -> None:
         """Omitted sampling settings must not inherit High defaults in edit handlers."""

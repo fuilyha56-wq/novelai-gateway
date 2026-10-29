@@ -1,6 +1,6 @@
 [project]
 name = "novelai-gateway"
-version = "0.2.0"
+version = "0.3.0"
 description = "A transparent reverse proxy gateway for NovelAI with global concurrency queuing."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,6 +14,9 @@ dependencies = [
     "pillow>=10.0.0",
     "python-multipart>=0.0.9",
 ]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-asyncio>=0.24"]
 
 [build-system]
 requires = ["hatchling"]
