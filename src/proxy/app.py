@@ -17,7 +17,7 @@ from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from contextlib import asynccontextmanager
 
-from .config import get_request_auth_token, settings
+from .config import settings
 from .account_pool import account_pool
 from .forwarder import forward, build_response, close_client, _CORS_HEADERS
 from .queue import gate
@@ -426,7 +426,7 @@ async def _read_native_payload(request: Request, resolve_images: bool = False) -
 
 
 async def _prepare_native_account(request: Request, api_path: str) -> None:
-    """按原生请求模型设置账号能力筛选后再缓存凭据。"""
+    """仅预检原生请求的账号能力，由并发门控预留空闲账号。"""
     if not settings.shared_api_keys.strip() or not settings.is_heavy(api_path):
         return
     payload = await _read_native_payload(request, resolve_images=True) or {}
@@ -444,7 +444,7 @@ async def _prepare_native_account(request: Request, api_path: str) -> None:
         raise HTTPException(status_code=409, detail=message)
     request.state.gateway_need_v5 = need_v5
     request.state.gateway_need_anlas = need_anlas
-    get_request_auth_token(request, need_v5=need_v5, need_anlas=need_anlas)
+    # 不在排队前选号，否则请求会被固定到繁忙账号，无法使用先空闲的账号。
 
 
 async def _preflight_native_v5_quota(request: Request, api_path: str) -> None:

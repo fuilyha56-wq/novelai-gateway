@@ -95,3 +95,17 @@ SERVER_CONNECTION_GUIDE.md
 /config/plugins/
 /tmp_*.sql
 /query_user_remote.js
+
+# Keep verification suites and reports locally, outside the published source.
+/tests/
+**/__tests__/
+**/test_*.py
+**/*_test.py
+**/*.test.*
+**/*.spec.*
+/coverage/
+/test-results/
+/playwright-report/
+
+# Runtime package initializers are source, not private operational scripts.
+!src/**/__init__.py
