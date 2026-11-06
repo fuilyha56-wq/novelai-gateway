@@ -184,14 +184,19 @@ async function loadDash() {
 let latencyChart;
 async function loadLatency() {
   const result = await api('/model-latency');
-  $('latencyEmpty').hidden = result.series.length > 0;
+  const series = Array.isArray(result?.series) ? result.series : [];
+  const hours = Array.isArray(result?.hours)
+    ? result.hours
+    : Array.isArray(result?.timestamps) ? result.timestamps : [];
+  $('latencyEmpty').hidden = series.length > 0;
   const colors = ['#58a6ff', '#43d17a', '#ffb454', '#ff6370', '#38c9d6', '#e78edb', '#d6df63', '#c7b299'];
-  const datasets = result.series.map((series, index) => ({
-    label: series.model, data: series.average_ms.map(value => value === null ? null : value / 1000),
+  const datasets = series.map((item, index) => ({
+    label: item.model,
+    data: (Array.isArray(item.average_ms) ? item.average_ms : []).map(value => value === null ? null : value / 1000),
     borderColor: colors[index % colors.length], backgroundColor: colors[index % colors.length],
-    borderWidth: 2, pointRadius: 3, spanGaps: false, counts: series.counts,
+    borderWidth: 2, pointRadius: 3, spanGaps: false, counts: Array.isArray(item.counts) ? item.counts : [],
   }));
-  const data = {labels: result.hours.map(hour => new Date(hour * 1000).toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit', hour12:false})), datasets};
+  const data = {labels: hours.map(hour => new Date(hour * 1000).toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit', hour12:false})), datasets};
   if (latencyChart) { latencyChart.data = data; latencyChart.update('none'); return; }
   latencyChart = new Chart($('modelLatencyChart'), {
     type: 'line', data,

@@ -38,7 +38,7 @@ from .config import settings
 # 默认限额；实际值可通过 .env 中的 V5_DAILY_LIMIT / V5_WEEKLY_LIMIT 覆盖。
 V5_WEEKLY_LIMIT = settings.v5_weekly_limit
 V5_DAILY_LIMIT = settings.v5_daily_limit
-V5_AUTO_RESTORE_PERCENT = 15.0
+V5_AUTO_RESTORE_PERCENT = 10.0
 
 # 滚动周窗口天数（对齐官方"随时间自动补充"）
 _WEEK_WINDOW_DAYS = 7
@@ -125,7 +125,7 @@ def is_v5_quota_exhausted_error(status_code: int, error_text: str) -> bool:
 
 
 def is_v5_quota_recovered(remaining_percent: float) -> bool:
-    """判断 V5 免费额度是否达到自动恢复阈值（严格大于 15%）。"""
+    """判断 V5 免费额度是否达到自动恢复阈值（严格大于 10%）。"""
     return remaining_percent > V5_AUTO_RESTORE_PERCENT
 
 
