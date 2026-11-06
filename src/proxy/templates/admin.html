@@ -135,6 +135,7 @@ function metric(icon, label, value, note, color, id = '') {
   return `<article class="glass metric-card" style="--metric-color:${color}"><span class="metric-icon" aria-hidden="true">${icon}</span><span class="metric-label">${esc(label)}</span><strong class="metric-value"${id ? ` id="${id}"` : ''}>${esc(value)}</strong><small class="metric-note"${id ? ` id="${id}Note"` : ''}>${esc(note)}</small></article>`;
 }
 function capabilityFromAccounts(list = []) {
+  if (!Array.isArray(list)) list = [];
   const groups = new Map();
   list.forEach(a => { const key = a.credential_group || a.id; if (!groups.has(key)) groups.set(key, a); });
   const accounts = [...groups.values()].filter(a => a.enabled !== false);
@@ -214,7 +215,8 @@ const pill = s => `<span class="pill ${/^(active|ok|healthy)$/.test(s) ? 'ok' : 
 const accountClass = s => ({'v5-and-anlas':'V5 + Anlas','v5-free':'V5 免费档','anlas-only':'非 V5 · Anlas','legacy-only':'V4.5 免费档','disabled':'未参与'}[s] || '待分类');
 const tgl = (a, k, id, on) => `<label class="tg${on ? ' on' : ''}" title="${esc(a)}"><input type="checkbox" data-k="${k}" data-id="${esc(id)}" ${on ? 'checked' : ''}><i></i></label>`;
 async function loadAcct() {
-  const l = (await api('/accounts')).accounts || [];
+  const accountResult = await api('/accounts');
+  const l = Array.isArray(accountResult?.accounts) ? accountResult.accounts : [];
   accountRows = l;
   const capacity = await api('/concurrency');
   renderCapabilityMetrics(capacity);
@@ -342,7 +344,8 @@ async function loadUps() {
   const btn = $('upGo'); if (btn.disabled) return;
   btn.disabled = true; $('upT').textContent = '同步中...'; renderBalanceTotals();
   try {
-    const list = (await api('/accounts')).accounts || [];
+    const accountResult = await api('/accounts');
+    const list = Array.isArray(accountResult?.accounts) ? accountResult.accounts : [];
     renderCapabilityMetrics(capabilityFromAccounts(list));
     const groupOf = a => a.credential_group ?? a.id;
     const seenKeys = new Map();
@@ -406,7 +409,9 @@ async function fetchLog() {
   return r.lines || [];
 }
 async function loadLog() {
-  const lines = await fetchLog(), f = $('lLv')?.value || '', box = $('logBox');
+  const fetchedLines = await fetchLog();
+  const lines = Array.isArray(fetchedLines) ? fetchedLines : [];
+  const f = $('lLv')?.value || '', box = $('logBox');
   const bottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
   const seg = lines.map(l => {
     const m = l.match(LR);
