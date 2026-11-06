@@ -346,7 +346,7 @@ async def list_accounts(request: Request) -> dict[str, Any]:
 
 @router.get("/concurrency")
 async def account_concurrency(request: Request) -> dict[str, int]:
-    """向受信任的 LFN 服务提供实时账号能力与并发，不返回账号凭据。"""
+    """向受信任的 LFN 服务提供实时账号能力、分类计数与并发，不返回账号凭据。"""
     await _require_auth(request)
     summary = account_pool.capacity_summary()
     summary["concurrency"] = summary["total"] or max(1, settings.max_concurrent)

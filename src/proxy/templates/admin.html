@@ -5,88 +5,84 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NAI Gateway</title>
 <style>
-:root{--wall:linear-gradient(120deg,#2b1055,#0f1a2e 50%,#03323f);--blur:18px;--alpha:.5;--dim:.2;--fg:#f1f3f8;--sub:#a3abc2;--acc:#8b7bff;--ok:#43d17a;--warn:#f0b43c;--err:#ff6370;--edge:rgba(255,255,255,.14)}
+:root{--wall:linear-gradient(135deg,#f8f5f0,#f1ebe5);--blur:0px;--alpha:1;--alpha-pct:100%;--dim:0;--paper:#f8f5f0;--panel:#fffdfa;--surface:#f4f0eb;--surface-muted:#eee9e3;--ink:#342f2c;--sub:#887f79;--line:#e3ddd6;--acc:#bf5968;--acc-dark:#9d3f50;--ok:#2d916c;--warn:#b9781f;--err:#b44d4d;--blue:#55749c;--shadow:0 10px 28px rgb(76 58 48 / 6%)}
 *{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:flex;color:var(--fg);font:14px/1.55 system-ui,"Microsoft YaHei",sans-serif;background:#0b0f19 var(--wall) center/cover fixed no-repeat}
-body::before{content:"";position:fixed;inset:0;background:rgba(0,0,0,var(--dim));z-index:-1}
-.glass{background:rgba(18,22,36,var(--alpha));border:1px solid var(--edge);border-radius:16px;backdrop-filter:blur(var(--blur)) saturate(150%);-webkit-backdrop-filter:blur(var(--blur)) saturate(150%);box-shadow:0 10px 40px rgba(0,0,0,.3)}
-aside{width:220px;margin:16px 0 16px 16px;padding:20px 12px;display:flex;flex-direction:column;gap:4px;position:sticky;top:16px;height:calc(100vh - 32px)}
-aside .logo{font-weight:800;font-size:18px;padding:0 10px 18px}aside .logo b{color:var(--acc)}
-aside button{all:unset;cursor:pointer;padding:9px 12px;border-radius:10px;color:var(--sub)}
-aside button:hover,aside button[aria-current=page]{background:rgba(255,255,255,.09);color:var(--fg)}
-aside button:focus-visible,.btn:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
-aside .foot{margin-top:auto;display:flex;flex-direction:column;gap:6px}
-main{flex:1;padding:16px 24px;min-width:0}
-.page{display:none}.page.on{display:block;animation:in .25s ease}
-@keyframes in{from{opacity:0;transform:translateY(6px)}}
-h1{font-size:22px;margin:6px 0 18px}h3{margin:0 0 10px;font-size:13px;color:var(--sub);font-weight:600}
-.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));margin-bottom:16px}
-.grid.wide{grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
-.box{padding:18px}.big{font-size:32px;font-weight:800}.big small{font-size:13px;color:var(--sub);font-weight:400}
-.meter{height:6px;border-radius:3px;background:rgba(255,255,255,.1);margin-top:10px;overflow:hidden}
-.meter i{display:block;height:100%;background:var(--acc);transition:width .6s}.meter i.w{background:var(--warn)}.meter i.e{background:var(--err)}
-table{width:100%;border-collapse:collapse}th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--edge)}
-th{font-size:12px;color:var(--sub);font-weight:500}tr:last-child td{border-bottom:0}
-.kv td:first-child{color:var(--sub);width:40%}
-.btn{border:0;border-radius:10px;padding:8px 14px;font:inherit;color:#fff;background:var(--acc);cursor:pointer}
-.btn.g{background:rgba(255,255,255,.1)}.btn.r{background:var(--err)}.btn:disabled{opacity:.5;cursor:wait}
-.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}.bar .fill{flex:1}
-input,select,textarea{width:100%;font:inherit;color:var(--fg);background:rgba(0,0,0,.3);border:1px solid var(--edge);border-radius:10px;padding:8px 10px}
-textarea{font:13px/1.5 Consolas,monospace}label{display:block;font-size:12px;color:var(--sub);margin:12px 0 4px}
-.pill{display:inline-block;font-size:12px;padding:1px 9px;border-radius:20px;background:rgba(255,255,255,.1)}
-.pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}.pill.err{color:var(--err)}
-.chip{border:1px solid var(--edge);background:rgba(255,255,255,.06);color:var(--fg);border-radius:20px;padding:5px 12px;cursor:pointer;font:inherit}
-.chip[aria-pressed=true]{background:var(--acc);border-color:var(--acc)}
-#logBox{height:68vh;overflow:auto;padding:14px;font:12.5px/1.65 Consolas,monospace;white-space:pre-wrap}
-.L-INFO{color:var(--ok)}.L-WARNING{color:var(--warn)}.L-ERROR,.L-CRITICAL{color:var(--err);font-weight:700}.L-DEBUG{color:#6cb6ff}.t{color:var(--sub)}
+html{background:var(--paper)}
+body{margin:0;min-height:100vh;display:flex;color:var(--ink);font:14px/1.55 "Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;background:var(--paper) var(--wall) center/cover fixed no-repeat}
+body::before{content:"";position:fixed;inset:0;background:rgb(255 255 255 / var(--dim));z-index:-1}
+button,input,select,textarea{font:inherit}
+button{cursor:pointer}
+.glass{background:color-mix(in srgb,var(--panel) var(--alpha-pct),transparent);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);backdrop-filter:blur(var(--blur));-webkit-backdrop-filter:blur(var(--blur))}
+aside{width:238px;flex:0 0 238px;margin:18px 0 18px 18px;padding:20px 12px;display:flex;flex-direction:column;gap:4px;position:sticky;top:18px;height:calc(100vh - 36px);background:var(--panel)}
+aside .logo{display:flex;align-items:center;gap:10px;padding:0 10px 22px;font-weight:800;font-size:17px;letter-spacing:-.02em;border-bottom:1px solid var(--line);margin-bottom:12px}
+aside .logo small{display:block;color:var(--sub);font-size:10px;font-weight:500;letter-spacing:.04em;margin-top:2px}
+.brand-mark{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:var(--acc);color:#fff;box-shadow:0 5px 14px rgb(191 89 104 / 24%);font-weight:800}
+.nav-label{padding:9px 12px 5px;color:var(--sub);font-size:10px;font-weight:700;letter-spacing:.13em;text-transform:uppercase}
+aside button{all:unset;display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 12px;border-radius:8px;color:var(--sub);font-size:13px;font-weight:600;transition:background-color .15s,color .15s,transform .15s}
+aside button:hover,aside button[aria-current=page]{background:color-mix(in srgb,var(--acc) 10%,var(--panel));color:var(--acc)}
+aside button[aria-current=page]{box-shadow:inset 3px 0 var(--acc);transform:translateX(1px)}
+.nav-icon{width:19px;color:currentColor;font-size:16px;text-align:center}
+aside button:focus-visible,.btn:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid color-mix(in srgb,var(--acc) 70%,transparent);outline-offset:2px}
+aside .foot{margin-top:auto;display:flex;flex-direction:column;gap:5px;padding-top:12px;border-top:1px solid var(--line)}
+aside .foot button{font-size:12px}
+main{flex:1;min-width:0;padding:26px clamp(20px,4vw,54px) 50px}
+.appbar{display:flex;align-items:center;justify-content:space-between;gap:14px;max-width:1400px;margin:0 auto 26px;color:var(--sub);font-size:12px}
+.appbar .eyebrow,.kicker{color:var(--acc);font-size:10px;font-weight:800;letter-spacing:.13em;text-transform:uppercase}
+.appbar .status{display:inline-flex;align-items:center;gap:7px;padding:5px 10px;border:1px solid var(--line);border-radius:999px;background:var(--panel);font-size:11px;color:var(--sub)}
+.appbar .status::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 13%,transparent)}
+.page{display:none;max-width:1400px;margin:0 auto}.page.on{display:block;animation:in .22s ease}
+@keyframes in{from{opacity:0;transform:translateY(4px)}}
+.page-intro{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:22px}.page-intro h1{margin:3px 0 5px;font-size:28px;letter-spacing:-.04em}.page-intro p{margin:0;color:var(--sub);font-size:12px}.page-intro .actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+h1{font-size:25px;margin:6px 0 18px;letter-spacing:-.035em}h2{letter-spacing:-.02em}h3{margin:0 0 9px;font-size:12px;color:var(--sub);font-weight:700;letter-spacing:.02em}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));margin-bottom:14px}.grid.wide{grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+.account-metrics{grid-template-columns:repeat(6,minmax(150px,1fr));margin-bottom:22px}.metric-card{position:relative;overflow:hidden;padding:16px 17px;background:var(--panel)}.metric-card::after{content:"";position:absolute;right:-20px;bottom:-32px;width:92px;height:92px;border-radius:50%;background:color-mix(in srgb,var(--metric-color,var(--acc)) 10%,transparent)}.metric-card .metric-icon{display:inline-grid;width:26px;height:26px;place-items:center;margin-bottom:10px;border-radius:8px;background:color-mix(in srgb,var(--metric-color,var(--acc)) 12%,var(--panel));color:var(--metric-color,var(--acc));font-weight:800}.metric-card .metric-label{display:block;color:var(--sub);font-size:11px;font-weight:700}.metric-card .metric-value{display:block;margin-top:3px;font-size:28px;line-height:1.1;font-weight:800;letter-spacing:-.04em}.metric-card .metric-note{display:block;margin-top:8px;color:var(--sub);font-size:10px}
+.box{padding:18px}.big{font-size:30px;font-weight:800;letter-spacing:-.04em}.big small{font-size:12px;color:var(--sub);font-weight:500}.meter{height:7px;border-radius:4px;background:var(--surface-muted);margin-top:11px;overflow:hidden}.meter i{display:block;height:100%;border-radius:inherit;background:var(--acc);transition:width .6s}.meter i.w{background:var(--warn)}.meter i.e{background:var(--err)}
+.panel-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:13px}.panel-title h2{margin:0;font-size:16px}.panel-title p{margin:3px 0 0;color:var(--sub);font-size:11px}
+table{width:100%;border-collapse:collapse}th,td{padding:10px 11px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{background:var(--surface);color:var(--sub);font-size:11px;font-weight:700}tr:last-child td{border-bottom:0}tbody tr:hover{background:color-mix(in srgb,var(--acc) 4%,var(--panel))}.kv td:first-child{color:var(--sub);width:40%}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:35px;border:1px solid var(--acc);border-radius:7px;padding:7px 13px;font-size:12px;font-weight:700;color:#fff;background:var(--acc);box-shadow:0 4px 10px rgb(191 89 104 / 16%);transition:background-color .15s,border-color .15s,transform .15s,opacity .15s}.btn:hover:not(:disabled){background:var(--acc-dark);border-color:var(--acc-dark)}.btn:active:not(:disabled){transform:translateY(1px)}.btn.g{border-color:var(--line);background:var(--panel);box-shadow:none;color:var(--sub)}.btn.g:hover:not(:disabled){border-color:var(--acc);color:var(--acc);background:var(--panel)}.btn.r{border-color:var(--err);background:color-mix(in srgb,var(--err) 92%,#fff);box-shadow:none}.btn:disabled{opacity:.5;cursor:wait}
+.bar{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:14px}.bar .fill{flex:1;min-width:60px}
+input,select,textarea{width:100%;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:9px 10px;transition:border-color .15s,box-shadow .15s}input:hover,select:hover,textarea:hover{border-color:#c9bdb4}input:focus,select:focus,textarea:focus{border-color:var(--acc);box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 10%,transparent)}textarea{font:13px/1.5 Consolas,monospace;min-height:360px}label{display:block;font-size:12px;color:var(--sub);margin:12px 0 5px}
+.pill{display:inline-flex;align-items:center;min-height:22px;font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;background:var(--surface-muted);color:var(--sub);white-space:nowrap}.pill.ok{background:color-mix(in srgb,var(--ok) 12%,var(--panel));color:var(--ok)}.pill.warn{background:color-mix(in srgb,var(--warn) 13%,var(--panel));color:var(--warn)}.pill.err{background:color-mix(in srgb,var(--err) 12%,var(--panel));color:var(--err)}
+.chip{border:1px solid var(--line);background:var(--panel);color:var(--sub);border-radius:999px;padding:6px 12px;cursor:pointer;font:inherit}.chip[aria-pressed=true]{background:var(--acc);border-color:var(--acc);color:#fff}
+#logBox{height:68vh;overflow:auto;padding:14px;background:#302c2a;color:#f8f5f0;border:0;border-radius:10px;font:12px/1.65 Consolas,monospace;white-space:pre-wrap;box-shadow:inset 0 1px 0 rgb(255 255 255 / 7%)}.L-INFO{color:#8ee0b7}.L-WARNING{color:#f2c773}.L-ERROR,.L-CRITICAL{color:#ff9696;font-weight:700}.L-DEBUG{color:#9fc8ff}.t{color:var(--sub)}
 pre{margin:0;white-space:pre-wrap;word-break:break-all;font:12px Consolas,monospace;max-height:420px;overflow:auto}
-#gate{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9}
-#gate form{width:340px;padding:26px}
-#toast{position:fixed;right:20px;bottom:20px;padding:10px 16px;opacity:0;transition:.3s;pointer-events:none;z-index:10}#toast.on{opacity:1}#toast.bad{border-color:var(--err)}
-#editBox{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.5);z-index:8;padding:20px}
-#editBox.on{display:flex}#editBox form{width:min(460px,100%);padding:24px}.edit-flags{display:flex;gap:18px;flex-wrap:wrap;margin:12px 0}.edit-flags label{display:flex;align-items:center;gap:8px;margin:0;color:var(--fg)}.edit-flags input{width:auto}
-.acc{padding:0;overflow:hidden}.acc .hd{display:flex;gap:12px;align-items:center;padding:16px 18px;background:linear-gradient(120deg,rgba(139,123,255,.28),rgba(67,209,122,.08))}
-.acc .av{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;font-weight:800;font-size:18px;background:var(--acc);flex:0 0 auto}
-.acc .nm{flex:1;min-width:0}.acc .nm b{display:block;font-size:16px}.acc .nm small{color:var(--sub)}
-.kpi{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--edge)}.kpi div{background:rgba(18,22,36,.35);padding:12px 18px}
-.kpi span{display:block;font-size:12px;color:var(--sub)}.kpi b{font-size:18px}.acc details{padding:10px 18px 14px}.acc summary{cursor:pointer;color:var(--sub);font-size:13px}
-.acc .all{max-height:380px;overflow:auto;margin-top:8px}.acc .all td{font-size:12.5px;padding:6px 8px;word-break:break-all}.acc .all td:first-child{color:var(--sub);font-family:Consolas,monospace;width:46%}
-.sec td{color:var(--acc)!important;font-weight:700;font-family:inherit!important;padding-top:12px!important}
-.tg{position:relative;display:inline-flex;align-items:center;gap:6px;cursor:pointer}
-.tg input{position:absolute;opacity:0;pointer-events:none}
-.tg i{width:34px;height:19px;border-radius:10px;background:rgba(255,255,255,.16);position:relative;transition:.2s;flex:0 0 auto}
-.tg i::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:.2s}
-.tg.on i{background:var(--ok)}.tg.on i::after{left:17px}
-.tg:focus-within i{outline:2px solid var(--acc);outline-offset:2px}
-.sw{display:flex;gap:10px;align-items:center;padding:10px 18px 0;font-size:12px;color:var(--sub)}
-.tgrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.tgrow>span{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--sub)}
-@media(max-width:760px){body{flex-direction:column}aside{width:auto;height:auto;position:static;margin:12px;flex-direction:row;flex-wrap:wrap}aside .foot{margin:0;flex-direction:row}main{padding:12px}}
+#gate{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:18px;background:rgb(48 41 37 / 45%);z-index:9}#gate form{width:min(390px,100%);padding:30px;background:var(--panel)}#gate h1{display:flex;align-items:center;gap:10px;margin:0 0 10px;font-size:24px}#gate p{margin:0 0 22px;color:var(--sub);font-size:12px}#gate .login-caption{color:var(--acc);font-size:10px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;margin-bottom:10px}
+#toast{position:fixed;right:22px;bottom:22px;padding:10px 15px;opacity:0;transition:.3s;pointer-events:none;z-index:10;background:var(--panel);color:var(--ink)}#toast.on{opacity:1}#toast.bad{border-color:var(--err);color:var(--err)}
+#editBox{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgb(48 41 37 / 45%);z-index:8;padding:20px}#editBox.on{display:flex}#editBox form{width:min(480px,100%);padding:24px;background:var(--panel)}.edit-flags{display:flex;gap:18px;flex-wrap:wrap;margin:14px 0}.edit-flags label{display:flex;align-items:center;gap:8px;margin:0;color:var(--ink)}.edit-flags input{width:auto;accent-color:var(--acc)}
+.acc{padding:0;overflow:hidden;background:var(--panel)}.acc .hd{display:flex;gap:12px;align-items:center;padding:16px 18px;background:linear-gradient(120deg,color-mix(in srgb,var(--acc) 10%,var(--panel)),var(--panel))}.acc .av{width:42px;height:42px;border-radius:11px;display:grid;place-items:center;font-weight:800;font-size:18px;background:var(--acc);color:#fff;flex:0 0 auto}.acc .nm{flex:1;min-width:0}.acc .nm b{display:block;font-size:15px}.acc .nm small{color:var(--sub)}
+.kpi{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--line)}.kpi div{background:var(--panel);padding:12px 18px}.kpi span{display:block;font-size:11px;color:var(--sub)}.kpi b{font-size:17px}.acc details{padding:10px 18px 14px}.acc summary{cursor:pointer;color:var(--sub);font-size:12px}.acc .all{max-height:380px;overflow:auto;margin-top:8px}.acc .all td{font-size:12px;padding:6px 8px;word-break:break-all}.acc .all td:first-child{color:var(--sub);font-family:Consolas,monospace;width:46%}.sec td{color:var(--acc)!important;font-weight:700;font-family:inherit!important;padding-top:12px!important}
+.tg{position:relative;display:inline-flex;align-items:center;gap:6px;cursor:pointer}.tg input{position:absolute;opacity:0;pointer-events:none}.tg i{width:34px;height:19px;border-radius:10px;background:var(--line);position:relative;transition:.2s;flex:0 0 auto}.tg i::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgb(0 0 0 / 18%);transition:.2s}.tg.on i{background:var(--ok)}.tg.on i::after{left:17px}.tg:focus-within i{outline:2px solid var(--acc);outline-offset:2px}.sw{display:flex;gap:10px;align-items:center;padding:10px 18px 0;font-size:12px;color:var(--sub)}.tgrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.tgrow>span{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--sub)}
+@media(max-width:1100px){.account-metrics{grid-template-columns:repeat(3,minmax(150px,1fr))}}
+@media(max-width:760px){body{display:block}aside{width:auto;height:auto;position:static;margin:10px;padding:12px;display:block}aside .logo{padding-bottom:14px;margin-bottom:8px}.nav-label{display:none}aside button{display:inline-flex;margin:2px 1px;padding:9px 10px}aside .foot{display:flex;flex-direction:row;margin-top:8px;padding-top:9px}main{padding:18px 12px 36px}.appbar{margin-bottom:18px}.page-intro{align-items:flex-start;flex-direction:column;margin-bottom:16px}.page-intro .actions{width:100%}.page-intro .actions>*{flex:1}.account-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.metric-card{padding:13px}.metric-card .metric-value{font-size:24px}.grid.wide{grid-template-columns:1fr}.box{padding:14px}.table-wrap{overflow-x:auto}table{min-width:680px}.upstream-panel{overflow:hidden}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
-<div id="gate"><form class="glass" id="gateForm"><h1>NAI <b style="color:var(--acc)">Gateway</b></h1>
+<div id="gate"><form class="glass" id="gateForm"><div class="login-caption">NovelAI Gateway</div><h1><span class="brand-mark" aria-hidden="true">✦</span><span>控制台登录</span></h1><p>查看账号池、额度、模型与网关运行状态。</p>
 <label for="pw">管理密码</label><input id="pw" type="password" autocomplete="current-password" required>
-<div class="bar" style="margin:16px 0 0"><span class="fill"></span><button class="btn">进入控制台</button></div></form></div>
-<aside class="glass" aria-label="导航"><div class="logo">NAI <b>Gateway</b></div>
-<button data-p="dash" aria-current="page">总览</button><button data-p="acct">账号池</button>
-<button data-p="model">模型</button><button data-p="env">配置</button><button data-p="log">日志</button><button data-p="look">外观</button>
-<div class="foot"><button id="restart">重启网关</button><button id="logout">退出登录</button></div></aside>
+<div class="bar" style="margin:18px 0 0"><span class="fill"></span><button class="btn">进入控制台</button></div></form></div>
+<aside class="glass" aria-label="导航"><div class="logo"><span class="brand-mark" aria-hidden="true">✦</span><span>NAI Gateway<small>运营控制台</small></span></div>
+<div class="nav-label">工作区</div><button data-p="dash" aria-current="page"><span class="nav-icon" aria-hidden="true">⌂</span>总览</button><button data-p="acct"><span class="nav-icon" aria-hidden="true">◉</span>账号池</button>
+<button data-p="model"><span class="nav-icon" aria-hidden="true">◇</span>模型配置</button><button data-p="env"><span class="nav-icon" aria-hidden="true">⚙</span>环境配置</button><button data-p="log"><span class="nav-icon" aria-hidden="true">≡</span>运行日志</button><button data-p="look"><span class="nav-icon" aria-hidden="true">◐</span>外观设置</button>
+<div class="foot"><button id="restart"><span class="nav-icon" aria-hidden="true">↻</span>重启网关</button><button id="logout"><span class="nav-icon" aria-hidden="true">⇥</span>退出登录</button></div></aside>
 <main>
-<section class="page on" id="dash"><h1>总览</h1><div class="grid" id="cnt"></div>
+<header class="appbar"><span><span class="eyebrow">Gateway overview</span><br>账号能力与上游运行状态</span><span class="status">服务已连接</span></header>
+<section class="page on" id="dash"><div class="page-intro"><div><span class="kicker">运营总览</span><h1>今天的网关状态</h1><p>用量、账号能力和上游订阅额度集中在一个工作区。</p></div><div class="actions"><button class="btn g" id="upGo">↻ 刷新上游额度</button></div></div>
+<div class="grid account-metrics" id="accountMetrics" aria-live="polite"></div>
+<div class="grid" id="cnt"></div>
 <div class="grid" id="balanceTotals" aria-live="polite"></div>
-<div class="bar"><h2 class="fill" style="margin:8px 0 0;font-size:17px">NovelAI 账号</h2><span class="pill" id="upT">加载中...</span><button class="btn" id="upGo">刷新</button></div>
-<div class="grid wide" id="upList"></div>
-<section class="glass box" style="margin-bottom:16px"><h2 style="font-size:17px;margin:0 0 16px">模型调用耗时 · 最近 24 小时</h2><div style="height:300px;position:relative"><canvas id="modelLatencyChart" aria-label="V4.5与V5模型每小时平均调用耗时" role="img"></canvas></div><p id="latencyEmpty" class="t" hidden>暂无调用耗时数据</p></section>
-<div class="glass box"><h3>按模型统计</h3><table><thead><tr><th>模型</th><th>今日</th><th>近 7 天</th></tr></thead><tbody id="perm"></tbody></table></div></section>
-<section class="page" id="acct"><div class="bar"><h1 class="fill">账号池</h1><button class="btn" id="addA">新增账号</button></div>
-<div class="glass box"><p id="accSummary" class="t" role="status"></p><table><thead><tr><th>名称</th><th>密钥</th><th>权重</th><th>状态</th><th>分类</th><th>成功/失败</th><th>能力与操作</th></tr></thead><tbody id="accs"></tbody></table></div></section>
-<section class="page" id="model"><div class="bar"><h1 class="fill">models.toml</h1><button class="btn g" id="mFetch">抓取上游模型</button><button class="btn" id="mSave">保存</button></div>
+<section class="glass box upstream-panel" style="margin-bottom:14px"><div class="panel-title"><div><h2>NovelAI 账号额度</h2><p>每 60 秒自动同步，可展开查看完整上游字段。</p></div><span class="pill" id="upT">加载中...</span></div><div class="grid wide" id="upList"></div></section>
+<section class="glass box" style="margin-bottom:14px"><div class="panel-title"><div><h2>模型调用耗时</h2><p>最近 24 小时，每小时平均值。</p></div></div><div style="height:300px;position:relative"><canvas id="modelLatencyChart" aria-label="V4.5与V5模型每小时平均调用耗时" role="img"></canvas></div><p id="latencyEmpty" class="t" hidden>暂无调用耗时数据</p></section>
+<div class="glass box"><div class="panel-title"><div><h2>按模型统计</h2><p>今日与近 7 天生成量。</p></div></div><div class="table-wrap"><table><thead><tr><th>模型</th><th>今日</th><th>近 7 天</th></tr></thead><tbody id="perm"></tbody></table></div></div></section>
+<section class="page" id="acct"><div class="page-intro"><div><span class="kicker">Account pool</span><h1>账号池</h1><p>控制账号是否参与请求，以及 V5 和 Anlas 能力。</p></div><div class="actions"><button class="btn" id="addA">＋ 新增账号</button></div></div>
+<div class="glass box"><div class="panel-title"><div><h2>账号能力与操作</h2><p id="accSummary" role="status">正在读取账号容量…</p></div></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>密钥</th><th>权重</th><th>状态</th><th>分类</th><th>成功 / 失败</th><th>能力与操作</th></tr></thead><tbody id="accs"></tbody></table></div></div></section>
+<section class="page" id="model"><div class="page-intro"><div><span class="kicker">Model registry</span><h1>模型配置</h1><p>编辑 models.toml，或从 NovelAI 上游刷新模型列表。</p></div><div class="actions"><button class="btn g" id="mFetch">抓取上游模型</button><button class="btn" id="mSave">保存配置</button></div></div>
 <textarea id="mTxt" rows="28" class="glass" aria-label="模型配置"></textarea></section>
-<section class="page" id="env"><h1>环境配置</h1><form class="glass box" id="envF"></form></section>
-<section class="page" id="log"><div class="bar"><h1 class="fill">日志</h1><label class="bar" style="margin:0"><input type="checkbox" id="lAuto" checked style="width:auto"> 实时</label>
-<select id="lLv" style="width:130px" aria-label="级别"><option value="">全部级别</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select></div>
+<section class="page" id="env"><div class="page-intro"><div><span class="kicker">Runtime settings</span><h1>环境配置</h1><p>保存后重启网关使配置生效。</p></div></div><form class="glass box" id="envF"></form></section>
+<section class="page" id="log"><div class="page-intro"><div><span class="kicker">Live logs</span><h1>运行日志</h1><p>查看最近请求、账号切换和错误信息。</p></div><div class="actions"><label class="bar" style="margin:0"><input type="checkbox" id="lAuto" checked style="width:auto"> 实时</label>
+<select id="lLv" style="width:130px" aria-label="级别"><option value="">全部级别</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select></div></div>
 <div class="glass" id="logBox" role="log" aria-live="polite"></div></section>
-<section class="page" id="look"><h1>外观</h1><div class="glass box" style="max-width:560px">
+<section class="page" id="look"><div class="page-intro"><div><span class="kicker">Appearance</span><h1>外观设置</h1><p>调整背景和面板层次，仅保存在当前浏览器。</p></div></div><div class="glass box" style="max-width:620px">
 <label for="wU">壁纸 URL（http/https）</label><div class="bar" style="margin:0"><input id="wU" class="fill" placeholder="https://..."><button class="btn" id="wSet">应用</button></div>
 <label for="wF">本地图片</label><input id="wF" type="file" accept="image/*">
 <label for="sB">模糊 <span id="vB"></span></label><input id="sB" type="range" min="0" max="40">
@@ -135,8 +131,48 @@ function stat(t, v, lim) {
   return `<div class="glass box"><h3>${esc(t)}</h3><div class="big">${v}${lim ? ` <small>/ ${lim}</small>` : ''}</div>` +
     (lim ? `<div class="meter" role="progressbar" aria-label="${esc(t)}" aria-valuenow="${p.toFixed(0)}" aria-valuemin="0" aria-valuemax="100"><i class="${c}" style="width:${p}%"></i></div>` : '') + '</div>';
 }
+function metric(icon, label, value, note, color, id = '') {
+  return `<article class="glass metric-card" style="--metric-color:${color}"><span class="metric-icon" aria-hidden="true">${icon}</span><span class="metric-label">${esc(label)}</span><strong class="metric-value"${id ? ` id="${id}"` : ''}>${esc(value)}</strong><small class="metric-note"${id ? ` id="${id}Note"` : ''}>${esc(note)}</small></article>`;
+}
+function capabilityFromAccounts(list = []) {
+  const groups = new Map();
+  list.forEach(a => { const key = a.credential_group || a.id; if (!groups.has(key)) groups.set(key, a); });
+  const accounts = [...groups.values()].filter(a => a.enabled !== false);
+  return {
+    total: accounts.length,
+    v45: accounts.length,
+    v5: accounts.filter(a => a.allow_v5 !== false).length,
+    anlas: accounts.filter(a => a.allow_anlas !== false).length,
+    v5_and_anlas: accounts.filter(a => a.allow_v5 !== false && a.allow_anlas !== false).length,
+    opus_free: accounts.filter(a => a.allow_v5 !== false).length,
+    nai_v5_free: accounts.filter(a => a.allow_v5 !== false && a.allow_anlas === false).length,
+    v5_anlas: accounts.filter(a => a.allow_v5 !== false && a.allow_anlas !== false).length,
+    paid_image: accounts.filter(a => a.allow_v5 === false && a.allow_anlas !== false).length,
+    legacy_free: accounts.filter(a => a.allow_v5 === false && a.allow_anlas === false).length,
+    disabled: list.filter(a => a.enabled === false).length,
+  };
+}
+function renderCapabilityMetrics(capacity = {}) {
+  const c = capabilityFromAccounts(capacity.accounts || []);
+  const merged = { ...c, ...capacity };
+  $('accountMetrics').innerHTML = metric('✦', 'Opus 免费生图账号', merged.opus_free ?? merged.v5 ?? 0, '允许承接免费规格请求', 'var(--acc)', 'opusMetricValue') +
+    metric('Ⅴ', 'NAI V5 免费规格', merged.nai_v5_free ?? 0, 'V5 开启 · Anlas 关闭', 'var(--blue)') +
+    metric('◈', 'V5 Anlas 账号', merged.v5_anlas ?? merged.v5_and_anlas ?? 0, 'V5 与付费额度均可用', 'var(--ok)') +
+    metric('◌', '普通付费生图', merged.paid_image ?? 0, 'V4.5 / 非 V5 Anlas', 'var(--warn)') +
+    metric('◇', 'V4.5 可用账号', merged.v45 ?? merged.total ?? 0, '当前启用的独立凭据', 'var(--ink)') +
+    metric('×', '停用 / 未参与', merged.disabled ?? 0, '配置保留，不进入轮询', 'var(--sub)');
+}
+function updateOpusMetric(count, known, total) {
+  const value = $('opusMetricValue');
+  const note = $('opusMetricValueNote');
+  if (!value || !note || count === null || count === undefined) return;
+  value.textContent = String(count);
+  note.textContent = total === null || total === undefined ? '上游同步可用账号' : `上游已确认 ${known}/${total} 个独立账号`;
+}
 async function loadDash() {
-  const u = (await api('/overview')).usage || {}, c = u.counters || {};
+  const [overview, capacity] = await Promise.all([api('/overview'), api('/concurrency')]);
+  const u = overview.usage || {}, c = u.counters || {};
+  renderCapabilityMetrics(capacity);
   $('cnt').innerHTML = stat('今日 · 全部模型', c.daily_all ?? 0) + stat('今日 · V4.5', c.daily_v45 ?? 0) +
     stat('近 7 天 · V4.5', c.weekly_v45 ?? 0) + stat('本月 · V4.5', c.monthly_v45 ?? 0) +
     stat('今日 · V5', c.daily_v5 ?? 0, u.daily_limit) + stat('近 7 天 · V5', c.weekly_v5 ?? 0, u.weekly_limit) + stat('本月 · V5', c.monthly_v5 ?? 0);
@@ -176,6 +212,7 @@ async function loadAcct() {
   const l = (await api('/accounts')).accounts || [];
   accountRows = l;
   const capacity = await api('/concurrency');
+  renderCapabilityMetrics(capacity);
   $('accSummary').textContent = `有效账号 ${capacity.total} 个 · V5 免费请求 ${capacity.v5} 并发 · V5 消耗 Anlas ${capacity.v5_and_anlas} 并发 · 允许消耗 Anlas ${capacity.anlas} 并发`;
   $('accs').innerHTML = l.map(a => `<tr><td>${esc(a.name)}</td><td><code>${esc(a.masked_key)}</code></td><td>${esc(a.weight)}</td><td>${pill(a.status)}</td>` +
     `<td><span class="pill ${a.classification === 'disabled' ? '' : 'ok'}">${esc(accountClass(a.classification))}</span></td>` +
@@ -301,10 +338,11 @@ async function loadUps() {
   btn.disabled = true; $('upT').textContent = '同步中...'; renderBalanceTotals();
   try {
     const list = (await api('/accounts')).accounts || [];
+    renderCapabilityMetrics(capabilityFromAccounts(list));
     const groupOf = a => a.credential_group ?? a.id;
     const seenKeys = new Map();
     list.forEach(a => seenKeys.set(groupOf(a), (seenKeys.get(groupOf(a)) || 0) + 1));
-    if (!list.length) { renderBalanceTotals([], 0); $('upList').innerHTML = '<div class="glass box">尚未配置账号</div>'; $('upT').textContent = '无账号'; return; }
+    if (!list.length) { renderBalanceTotals([], 0); updateOpusMetric(0, 0, 0); $('upList').innerHTML = '<div class="glass box">尚未配置账号</div>'; $('upT').textContent = '无账号'; return; }
     $('upList').innerHTML = list.map(a => `<article class="glass acc" id="up_${esc(a.id)}"><div class="box">正在拉取 ${esc(a.name)}...</div></article>`).join('');
     const requests = new Map(), results = new Map();
     await Promise.all(list.map(async a => {
@@ -319,7 +357,13 @@ async function loadUps() {
       catch (e) { html = accCard(a, null, e.message); }
       const el = document.getElementById('up_' + a.id); if (el) el.outerHTML = html;
     }));
-    renderBalanceTotals([...results.values()], seenKeys.size);
+    const upstreamResults = [...results.values()];
+    renderBalanceTotals(upstreamResults, seenKeys.size);
+    const opusResults = upstreamResults.filter(r => {
+      const s = r.subscription || {}, percent = balanceNumber(s.usage?.percent);
+      return s.active !== false && Number(s.tier) === 3 && percent !== null && percent > 0;
+    }).length;
+    updateOpusMetric(opusResults, upstreamResults.length, seenKeys.size);
     $('upT').textContent = (results.size < seenKeys.size ? '部分账号拉取失败 · ' : '') + '上游数据同步于 ' + new Date().toLocaleTimeString('zh-CN');
   } catch (e) {
     $('upT').textContent = '同步失败';
@@ -377,7 +421,7 @@ let th = { ...DEF, ...JSON.parse(localStorage.getItem('gw_theme2') || '{}') };
 function paint() {
   const r = document.documentElement.style;
   if (th.wall) r.setProperty('--wall', `url("${th.wall.replace(/["\\]/g, encodeURIComponent)}")`); else r.removeProperty('--wall');
-  r.setProperty('--blur', th.blur + 'px'); r.setProperty('--alpha', th.alpha / 100); r.setProperty('--dim', th.dim / 100);
+  r.setProperty('--blur', th.blur + 'px'); r.setProperty('--alpha', th.alpha / 100); r.setProperty('--alpha-pct', th.alpha + '%'); r.setProperty('--dim', th.dim / 100);
   $('sB').value = th.blur; $('sA').value = th.alpha; $('sD').value = th.dim;
   $('vB').textContent = th.blur + 'px'; $('vA').textContent = th.alpha + '%'; $('vD').textContent = th.dim + '%';
   if (!th.wall.startsWith('data:')) $('wU').value = th.wall;

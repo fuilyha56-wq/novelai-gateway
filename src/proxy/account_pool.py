@@ -428,6 +428,32 @@ class AccountPool:
         """返回账号池按请求能力划分的并发槽数。"""
         enabled = self.enabled_count()
         anlas = self.eligible_count(need_anlas=True)
+        with self._lock:
+            enabled_accounts = self._unique_credentials([
+                account
+                for account in self._accounts.values()
+                if account.enabled and account.key
+            ])
+            credential_enabled: dict[str, bool] = {}
+            for account in self._accounts.values():
+                if account.key:
+                    credential_enabled[account.key] = credential_enabled.get(account.key, False) or account.enabled
+            category_counts = {
+                "opus_free": sum(1 for account in enabled_accounts if account.allow_v5),
+                "nai_v5_free": sum(
+                    1 for account in enabled_accounts if account.allow_v5 and not account.allow_anlas
+                ),
+                "v5_anlas": sum(
+                    1 for account in enabled_accounts if account.allow_v5 and account.allow_anlas
+                ),
+                "paid_image": sum(
+                    1 for account in enabled_accounts if not account.allow_v5 and account.allow_anlas
+                ),
+                "legacy_free": sum(
+                    1 for account in enabled_accounts if not account.allow_v5 and not account.allow_anlas
+                ),
+                "disabled": sum(1 for is_enabled in credential_enabled.values() if not is_enabled),
+            }
         return {
             "total": enabled,
             # V4.5 has no separate account toggle; every enabled credential can serve it.
@@ -436,6 +462,7 @@ class AccountPool:
             "anlas": anlas,
             "v45_and_anlas": anlas,
             "v5_and_anlas": self.eligible_count(need_v5=True, need_anlas=True),
+            **category_counts,
         }
 
     def check_request(self, need_v5: bool = False, need_anlas: bool = False) -> tuple[bool, str]:
