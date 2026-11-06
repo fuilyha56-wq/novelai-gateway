@@ -25,6 +25,7 @@ from .account_pool import (
 from .config import _parse_weighted_api_keys, settings
 from .model_registry import ModelRegistry
 from .model_fetcher import handle_refresh_upstream_models
+from .queue import uses_managed_account_pool
 from .v5_quota import get_usage, is_v5_quota_exhausted_error, is_v5_quota_recovered
 from .stats import get_model_latency, render_model_latency_png
 
@@ -345,12 +346,12 @@ async def list_accounts(request: Request) -> dict[str, Any]:
 
 
 @router.get("/concurrency")
-async def account_concurrency(request: Request) -> dict[str, int]:
+async def account_concurrency(request: Request) -> dict[str, int | str]:
     """向受信任的 LFN 服务提供实时账号能力、分类计数与并发，不返回账号凭据。"""
     await _require_auth(request)
     summary = account_pool.capacity_summary()
-    summary["concurrency"] = summary["total"] or max(1, settings.max_concurrent)
-    return summary
+    concurrency = summary["total"] if uses_managed_account_pool() else max(1, settings.max_concurrent)
+    return {**summary, "concurrency": concurrency, "max_waiters": concurrency, "queue_policy": "capability-v1"}
 
 
 @router.post("/accounts")
@@ -463,7 +464,7 @@ async def update_env(request: Request) -> dict[str, str]:
     await _require_auth(request)
     body = await request.json()
     allowed = {
-        "IMAGE_BASE_URL", "HOST", "PORT", "MAX_CONCURRENT", "QUEUE_MAX_WAITERS",
+        "IMAGE_BASE_URL", "HOST", "PORT", "MAX_CONCURRENT",
         "COOLDOWN_MIN", "COOLDOWN_MAX",
         "V5_QUOTA_ENABLED", "V5_DAILY_LIMIT", "V5_WEEKLY_LIMIT", "SHARED_API_KEYS",
     }

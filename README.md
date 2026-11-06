@@ -28,6 +28,7 @@ NovelAI 多账号网关，提供 OpenAI 兼容接口、NAI 生成参数扩展、
 | 能力 | OpenAI 兼容入口 | 说明 |
 |---|---|---|
 | 文生图 | `POST /v1/images/generations` | OAI 请求与 `data[].b64_json/url` 响应 |
+| 原生请求体生图 | `POST /v1/images/generations/native` | NAI 请求与 OAI `data[].b64_json` 响应 |
 | 图生图 | 同上，`action=img2img` | `image` 与参考图可以同时提交 |
 | 局部重绘、扩图 | 同上，`action=infill` | `image` + `mask`；扩图需要调用方先扩展画布并制作遮罩 |
 | 多角色、角色位置与正负提示词 | 同上，`characters` 或原生 V4 提示词结构 | 与图生图、重绘、参考图组合 |
@@ -104,9 +105,8 @@ Compose 会从 `.env` 读取 `PORT`，同时作为宿主机和容器端口。默
 | `MODELS_CONFIG` | `config/models.toml` | 模型表路径 |
 | `IMAGE_DIR` | `images` | URL 格式输出的存储目录 |
 | `IMAGE_BASE_URL` | 空 | 对外图床根地址；空时根据请求地址推导 |
-| `MAX_CONCURRENT` | `1` | 没有可用账号池容量时的并发基数 |
+| `MAX_CONCURRENT` | `1` | 直连模式的运行位和等待位上限 |
 | `QUEUE_TIMEOUT` | `300` | 排队等待上限，秒 |
-| `QUEUE_MAX_WAITERS` | `8` | 允许等待的重负载请求数 |
 | `COOLDOWN_MIN` / `COOLDOWN_MAX` | `0.5` / `1.0` | 单账号请求间随机冷却，秒 |
 | `UPSTREAM_TIMEOUT` | `420` | 上游请求超时，秒；与排队超时分别计算 |
 | `V5_QUOTA_ENABLED` | `true` | 启用网关自己的 V5 日/滚动周限制 |
@@ -118,6 +118,8 @@ Compose 会从 `.env` 读取 `PORT`，同时作为宿主机和容器端口。默
 | `NOVELAI_IMAGE_URL` | `https://image.novelai.net` | 图像、Vibe、超分、部分用户数据、原生 OAI 接口 |
 | `NOVELAI_TEXT_URL` | `https://text.novelai.net` | 原生文本生成 |
 | `HEAVY_PREFIXES` | 代码内生成/工具路由集合 | 高级选项，JSON 字符串数组；控制原生代理的排队路径 |
+
+账号池按请求所需的 V5 和 Anlas 能力分配名额。每个启用的独立凭据各提供一个运行位和一个等待位。重叠的能力共享凭据，账号开关或 V5 额度状态变化时自动更新容量。没有匹配的账号返回 409，等待位满返回 429，超过排队时限返回 504。旧 `.env` 中的 `QUEUE_MAX_WAITERS` 仍可读取，排队数量由当前账号池计算。
 
 `RELOAD=1` 是 `main.py` 的开发进程环境变量，不写进 `.env`。代理需要通过进程环境或 Compose override 设置 `http_proxy`、`https_proxy`、`all_proxy`、`no_proxy`，使用可从实际容器网络访问的地址，仓库不内置私有代理 IP。
 
@@ -154,7 +156,7 @@ SHARED_API_KEYS='[{"id":"account-1","name":"主账号","key":"pst-your-token","w
 
 ### Medium 约束
 
-Medium 使用固定 14 步、Euler Ancestral、Heavy UC、特定参数与负面提示词。允许文生图、图生图和重绘，面积不超过 3,145,728；不接受优先服务、参考图、ControlNet、付费工具、自定义负面提示词和角色负面提示词。与固定配置冲突的请求返回 400。不得用这些限制推断 Full/Curated 的能力。
+Medium 使用固定 14 步、Euler Ancestral 和固定采样参数。未提供 UC 或负面提示词时填入默认值，显式提供的 UC、基础负面提示词和角色负面提示词按请求保留。允许文生图、图生图和重绘，面积不超过 3,145,728。优先服务、参考图、ControlNet、付费工具和与固定采样配置冲突的请求返回 400。
 
 ## 图像请求格式
 
@@ -192,7 +194,7 @@ Content-Type: application/json
 | `steps` | 28，1–50 | Medium 固定 14 |
 | `n` / `n_samples` | 1，1–8 | `n_samples` 优先；用于生成、额度与计费 |
 | `scale` / `guidance_scale` | 5，0–10 | 提示词引导；`scale` 优先 |
-| `seed` | 未传时随机 | 0–4,294,967,295；显式 0 保留 |
+| `seed` | 未传时随机 | 非负整数，显式 0 保留。最终由上游模型校验 |
 | `sampler` | `k_euler_ancestral` | 还可传其他上游支持的采样器 |
 | `noise_schedule` | `karras` | 如 native/exponential/polyexponential，模型适配由 NAI 判断 |
 | `cfg_rescale` / `noise` | 0 / 0 | CFG 重缩放、噪声 |
@@ -310,6 +312,29 @@ Path("result.png").write_bytes(base64.b64decode(result.data[0].b64_json))
 ```
 
 ## 图像响应与流式
+
+配置 `LFN_WATERMARK_SIGNER_URL` 和 `LFN_WATERMARK_SIGNER_TOKEN_FILE`（或 `LFN_WATERMARK_SIGNER_TOKEN`）后，网关通过 LFN 内部服务为 PNG、WebP 和 JPEG 写入 V2 签名，保留图片格式。图床在写入时签名，流式只签最终图片。`X-LFN-Watermark` 报告签名状态，`X-LFN-Watermark-Version: 2` 标记签名版本。签名失败时，网关仅重试签名，随后返回 HTTP 502 或流式错误事件。
+
+LFN 服务持有签名私钥。网关使用两端独享的服务令牌，推荐将随机生成的 32 字节编码为 Base64URL 后挂载。服务地址使用 HTTPS 或隔离的服务私网。配置签名服务前，先部署支持 V2 签名的 LFN 服务。三个签名配置项均为空时，网关以独立模式运行。
+
+### 原生请求体与 OAI 响应
+
+`POST /v1/images/generations/native` 使用与常规生图相同的 Gateway Bearer 鉴权。请求体使用 NovelAI 的 `input`、`model`、`action` 和 `parameters` 结构。
+
+```json
+{
+  "input": "1girl, outdoors",
+  "model": "nai-diffusion-4-5-full",
+  "action": "generate",
+  "parameters": {"params_version": 3, "width": 832, "height": 1216, "steps": 28, "n_samples": 1}
+}
+```
+
+支持 `application/json` 和带 `request` JSON 部件及文件的原生 `multipart/form-data`。请求交给 `/ai/generate-image`，沿用原生校验、账号调度、缺省重绘强度和 Medium 规则。结果以非流式 JSON 返回 `created`、`data[].b64_json` 和 `usage`，保留 PNG 或 WebP 原始字节。
+
+通过已开启请求体透传的 NewAPI 渠道调用时，JSON 使用 `POST /v1/images/generations`。保留 `input`、`action` 和 `parameters`，把 `model` 填成当前 Key 已获授权的别名，例如 `nai-v4.5-full`。Gateway 识别原生结构，并在转发时把别名转换为 NovelAI 模型 ID。使用 `prompt` 的常规 OpenAI 格式继续走原有处理流程。
+
+上传文件时使用 `POST /v1/images/edits`。表单的 `model` 文本字段填写已授权的别名，`request` 部件使用同一个别名或对应的 NovelAI 模型 ID。Gateway 在转发前移除表单的外层 `model`，并保留图片文件的原始字节。`-limit` 别名继续执行原有额度限制和下游计费规则。原生流式生成和工具使用各自的 API 路径。
 
 常规 OAI JSON：
 
@@ -522,7 +547,7 @@ V5 日限额按 UTC+8 的自然日统计，周限额为滚动 7 天窗口。**�
 | PUT accounts/{id}/enabled | `{ "enabled": true }` |
 | PUT accounts/{id}/allow-v5 | `{ "allow_v5": true }` |
 | PUT accounts/{id}/allow-anlas | `{ "allow_anlas": true }` |
-| GET concurrency | 各能力有效并发汇总，供受信任下游使用 |
+| GET concurrency | 各能力有效并发汇总、通用等待位和 `queue_policy: capability-v1`，供受信任下游使用 |
 | GET upstream/account-data?account_id=... | 同一账号的 subscription + user_data |
 | GET upstream/subscription / upstream/user/data | 单项上游数据，可传 account_id |
 | GET env / PUT env | 读取脱敏配置或更新允许项，部分需要重启 |

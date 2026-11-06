@@ -393,7 +393,7 @@ async function loadModel() { $('mTxt').value = (await api('/models/config')).con
 $('mSave').onclick = run(async () => toast((await api('/models/config', { method: 'PUT', body: JSON.stringify({ content: $('mTxt').value }) })).message));
 $('mFetch').onclick = run(async () => { await api('/models/refresh', { method: 'POST' }); toast('已抓取上游模型'); loadModel(); });
 
-const KEYS = ['IMAGE_BASE_URL', 'HOST', 'PORT', 'MAX_CONCURRENT', 'QUEUE_MAX_WAITERS', 'COOLDOWN_MIN', 'COOLDOWN_MAX', 'V5_QUOTA_ENABLED', 'V5_DAILY_LIMIT', 'V5_WEEKLY_LIMIT'];
+const KEYS = ['IMAGE_BASE_URL', 'HOST', 'PORT', 'MAX_CONCURRENT', 'COOLDOWN_MIN', 'COOLDOWN_MAX', 'V5_QUOTA_ENABLED', 'V5_DAILY_LIMIT', 'V5_WEEKLY_LIMIT'];
 async function loadEnv() {
   const e = (await api('/env')).env || {};
   $('envF').innerHTML = KEYS.map(k => `<label for="e_${k}">${k}</label><input id="e_${k}" name="${k}" value="${esc(e[k])}">`).join('') +

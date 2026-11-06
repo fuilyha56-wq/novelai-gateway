@@ -28,6 +28,7 @@ except ImportError:
     UnidentifiedImageError = Exception
 
 from .config import get_request_auth_token, settings
+from .image_watermark import ERROR_CODE, ImageSigningError, ImageWatermark, STATUS_HEADER, VERSION_HEADER, image_mime, sign_buffered
 from .queue import account_generation_gate, gate
 from .stats import record_generation, record_model_latency
 from .v5_quota import (
@@ -123,8 +124,20 @@ def is_medium_model(model: str) -> bool:
     return model in MEDIUM_MODELS or model in MEDIUM_MODELS.values()
 
 
+def _medium_negative_prompt(params: dict[str, Any]) -> Any:
+    """Use an explicitly supplied base negative, including an empty string."""
+    for key in ("negative_prompt", "negativePrompt"):
+        if key in params:
+            return params[key]
+    negative = params.get("v4_negative_prompt")
+    caption = negative.get("caption") if isinstance(negative, dict) else None
+    if isinstance(caption, dict) and "base_caption" in caption:
+        return caption["base_caption"]
+    return MEDIUM_NEGATIVE_PROMPT
+
+
 def enforce_medium_model(model: str, params: dict[str, Any], action: str = "generate") -> None:
-    """Reject costly overrides and apply the official fixed Medium settings."""
+    """Keep Medium cost limits while preserving explicit official UC fields."""
     if not is_medium_model(model):
         return
     if action not in {"generate", "img2img", "infill"}:
@@ -144,22 +157,30 @@ def enforce_medium_model(model: str, params: dict[str, Any], action: str = "gene
         raise HTTPException(status_code=400, detail="Medium model does not support reference images or ControlNet")
     if params.get("references") or params.get("characters") or params.get("upscale") or params.get("upscaled_enhance"):
         raise HTTPException(status_code=400, detail="Medium model does not support paid image tools")
-    if any(value and value != MEDIUM_NEGATIVE_PROMPT for value in (params.get("negative_prompt"), params.get("negativePrompt"))):
-        raise HTTPException(status_code=400, detail="Medium model does not support custom negative prompts")
-    if any(item.get("negativePrompt") or item.get("negative") for item in params.get("characterPrompts", []) if isinstance(item, dict)):
-        raise HTTPException(status_code=400, detail="Medium model does not support character negative prompts")
-    if params.get("ucPresetId", "heavy") != "heavy" or params.get("ucPreset", 0) != 0 or params.get("tag_hint_uc_preset", 2) != 2:
-        raise HTTPException(status_code=400, detail="Medium model requires the Heavy UC preset")
-    params.update({"steps": 14, "sampler": "k_euler_ancestral", "cfg_rescale": 0, "uncond_scale": 1, "sm": False, "sm_dyn": False, "params_version": 4, "ucPreset": 0, "ucPresetId": "heavy", "tag_hint_uc_preset": 2, "negative_prompt": MEDIUM_NEGATIVE_PROMPT})
+    params.update({"steps": 14, "sampler": "k_euler_ancestral", "cfg_rescale": 0, "uncond_scale": 1, "sm": False, "sm_dyn": False, "params_version": 4})
+    if not any(key in params for key in ("ucPreset", "ucPresetId", "tag_hint_uc_preset")):
+        params.update({"ucPreset": 0, "ucPresetId": "heavy", "tag_hint_uc_preset": 2})
     negative_structure = params.get("v4_negative_prompt")
-    if isinstance(negative_structure, dict):
-        caption = negative_structure.get("caption", {})
-        if isinstance(caption, dict):
-            if caption.get("base_caption") and caption["base_caption"] != MEDIUM_NEGATIVE_PROMPT:
-                raise HTTPException(status_code=400, detail="Medium model does not support custom negative prompts")
-            if any(item.get("char_caption") for item in caption.get("char_captions", []) if isinstance(item, dict)):
-                raise HTTPException(status_code=400, detail="Medium model does not support character negative prompts")
-            caption["base_caption"] = MEDIUM_NEGATIVE_PROMPT
+    caption = negative_structure.get("caption") if isinstance(negative_structure, dict) else None
+    if not any(key in params for key in ("negative_prompt", "negativePrompt")) and not (isinstance(caption, dict) and "base_caption" in caption):
+        params["negative_prompt"] = MEDIUM_NEGATIVE_PROMPT
+    if isinstance(caption, dict):
+        caption.setdefault("base_caption", _medium_negative_prompt(params))
+
+
+def _validate_image_seed(value: Any, label: str = "seed") -> int:
+    """Preserve non-negative integer seeds; the official API has no uint32 cap."""
+    try:
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise ValueError
+        if isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
+            raise ValueError
+        seed = int(value)
+        if seed < 0:
+            raise ValueError
+    except (ValueError, TypeError, OverflowError):
+        raise HTTPException(status_code=400, detail=f"{label} must be a non-negative integer, received {value!r}") from None
+    return seed
 
 
 def _validate_image_params(
@@ -198,8 +219,8 @@ def _validate_image_params(
         raise HTTPException(status_code=400, detail=f"scale 必须在 0-10 之间，当前 {scale}")
     if strength is not None and not (0 <= strength <= 1):
         raise HTTPException(status_code=400, detail=f"strength 必须在 0-1 之间，当前 {strength}")
-    if seed is not None and not (0 <= seed <= 4294967295):
-        raise HTTPException(status_code=400, detail=f"seed 必须在 0-4294967295 之间，当前 {seed}")
+    if seed is not None:
+        _validate_image_seed(seed)
     if sampler is not None and sampler not in VALID_SAMPLERS:
         logger.warning(f"sampler 不在白名单: {sampler}，合法值: {VALID_SAMPLERS}（仍透传给 NAI）")
     if noise_schedule is not None and noise_schedule not in VALID_NOISE_SCHEDULES:
@@ -295,10 +316,7 @@ def _validate_critical_override(key: str, value: Any) -> Any:
             raise HTTPException(status_code=400, detail=f"extra_params.strength 非法: {value!r}（需 0-1）")
         return v
     if key == "seed":
-        v = _safe_int(value, -1)
-        if not 0 <= v <= 4294967295:
-            raise HTTPException(status_code=400, detail=f"extra_params.seed 非法: {value!r}（需 0-4294967295）")
-        return v
+        return _validate_image_seed(value, "extra_params.seed")
     # uncond_scale / cfg_rescale / noise：无硬边界，透传由 NAI 校验
     return value
 
@@ -387,7 +405,7 @@ def _apply_custom_params(body: dict[str, Any], params: dict[str, Any], nai_model
     if "tag_hint_qt" in body:
         params["tag_hint_qt"] = _safe_int(body["tag_hint_qt"], 1)
     if "tag_hint_uc_preset" in body:
-        params["tag_hint_uc_preset"] = _safe_int(body["tag_hint_uc_preset"], 0)
+        params["tag_hint_uc_preset"] = body["tag_hint_uc_preset"] if is_medium_model(nai_model) else _safe_int(body["tag_hint_uc_preset"], 0)
 
     # 全量透传：未显式处理的非保留 body 字段原样进入 parameters
     #（transparent_background 已被映射为 tag_hint_transparent_background，跳过原名）
@@ -407,7 +425,6 @@ def _apply_custom_params(body: dict[str, Any], params: dict[str, Any], nai_model
         validate_nai_canvas(nai_model, params, action)
     if is_medium_model(nai_model):
         enforce_medium_model(nai_model, body, action)
-        params["negative_prompt"] = MEDIUM_NEGATIVE_PROMPT
         enforce_medium_model(nai_model, params, action)
 
 
@@ -1072,7 +1089,7 @@ def _extract_raw_pngs(response_bytes: bytes) -> list[bytes]:
             images = [
                 zf.read(name)
                 for name in zf.namelist()
-                if name.lower().endswith((".png", ".webp"))
+                if name.lower().endswith((".png", ".webp", ".jpg", ".jpeg"))
             ]
             if images:
                 return images
@@ -1126,7 +1143,7 @@ def _flatten_to_rgb(png_bytes: bytes) -> bytes:
         from PIL.PngImagePlugin import PngInfo
 
         img = Image.open(io.BytesIO(png_bytes))
-        if img.format == "WEBP" or img.mode == "RGB":
+        if img.format in {"WEBP", "JPEG"} or img.mode == "RGB":
             return png_bytes  # 已经是 RGB，无需转换
 
         # 实质性透明（V5 透明背景）→ 原样保留，透明通道不能丢
@@ -1450,6 +1467,7 @@ def _build_image_response_v2(
     reference_information_extracted: list[float] | None = None,
     billing_prompt_tokens: int | None = None,
     billing_image_samples: int = 0,
+    raw_images: list[bytes] | None = None,
 ) -> Response:
     """
     统一图像响应构建，支持 4 种返回格式。
@@ -1530,13 +1548,13 @@ def _build_image_response_v2(
         )
 
     # 对于 b64_json 和 url，需要从上游响应中提取全部 PNG。
-    png_images = _extract_pngs_from_response(content)
+    png_images = raw_images if raw_images is not None else _extract_pngs_from_response(content)
 
     if response_format == "url":
         # 落盘并返回 URL
         data = []
         for png_data in png_images:
-            suffix = "webp" if png_data[:4] == b"RIFF" and png_data[8:12] == b"WEBP" else "png"
+            suffix = {"image/webp": "webp", "image/jpeg": "jpg"}.get(image_mime(png_data), "png")
             filename = f"{uuid.uuid4().hex}.{suffix}"
             filepath = settings.image_dir / filename
             filepath.write_bytes(png_data)
@@ -1577,11 +1595,57 @@ def _build_image_response_v2(
     )
 
 
+async def _signed_openai_image_response(
+    request: Request, content: bytes, prompt: str, response_format: str, *,
+    model: str, raw_images: list[bytes] | None = None, **billing,
+) -> Response:
+    watermark = ImageWatermark(model)
+    try:
+        if watermark.enabled:
+            if response_format in {"raw", "nai_json"}:
+                content = await watermark.envelope(content, "zip" if response_format == "raw" else "json")
+            else:
+                images = raw_images if raw_images is not None else _extract_pngs_from_response(content)
+                if not images:
+                    watermark.fail()
+                raw_images = [await watermark.image(image) for image in images]
+        response = _build_image_response_v2(
+            request, content, prompt, response_format, raw_images=raw_images, **billing,
+        )
+        response.headers.update(watermark.headers())
+        return response
+    finally:
+        watermark.finish()
+
+
+async def native_openai_image_response(request: Request, upstream: Response, payload: dict[str, Any]) -> Response:
+    """Wrap a native image result without re-encoding its pixels or metadata."""
+    from PIL import Image
+
+    images = _extract_raw_pngs(upstream.body)
+    try:
+        for raw_image in images:
+            with Image.open(io.BytesIO(raw_image), formats=("PNG", "WEBP", "JPEG")) as image:
+                image.verify()
+    except (OSError, SyntaxError, ValueError, Image.DecompressionBombError) as exc:
+        raise HTTPException(status_code=502, detail="NovelAI did not return a valid PNG, WebP or JPEG image") from exc
+
+    return await _signed_openai_image_response(
+        request, upstream.body, payload["input"], "b64_json",
+        model=payload["model"],
+        anlas_cost=int(upstream.headers["X-Anlas-Cost"]),
+        billing_prompt_tokens=int(upstream.headers["X-Prompt-Tokens"]),
+        billing_image_samples=_billing_image_samples(payload["model"], len(images)),
+        raw_images=images,
+    )
+
+
 def _build_png_image_response(
     png_data: bytes,
     prompt: str,
     anlas_cost: int = 0,
     billing_prompt_tokens: int | None = None,
+    watermark_headers: dict[str, str] | None = None,
 ) -> Response:
     """将工具端点的 PNG 结果包装为 OpenAI b64_json 图像响应。
 
@@ -1611,6 +1675,7 @@ def _build_png_image_response(
             "Access-Control-Allow-Origin": "*",
             "X-Anlas-Cost": str(max(0, anlas_cost)),
             "X-Prompt-Tokens": str(prompt_tokens),
+            **(watermark_headers or {}),
         },
     )
 
@@ -2346,7 +2411,7 @@ def _build_generation_payload(
         nai_model = MEDIUM_MODELS.get(model, model)
     if is_medium_model(nai_model):
         enforce_medium_model(nai_model, body)
-        negative_prompt = MEDIUM_NEGATIVE_PROMPT
+        negative_prompt = _medium_negative_prompt(body)
 
     # 尺寸解析
     size_str = body.get("size", "")
@@ -2734,8 +2799,9 @@ async def handle_openai_generations(request: Request) -> Response:
     # V5 生成成功计数（当日累计）
     log_generation(nai_model, n_samples, params)
 
-    return _build_image_response_v2(
+    return await _signed_openai_image_response(
         request, content, prompt, response_format,
+        model=nai_model,
         anlas_cost=anlas_cost,
         billing_image_samples=_billing_image_samples(nai_model, params.get("n_samples", 1)),
         billing_prompt_tokens=_billing_prompt_tokens(nai_model, billing_body),
@@ -2815,6 +2881,8 @@ async def handle_openai_generations_stream(request: Request) -> StreamingRespons
     def event(kind, data):
         return f"event: {kind}\ndata: {json.dumps({'type': kind, **data})}\n\n"
 
+    watermark = ImageWatermark(nai_model)
+
     async def stream_events():
         finals = {}
         try:
@@ -2836,9 +2904,11 @@ async def handle_openai_generations_stream(request: Request) -> StreamingRespons
                     if not isinstance(image, str) or not image:
                         raise ValueError("Final upstream image event has no image")
                     raw_image = base64.b64decode(_strip_data_prefix(image), validate=True)
-                    if not (raw_image.startswith(b"\x89PNG\r\n\x1a\n") or (raw_image[:4] == b"RIFF" and raw_image[8:12] == b"WEBP")):
-                        raise ValueError("Final upstream event is not a PNG/WebP image")
-                    finals[index] = {"b64_json": _strip_data_prefix(image), "revised_prompt": prompt}
+                    if image_mime(raw_image) is None:
+                        raise ValueError("Final upstream event is not a PNG/WebP/JPEG image")
+                    signed = await watermark.image(raw_image)
+                    encoded = _strip_data_prefix(image) if signed == raw_image else base64.b64encode(signed).decode("ascii")
+                    finals[index] = {"b64_json": encoded, "revised_prompt": prompt}
                     # Count each successful final once, even if a later sample fails.
                     if len(finals) == params["n_samples"]:
                         break
@@ -2848,6 +2918,9 @@ async def handle_openai_generations_stream(request: Request) -> StreamingRespons
                 raise ValueError("Upstream stream ended before all final images arrived")
             rows = [finals[i] for i in sorted(finals)]
             yield event("image_generation.completed", {"data": rows, **({"b64_json": rows[0]["b64_json"]} if len(rows) == 1 else {}), "usage": usage})
+            yield "data: [DONE]\n\n"
+        except ImageSigningError as exc:
+            yield event("error", {"error": {"message": exc.detail, "type": "upstream_error", "code": ERROR_CODE}})
             yield "data: [DONE]\n\n"
         except Exception as exc:
             yield event("error", {"error": {"message": str(exc), "type": "upstream_error"}})
@@ -2859,11 +2932,13 @@ async def handle_openai_generations_stream(request: Request) -> StreamingRespons
                     for item in finals.values():
                         record_generation(base64.b64decode(item["b64_json"]), "/ai/generate-image-stream", params["width"], params["height"])
             finally:
+                watermark.finish()
                 await release()
 
     return StreamingResponse(stream_events(), media_type="text/event-stream", background=BackgroundTask(release), headers={
         "Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
         "X-Anlas-Cost": str(anlas), "X-Prompt-Tokens": str(prompt_tokens), "X-Completion-Tokens": str(completion_tokens),
+        **watermark.headers(streaming=True),
     })
 
 
@@ -3026,13 +3101,14 @@ async def handle_upscale(request: Request) -> Response:
     async with gate.for_request(request):
         content = await _send_nai_binary_request(request, payload, target_url, force_json=True)
     png_data = _extract_png_from_zip(content)
+    png_data, watermark_headers = await sign_buffered(png_data, "image/png", str(payload.get("model") or "upscale"))
 
     # NAI upscale 返回 ZIP，网关统一对外返回 PNG。
     return Response(
         content=png_data,
         status_code=200,
-        media_type="image/png",
-        headers={"Access-Control-Allow-Origin": "*"},
+        media_type=image_mime(png_data) or "image/png",
+        headers={"Access-Control-Allow-Origin": "*", **watermark_headers},
     )
 
 
@@ -3090,8 +3166,8 @@ async def handle_annotate(request: Request) -> Response:
 
     target_url = settings.get_upstream_url("/ai/annotate-image")
 
-    # 不走排队（轻负载），annotate 端点需要纯 JSON
-    content = await _send_nai_binary_request(request, payload, target_url, force_json=True)
+    async with gate.for_request(request):
+        content = await _send_nai_binary_request(request, payload, target_url, force_json=True)
 
     # NAI 返回 ZIP 文件，解压提取第一张 PNG
     try:
@@ -3108,6 +3184,7 @@ async def handle_annotate(request: Request) -> Response:
         logger.error(f"❌ annotate ZIP 解压失败: {e}")
         raise HTTPException(status_code=502, detail=f"响应解压失败: {e}")
 
+    png_data, watermark_headers = await sign_buffered(png_data, "image/png", str(model))
     return Response(
         content=png_data,
         status_code=200,
@@ -3115,6 +3192,7 @@ async def handle_annotate(request: Request) -> Response:
         headers={
             "Access-Control-Allow-Origin": "*",
             "X-Annotate-Model": model,
+            **watermark_headers,
         },
     )
 
@@ -3259,9 +3337,11 @@ async def _director_simple(request: Request, tool: str) -> Response:
     payload = _director_augment_payload(body, tool)
     target_url = settings.get_upstream_url("/ai/augment-image")
 
-    # 不走排队（轻负载）
-    content = await _send_nai_binary_request(request, payload, target_url)
+    _preflight_account(request, str(payload.get("model") or ""), allow_anlas=True)
+    async with gate.for_request(request):
+        content = await _send_nai_binary_request(request, payload, target_url)
     png_data = _extract_png_from_zip(content)
+    png_data, watermark_headers = await sign_buffered(png_data, "image/png", f"director-{tool}")
 
     # 计算 Anlas 消耗并映射为 prompt_tokens
     anlas_cost = info["anlas"]
@@ -3270,11 +3350,12 @@ async def _director_simple(request: Request, tool: str) -> Response:
     return Response(
         content=png_data,
         status_code=200,
-        media_type="image/png",
+        media_type=image_mime(png_data) or "image/png",
         headers={
             "Access-Control-Allow-Origin": "*",
             "X-Anlas-Cost": str(anlas_cost),
             "X-Prompt-Tokens": str(prompt_tokens),
+            **watermark_headers,
         },
     )
 
@@ -3394,6 +3475,7 @@ async def _dispatch_image_operation(
         anlas_cost = quote[0]
     binary_response = await handler(request_copy)
     png_data = binary_response.body
+    watermark_headers = {name: binary_response.headers[name] for name in (STATUS_HEADER, VERSION_HEADER) if name in binary_response.headers}
     # 工具端点必然超出 Opus 免费额度（body=None → 档外）→ None → 沿用 Anlas 动态口径
     if operation == "upscale":
         return _build_png_image_response(
@@ -3401,6 +3483,7 @@ async def _dispatch_image_operation(
             prompt=str(body.get("prompt", "")),
             anlas_cost=anlas_cost,
             billing_prompt_tokens=None,
+            watermark_headers=watermark_headers,
         )
     if operation == "annotate":
         return _build_png_image_response(
@@ -3408,12 +3491,14 @@ async def _dispatch_image_operation(
             prompt=str(body.get("prompt", "")),
             anlas_cost=0,
             billing_prompt_tokens=1,
+            watermark_headers=watermark_headers,
         )
     return _build_png_image_response(
         png_data=png_data,
         prompt=str(body.get("prompt", "")),
         anlas_cost=anlas_cost,
         billing_prompt_tokens=_billing_prompt_tokens(str(body.get("model", ""))),
+        watermark_headers=watermark_headers,
     )
 
 

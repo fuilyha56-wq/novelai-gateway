@@ -29,7 +29,8 @@ RUN pip install --no-cache-dir \
         "pydantic-settings>=2.0.0" \
         "aiofiles>=25.1.0" \
         "pillow>=10.0.0" \
-        "python-multipart>=0.0.9"
+        "python-multipart>=0.0.9" \
+        "msgpack>=1.0"
 
 # 拷贝源码
 COPY pyproject.toml ./

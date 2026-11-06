@@ -1,19 +1,19 @@
 """
 全局并发门控。
 
-容量随启用账号数动态扩展：并发重负载请求经账号池加权轮询分摊到
-多个启用账号上（每个启用账号约一个并发槽位），只有全部账号繁忙时
-才排队。单账号时保留请求间随机冷却，继续规避 NovelAI 的 429 限制；
-多账号时相邻请求本就落在不同账号上，全局冷却关闭以换取并发吞吐。
+每个启用的上游凭据可同时运行一个请求并容纳一个等待请求。
+运行位和等待位都按请求所需的 V5 / Anlas 能力匹配。
 """
 
 import asyncio
 import logging
 import random
 import time
+from collections import deque
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from .account_pool import account_pool
 from .config import settings
@@ -21,12 +21,43 @@ from .config import settings
 logger = logging.getLogger("gateway")
 
 
-def _account_slots() -> int:
-    """启用账号可承载的并发槽数；账号池不可用时按 0 处理。"""
-    try:
-        return account_pool.enabled_count()
-    except Exception:
-        return 0
+def uses_managed_account_pool() -> bool:
+    # 已配置但全部停用的账号池仍由账号池管理，不能切换到直连容量。
+    return account_pool.has_accounts() or bool(settings.shared_api_keys.strip())
+
+
+@dataclass(eq=False, slots=True)
+class _Waiter:
+    request: Request | None
+    managed: bool
+    requirements: tuple[bool, bool, str | None]
+    queued_at: float
+    deadline: float
+    acquired: bool = False
+    error: HTTPException | None = None
+
+
+def _assign_waiting_slot(
+    waiter: _Waiter, eligible: dict[_Waiter, tuple[str, ...]], owners: dict[str, _Waiter],
+) -> bool:
+    """Find a free compatible waiting slot, moving flexible requests if needed."""
+    search = deque([waiter])
+    previous: dict[_Waiter, tuple[_Waiter, str] | None] = {waiter: None}
+    while search:
+        current = search.popleft()
+        for credential in eligible[current]:
+            owner = owners.get(credential)
+            if owner is None:
+                while True:
+                    owners[credential] = current
+                    parent = previous[current]
+                    if parent is None:
+                        return True
+                    current, credential = parent
+            elif owner not in previous:
+                previous[owner] = (current, credential)
+                search.append(owner)
+    return False
 
 
 class ConcurrencyGate:
@@ -43,31 +74,22 @@ class ConcurrencyGate:
         timeout: int,
         cooldown_min: float,
         cooldown_max: float,
-        max_waiters: int | None = None,
     ):
         self._base_max = max(1, max_concurrent)
         self._timeout = timeout
         self._cooldown_min = cooldown_min
         self._cooldown_max = cooldown_max
-        if max_waiters is None:
-            max_waiters = getattr(settings, "queue_max_waiters", 8)
-        self._max_waiters = max(0, max_waiters)
         self._cond = asyncio.Condition()
-        # admitted = active + waiting，用于满载时快速返回 429。
         self._active = 0
-        self._waiting = 0
+        self._waiting: list[_Waiter] = []
+        self._next_capacity_check = 0.0
         # 冷却从上一个请求完成时开始计时。这样当前响应不会在 __aexit__
         # 里额外等待，只有下一个重请求会按保护间隔启动。
         self._next_ready_time = 0.0
 
-    def _capacity(self, request=None) -> int:
-        """总容量等于独立账号数；每个请求另行预留符合能力的空闲账号。"""
-        account_slots = _account_slots()
-        return max(1, account_slots) if account_slots else self._base_max
-
-    def _cooldown_enabled(self, request=None) -> bool:
+    def _cooldown_enabled(self) -> bool:
         """仅单账号时启用全局请求间冷却；多账号靠轮询分摊上游压力。"""
-        return _account_slots() <= 1
+        return account_pool.enabled_count() <= 1
 
     def for_request(self, request):
         """排队后预留符合 V5/Anlas 能力的空闲账号，再开始执行。"""
@@ -77,71 +99,123 @@ class ConcurrencyGate:
         await self._enter()
         return self
 
+    def _try_acquire(self, waiter: _Waiter) -> None:
+        request = waiter.request
+        if waiter.managed:
+            try:
+                lease = account_pool.reserve(*waiter.requirements)
+            except RuntimeError as exc:
+                waiter.error = HTTPException(status_code=409, detail=str(exc))
+                return
+            if lease is None:
+                return
+            assert request is not None
+            request.state.gateway_account_id, request.state.gateway_auth_token = lease
+            request.state.gateway_account_lease = lease
+        elif self._active >= self._base_max:
+            return
+
+        self._active += 1
+        waiter.acquired = True
+        if request is not None:
+            started = time.monotonic()
+            request.state.gateway_queue_seconds = started - waiter.queued_at
+            request.state.gateway_slot_started = started
+
+    def _limit_waiters(self, waiting: list[_Waiter]) -> list[_Waiter]:
+        admitted = []
+        direct = 0
+        owners: dict[str, _Waiter] = {}
+        eligible: dict[_Waiter, tuple[str, ...]] = {}
+        credentials: dict[tuple[bool, bool, str | None], tuple[str, ...]] = {}
+        for waiter in waiting:
+            if waiter.managed:
+                requirements = waiter.requirements
+                if requirements not in credentials:
+                    credentials[requirements] = account_pool.eligible_credentials(*requirements)
+                eligible[waiter] = credentials[requirements]
+                if not eligible[waiter]:
+                    waiter.error = HTTPException(status_code=409, detail="没有满足权限的 NovelAI 账号")
+                    continue
+                available = _assign_waiting_slot(waiter, eligible, owners)
+            else:
+                available = direct < self._base_max
+                if available:
+                    direct += 1
+            if available:
+                admitted.append(waiter)
+                continue
+            logger.warning("⚠️ 请求所需的账号等待位已满，快速返回 429")
+            waiter.error = HTTPException(status_code=429, detail="重负载请求正在排队，请稍后重试")
+        return admitted
+
+    def _dispatch(self) -> None:
+        previous_count = len(self._waiting)
+        if not previous_count:
+            return
+        waiting = []
+        now = time.monotonic()
+        self._next_capacity_check = now + 1.0
+        for waiter in self._waiting:
+            if now >= waiter.deadline:
+                logger.warning("⚠️ 排队超时 (%s 等待中)", previous_count)
+                waiter.error = HTTPException(status_code=504, detail="排队超时")
+                continue
+            self._try_acquire(waiter)
+            if not waiter.acquired and waiter.error is None:
+                waiting.append(waiter)
+        self._waiting = self._limit_waiters(waiting)
+        if len(self._waiting) != previous_count:
+            self._cond.notify_all()
+
     async def _enter(self, request=None):
         queued_at = time.monotonic()
-        async with self._cond:
-            if self._active + self._waiting >= self._capacity(request) + self._max_waiters:
-                logger.warning("⚠️ 重负载请求排队已满，快速返回 429")
-                raise HTTPException(
-                    status_code=429,
-                    detail="重负载请求正在排队，请稍后重试",
-                )
-            self._waiting += 1
-            # Python 3.11 的 Condition.wait_for 不支持 timeout，手动按
-            # deadline 轮询；wait() 超时/被取消时都会重新持锁再抛出。
-            deadline = asyncio.get_running_loop().time() + self._timeout
-            acquired = False
-            try:
-                while True:
-                    if self._active < self._capacity(request):
-                        if request is None or not _account_slots():
-                            acquired = True
-                            break
-                        try:
-                            lease = account_pool.reserve(
-                                need_v5=bool(getattr(request.state, "gateway_need_v5", False)),
-                                need_anlas=bool(getattr(request.state, "gateway_need_anlas", False)),
-                                account_id=getattr(request.state, "gateway_account_id", None),
-                            )
-                        except RuntimeError as exc:
-                            raise HTTPException(status_code=409, detail=str(exc)) from exc
-                        if lease is not None:
-                            request.state.gateway_account_id, request.state.gateway_auth_token = lease
-                            request.state.gateway_account_lease = lease
-                            acquired = True
-                            break
-                    remaining = deadline - asyncio.get_running_loop().time()
-                    if remaining <= 0:
-                        break
-                    try:
-                        # 配置变化或旧的账号锁释放也应唤醒等待者；这些事件
-                        # 未必经过本门控，最多一秒重新检查空闲账号。
-                        await asyncio.wait_for(self._cond.wait(), timeout=min(remaining, 1.0))
-                    except asyncio.TimeoutError:
-                        continue
-            except BaseException:
-                # Condition.wait 被取消时会在持锁状态下抛出，这里仍持有锁。
-                self._waiting -= 1
-                raise
-            self._waiting -= 1
-            if not acquired:
-                logger.warning("⚠️ 排队超时 (%s 等待中)", self._waiting)
-                raise asyncio.TimeoutError("排队超时")
-            self._active += 1
-            if request is not None:
-                request.state.gateway_queue_seconds = time.monotonic() - queued_at
-                request.state.gateway_slot_started = time.monotonic()
-
-        # 不在锁内 sleep，避免阻塞其他请求读取队列状态。
-        if self._cooldown_enabled(request):
-            delay = max(0.0, self._next_ready_time - time.monotonic())
-            if delay:
-                logger.debug("⏱️ 新请求等待冷却 %.1fs", delay)
+        state = getattr(request, "state", None)
+        waiter = _Waiter(
+            request=request,
+            managed=request is not None and uses_managed_account_pool(),
+            requirements=(
+                bool(getattr(state, "gateway_need_v5", False)),
+                bool(getattr(state, "gateway_need_anlas", False)),
+                getattr(state, "gateway_account_id", None),
+            ),
+            queued_at=queued_at,
+            deadline=queued_at + self._timeout,
+        )
+        try:
+            async with self._cond:
+                # 先分配已在等待的兼容请求，新增请求仍可使用不冲突的空闲账号。
+                self._dispatch()
+                self._try_acquire(waiter)
+                if not waiter.acquired and waiter.error is None:
+                    self._waiting = self._limit_waiters([*self._waiting, waiter])
                 try:
+                    while not waiter.acquired and waiter.error is None:
+                        remaining = min(waiter.deadline, self._next_capacity_check) - time.monotonic()
+                        if remaining <= 0:
+                            self._dispatch()
+                            continue
+                        try:
+                            # 账号设置和旧账号锁释放未必经过此门控，定时刷新容量。
+                            async with asyncio.timeout(remaining):
+                                await self._cond.wait()
+                        except TimeoutError:
+                            pass
+                finally:
+                    if waiter in self._waiting:
+                        self._waiting.remove(waiter)
+                if waiter.error is not None:
+                    raise waiter.error
+
+            if self._cooldown_enabled():
+                delay = max(0.0, self._next_ready_time - time.monotonic())
+                if delay:
+                    logger.debug("⏱️ 新请求等待冷却 %.1fs", delay)
                     await asyncio.sleep(delay)
-                except BaseException:
-                    await self._exit(request)
-                    raise
+        except BaseException:
+            if waiter.acquired:
+                await self._exit(request)
+            raise
 
         return self
 
@@ -168,14 +242,14 @@ class ConcurrencyGate:
                     getattr(request.state, "gateway_queue_seconds", 0.0),
                     time.monotonic() - started,
                 )
-            if self._cooldown_enabled(request) and self._cooldown_max > 0:
+            if self._cooldown_enabled() and self._cooldown_max > 0:
                 gap = random.uniform(self._cooldown_min, self._cooldown_max)
                 self._next_ready_time = max(
                     self._next_ready_time,
                     time.monotonic() + max(0.0, gap),
                 )
             self._active -= 1
-            self._cond.notify_all()
+            self._dispatch()
 
 
 class _RequestConcurrencyGate:

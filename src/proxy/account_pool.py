@@ -226,6 +226,18 @@ class AccountPool:
         with self._lock:
             self._reserved.discard(key)
 
+    def _eligible_accounts(
+        self, need_v5: bool, need_anlas: bool, account_id: str | None = None,
+    ) -> list[AccountState]:
+        bound = self._accounts.get(account_id) if account_id is not None else None
+        return self._unique_credentials([
+            account for account in self._accounts.values()
+            if account.enabled and account.key
+            and (not need_v5 or account.allow_v5)
+            and (not need_anlas or account.allow_anlas)
+            and (account_id is None or (bound is not None and account.key == bound.key))
+        ])
+
     def _choose(
         self, need_v5: bool, need_anlas: bool, *, reserve: bool = False,
         account_id: str | None = None,
@@ -237,28 +249,14 @@ class AccountPool:
         """
         now = time.monotonic()
         with self._lock:
-            enabled_accounts = [
-                account for account in self._accounts.values()
-                if account.enabled and account.key
-            ]
+            enabled_accounts = self._eligible_accounts(need_v5, need_anlas)
             if not enabled_accounts:
-                raise RuntimeError("没有可用的 NovelAI 账号")
-            if need_v5 or need_anlas:
-                enabled_accounts = [
-                    account for account in enabled_accounts
-                    if (not need_v5 or account.allow_v5) and (not need_anlas or account.allow_anlas)
-                ]
-                if not enabled_accounts:
-                    required = []
-                    if need_v5:
-                        required.append("V5")
-                    if need_anlas:
-                        required.append("Anlas")
-                    raise RuntimeError(f"没有满足权限的 NovelAI 账号：{' + '.join(required)}")
-            enabled_accounts = self._unique_credentials(enabled_accounts)
+                if not (need_v5 or need_anlas) or not self._eligible_accounts(False, False):
+                    raise RuntimeError("没有可用的 NovelAI 账号")
+                required = [name for needed, name in ((need_v5, "V5"), (need_anlas, "Anlas")) if needed]
+                raise RuntimeError(f"没有满足权限的 NovelAI 账号：{' + '.join(required)}")
             if account_id is not None:
-                bound = self._accounts.get(account_id)
-                enabled_accounts = [a for a in enabled_accounts if bound and a.key == bound.key]
+                enabled_accounts = self._eligible_accounts(need_v5, need_anlas, account_id)
                 if not enabled_accounts:
                     raise RuntimeError("当前请求绑定的 NovelAI 账号已不可用")
             if reserve:
@@ -403,37 +401,33 @@ class AccountPool:
             save_accounts_file(persistence_path, snapshot)
         return True
 
+    def has_accounts(self) -> bool:
+        with self._lock:
+            return bool(self._accounts)
+
     def enabled_count(self) -> int:
         """当前启用且配置了凭据的账号数量，用于并发容量计算。"""
-        with self._lock:
-            return len(self._unique_credentials([
-                account for account in self._accounts.values()
-                if account.enabled and account.key
-            ]))
+        return self.eligible_count()
 
     def eligible_count(self, need_v5: bool = False, need_anlas: bool = False) -> int:
         """返回满足当前请求能力要求的启用账号数。"""
+        return len(self.eligible_credentials(need_v5, need_anlas))
+
+    def eligible_credentials(
+        self, need_v5: bool, need_anlas: bool, account_id: str | None = None,
+    ) -> tuple[str, ...]:
+        """供内部队列对重叠的账号能力分配等待位。"""
         with self._lock:
-            eligible = [
-                account
-                for account in self._accounts.values()
-                if account.enabled
-                and account.key
-                and (not need_v5 or account.allow_v5)
-                and (not need_anlas or account.allow_anlas)
-            ]
-            return len(self._unique_credentials(eligible))
+            return tuple(account.key for account in self._eligible_accounts(need_v5, need_anlas, account_id))
 
     def capacity_summary(self) -> dict[str, int]:
         """返回账号池按请求能力划分的并发槽数。"""
-        enabled = self.enabled_count()
-        anlas = self.eligible_count(need_anlas=True)
         with self._lock:
-            enabled_accounts = self._unique_credentials([
-                account
-                for account in self._accounts.values()
-                if account.enabled and account.key
-            ])
+            enabled_accounts = self._eligible_accounts(False, False)
+            enabled = len(enabled_accounts)
+            v5 = len(self._eligible_accounts(True, False))
+            anlas = len(self._eligible_accounts(False, True))
+            v5_and_anlas = len(self._eligible_accounts(True, True))
             credential_enabled: dict[str, bool] = {}
             for account in self._accounts.values():
                 if account.key:
@@ -458,10 +452,10 @@ class AccountPool:
             "total": enabled,
             # V4.5 has no separate account toggle; every enabled credential can serve it.
             "v45": enabled,
-            "v5": self.eligible_count(need_v5=True),
+            "v5": v5,
             "anlas": anlas,
             "v45_and_anlas": anlas,
-            "v5_and_anlas": self.eligible_count(need_v5=True, need_anlas=True),
+            "v5_and_anlas": v5_and_anlas,
             **category_counts,
         }
 

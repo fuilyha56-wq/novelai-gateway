@@ -47,16 +47,25 @@ from .openai import (
     handle_tts,
     handle_upscale,
     handle_vibe_transfer,
+    _requires_anlas_for_account,
+    _resolve_infill_model,
     enforce_medium_model,
+    get_registry,
+    is_limit_model,
     validate_nai_canvas,
     is_medium_model,
     MEDIUM_MODELS,
     native_anlas_quote,
+    native_openai_image_response,
     set_registry,
 )
 from .model_registry import ModelRegistry
 from .model_fetcher import handle_refresh_upstream_models
 from .admin import router as admin_router, admin_ui
+from .image_watermark import (
+    ImageWatermark, NATIVE_IMAGE_PATHS, SIGNING_RESPONSE_HEADERS, close_watermark_client, is_configured as watermark_configured,
+    native_stream_format, without_body_validators,
+)
 
 logger = logging.getLogger("gateway")
 
@@ -66,7 +75,7 @@ _DROP_HEADERS = frozenset({
     "content-security-policy", "content-security-policy-report-only",
     "strict-transport-security", "x-frame-options",
     "content-disposition",
-})
+}) | SIGNING_RESPONSE_HEADERS
 
 
 # ── 生命周期 ────────────────────────────────────────────────
@@ -96,6 +105,7 @@ async def lifespan(_app: FastAPI):
     logger.info(f"🚀 网关已启动  http://{settings.host}:{settings.port}")
     yield
     await close_client()
+    await close_watermark_client()
     logger.info("🛑 网关已关闭")
 
 
@@ -176,11 +186,12 @@ def _gateway_auth_error(request: Request) -> Response | None:
 
 @app.middleware("http")
 async def protect_api_routes(request: Request, call_next):
-    """保护会使用 NovelAI 凭据的 OpenAI 与透明 API 入口。"""
+    """保护 OpenAI、透明代理和使用签名服务的原生图像入口。"""
     path = request.url.path
     # CORS 预检本身不会使用上游凭据，也通常不会携带 Authorization。
     if request.method != "OPTIONS" and (
         path.startswith("/v1/") or path.startswith("/_api/")
+        or (watermark_configured() and path.rstrip("/") in NATIVE_IMAGE_PATHS)
     ):
         error = _gateway_auth_error(request)
         if error is not None:
@@ -227,6 +238,8 @@ async def openai_models():
 @app.post("/v1/images/generations")
 async def openai_generations(request: Request):
     """图像生成及 NovelAI 扩展操作（OpenAI 兼容）。"""
+    if await _is_native_openai_request(request):
+        return await openai_native_generations(request)
     return await handle_openai_generations(request)
 
 
@@ -234,6 +247,78 @@ async def openai_generations(request: Request):
 async def openai_generations_stream(request: Request):
     """OpenAI image-generation stream events over NovelAI's image stream API."""
     return await handle_openai_generations_stream(request)
+
+
+async def _is_native_openai_request(request: Request) -> bool:
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].lower().strip()
+    if content_type == "multipart/form-data":
+        await request.body()
+        return "request" in await request.form()
+    if content_type != "application/json":
+        return False
+    body = await _read_native_payload(request)
+    if not body or not {"input", "action", "parameters"} <= body.keys():
+        return False
+    # Keep requests using the original OpenAI extensions on their existing path.
+    legacy_fields = {
+        "prompt", "size", "n", "stream", "response_format", "extra_params", "novelai_operation",
+        "width", "height", "steps", "sampler", "image", "mask", "references", "characters",
+    }
+    legacy_headers = {
+        "x-novelai-operation", "x-novelai-extra-params", "x-steps", "x-sampler", "x-scale",
+        "x-negative-prompt", "x-noise-schedule", "x-seed", "x-n-samples", "x-service-tier",
+    }
+    return not (legacy_fields.intersection(body) or legacy_headers.intersection(request.headers))
+
+
+def _native_upstream_model(model: str, action: str) -> str:
+    registry = get_registry()
+    entry = registry.lookup(model) if registry else None
+    if entry is None or entry.type != "image":
+        return model
+    return _resolve_infill_model(entry.name) if action == "infill" else entry.name
+
+
+@app.post("/v1/images/generations/native")
+async def openai_native_generations(request: Request):
+    """Accept a NovelAI generation body and return an OpenAI Images response."""
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].lower().strip()
+    if content_type not in {"application/json", "multipart/form-data"}:
+        raise HTTPException(status_code=415, detail="Expected NovelAI JSON or multipart/form-data")
+
+    # Cache the bytes before reading form parts so the original body remains available to forward.
+    await request.body()
+    try:
+        payload = await _read_native_payload(request)
+        if not payload or not (
+            isinstance(payload.get("input"), str)
+            and isinstance(payload.get("model"), str) and payload["model"].strip()
+            and isinstance(payload.get("parameters"), dict)
+        ):
+            raise HTTPException(status_code=400, detail="Expected NovelAI input, model and parameters")
+        if any(key != "model" and key.lower() == "model" for key in payload):
+            raise HTTPException(status_code=400, detail="Use only the canonical model field")
+        action = payload.get("action", "generate")
+        if action not in ("generate", "img2img", "infill"):
+            raise HTTPException(status_code=400, detail="action must be generate, img2img, or infill")
+        routing_model = payload["model"]
+        if content_type == "multipart/form-data":
+            form = await request.form()
+            models = form.getlist("model")
+            if len(form.getlist("request")) != 1 or len(models) > 1 or (models and not isinstance(models[0], str)):
+                raise HTTPException(status_code=400, detail="Expected one request part and an optional matching model field")
+            if models:
+                routing_model = models[0]
+                if payload["model"] not in (routing_model, _native_upstream_model(routing_model, action)):
+                    raise HTTPException(status_code=400, detail="Multipart model does not match request.model")
+
+        response = await _proxy_native_nai(request, "/ai/generate-image", bridge_model=routing_model)
+    finally:
+        await request.close()
+    if not 200 <= response.status_code < 300:
+        return response
+    payload["model"] = _native_upstream_model(routing_model, action)
+    return await native_openai_image_response(request, response, payload)
 
 
 @app.post("/v1/images/inpainting")
@@ -245,6 +330,8 @@ async def openai_inpainting(request: Request):
 @app.post("/v1/images/edits")
 async def openai_image_edits(request: Request):
     """局部重绘（OpenAI 兼容格式）。"""
+    if await _is_native_openai_request(request):
+        return await openai_native_generations(request)
     return await handle_openai_image_edits(request)
 
 
@@ -388,7 +475,7 @@ def _cors_preflight():
 async def _read_native_payload(request: Request, resolve_images: bool = False) -> dict | None:
     """Read JSON or the native multipart request part without consuming uploads."""
     try:
-        if "multipart/form-data" in request.headers.get("content-type", ""):
+        if "multipart/form-data" in request.headers.get("content-type", "").lower():
             form = await request.form()
             part = form.get("request")
             if hasattr(part, "read"):
@@ -484,11 +571,11 @@ async def _disable_v5_for_native_quota_error(
 
 # ── NAI API 代理 ──────────────────────────────────────────────
 
-async def _validate_native_medium(request: Request, api_path: str) -> None:
+async def _validate_native_medium(request: Request, api_path: str, *, bridge_model: str | None = None) -> None:
     """Normalize billable generation defaults before selecting an account."""
     if request.method != "POST" or not api_path.startswith("/ai/"):
         return
-    content_type = request.headers.get("content-type", "")
+    content_type = request.headers.get("content-type", "").lower()
     multipart = "multipart/form-data" in content_type
     if not multipart and "application/json" not in content_type:
         return
@@ -516,11 +603,13 @@ async def _validate_native_medium(request: Request, api_path: str) -> None:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Native image request must be an object")
     model = payload.get("model", "")
+    action = str(payload.get("action", "generate"))
+    upstream_model = _native_upstream_model(bridge_model, action) if bridge_model is not None else model
+    model = bridge_model if is_limit_model(bridge_model) else upstream_model
     normalized = False
     if isinstance(model, str) and api_path in {"/ai/generate-image", "/ai/generate-image-stream"}:
         canvas = payload.get("parameters")
         if isinstance(canvas, dict):
-            action = str(payload.get("action", "generate"))
             key = "strength" if action == "img2img" else "inpaintImg2ImgStrength" if action == "infill" else None
             if key and key not in canvas:
                 canvas[key] = 0.7 if action == "img2img" else 1.0
@@ -530,7 +619,13 @@ async def _validate_native_medium(request: Request, api_path: str) -> None:
                 resolved = await _read_native_payload(request, resolve_images=True)
                 if resolved and isinstance(resolved.get("parameters"), dict):
                     pricing_canvas = resolved["parameters"]
+            if is_limit_model(bridge_model) and payload.get("service_tier") == "priority":
+                pricing_canvas = {**pricing_canvas, "service_tier": "priority"}
             validate_nai_canvas(model, pricing_canvas, action)
+            if bridge_model is not None and is_limit_model(model) and _requires_anlas_for_account(model, {
+                **payload, "parameters": pricing_canvas,
+            }):
+                raise HTTPException(status_code=400, detail="Limit model requires settings within the Opus free envelope")
     if isinstance(model, str) and is_medium_model(model):
         if api_path not in {"/ai/generate-image", "/ai/generate-image-stream"}:
             raise HTTPException(status_code=400, detail="Medium model does not support this endpoint")
@@ -538,9 +633,14 @@ async def _validate_native_medium(request: Request, api_path: str) -> None:
         if not isinstance(params, dict):
             raise HTTPException(status_code=400, detail="Medium parameters must be an object")
         enforce_medium_model(model, params, str(payload.get("action", "generate")))
-        payload["model"] = MEDIUM_MODELS.get(model, model)
         normalized = True
-    if not normalized:
+    if isinstance(upstream_model, str):
+        upstream_model = MEDIUM_MODELS.get(upstream_model, upstream_model)
+        if upstream_model != payload.get("model", ""):
+            payload["model"] = upstream_model
+            normalized = True
+    strip_model = multipart and bridge_model is not None and "model" in form
+    if not normalized and not strip_model:
         return
     if multipart:
         import httpx
@@ -548,9 +648,12 @@ async def _validate_native_medium(request: Request, api_path: str) -> None:
 
         parts = []
         for name, item in form.multi_items():
-            if name == "request":
+            if strip_model and name == "model":
+                continue  # NewAPI uses this part to route; NovelAI expects only referenced parts.
+            if name == "request" and normalized:
                 parts.append((name, (None, json.dumps(payload))))
             elif isinstance(item, UploadFile):
+                await item.seek(0)
                 parts.append((name, (item.filename, await item.read(), item.content_type)))
             else:
                 parts.append((name, (None, str(item))))
@@ -565,6 +668,39 @@ async def _validate_native_medium(request: Request, api_path: str) -> None:
         request._form = None
     else:
         request._body = json.dumps(payload).encode("utf-8")
+
+
+async def _native_watermark(request: Request, api_path: str, status: int) -> ImageWatermark | None:
+    api_path = api_path.rstrip("/")
+    if not (200 <= status < 300 and request.method == "POST" and api_path in NATIVE_IMAGE_PATHS and watermark_configured()):
+        return None
+    try:
+        payload = await _read_native_payload(request)
+        model = payload.get("model") if payload else None
+    except Exception:
+        model = None
+    return ImageWatermark(model if isinstance(model, str) and model else api_path.rsplit("/", 1)[-1])
+
+
+async def _signed_native_response(
+    watermark: ImageWatermark | None, api_path: str, data: bytes, headers: dict[str, str],
+) -> tuple[bytes, dict[str, str]]:
+    if watermark is None:
+        return data, headers
+    content_type = (headers.get("content-type") or "").lower()
+    kind = native_stream_format(api_path, content_type)
+    try:
+        if kind:
+            async def chunks():
+                yield data
+            signed = b"".join([chunk async for chunk in watermark.stream(chunks(), kind)])
+        else:
+            signed = await watermark.envelope(data, content_type)
+    finally:
+        watermark.finish()
+    headers = without_body_validators(headers)
+    headers.update(watermark.headers())
+    return signed, headers
 
 
 async def _proxy_buffered_response(
@@ -597,6 +733,8 @@ async def _proxy_buffered_response(
         if settings.is_heavy(api_path):
             record_generation(content_bytes, api_path)
 
+        watermark = await _native_watermark(request, api_path, upstream.status_code)
+        content_bytes, headers = await _signed_native_response(watermark, api_path, content_bytes, headers)
         return Response(
             content=content_bytes,
             status_code=upstream.status_code,
@@ -613,7 +751,7 @@ _NATIVE_DROP_HEADERS = frozenset({
     "content-encoding", "transfer-encoding", "connection",
     "content-security-policy", "content-security-policy-report-only",
     "strict-transport-security", "x-frame-options",
-})
+}) | SIGNING_RESPONSE_HEADERS
 
 
 def _record_native_latency(body: bytes, api_path: str, started: float) -> None:
@@ -636,7 +774,7 @@ def _native_response_headers(upstream) -> dict[str, str]:
     return headers
 
 
-async def _native_billing_headers(request: Request, api_path: str) -> dict[str, str]:
+async def _native_billing_headers(request: Request, api_path: str, *, model: str | None = None) -> dict[str, str]:
     """Expose Gateway's own quote for native image requests with known pricing."""
     quote_path = api_path.removeprefix("/_api")
     if not quote_path.startswith("/ai/"):
@@ -644,6 +782,8 @@ async def _native_billing_headers(request: Request, api_path: str) -> dict[str, 
     payload = await _read_native_payload(request, resolve_images=True)
     if not isinstance(payload, dict):
         return {}
+    if is_limit_model(model):
+        payload["model"] = model
     quote = native_anlas_quote(quote_path, payload)
     if quote is None:
         return {}
@@ -651,15 +791,16 @@ async def _native_billing_headers(request: Request, api_path: str) -> dict[str, 
     return {"X-Anlas-Cost": str(anlas), "X-Prompt-Tokens": str(prompt_tokens)}
 
 
-async def _proxy_native_nai(request: Request, api_path: str) -> Response:
+async def _proxy_native_nai(request: Request, api_path: str, *, bridge_model: str | None = None) -> Response:
     """按官方路径转发到对应上游，并保持 ZIP / Msgpack Stream 原样返回。"""
     from contextlib import AsyncExitStack
 
     from .queue import account_generation_gate, gate
 
     target_url = settings.get_upstream_url(api_path)
+    buffer_zip = bridge_model is not None
     try:
-        await _validate_native_medium(request, api_path)
+        await _validate_native_medium(request, api_path, bridge_model=bridge_model)
         request_body = await request.body() if settings.is_heavy(api_path) else b""
         async with AsyncExitStack() as stack:
             if settings.is_heavy(api_path):
@@ -668,36 +809,58 @@ async def _proxy_native_nai(request: Request, api_path: str) -> Response:
                 await stack.enter_async_context(account_generation_gate(request))
                 await _preflight_native_v5_quota(request, api_path)
             generation_started = time.monotonic()
-            upstream = await forward(request, target_url)
+            if buffer_zip:
+                upstream = await forward(request, target_url, accept="application/zip")
+            else:
+                upstream = await forward(request, target_url)
 
             content_type = (upstream.headers.get("content-type") or "").lower()
-            streaming = upstream.status_code < 400 and (
+            watermark = None if buffer_zip else await _native_watermark(request, api_path, upstream.status_code)
+            watermark_stream = native_stream_format(api_path, content_type) if watermark else None
+            streaming = not buffer_zip and upstream.status_code < 400 and (
                 "octet-stream" in content_type
                 or "msgpack" in content_type
                 or "event-stream" in content_type
                 or "ndjson" in content_type
             )
+            if watermark and not watermark_stream:
+                # A non-streaming native result can be a ZIP labeled octet-stream.
+                streaming = False
             if streaming and not upstream.is_stream_consumed:
                 headers = _native_response_headers(upstream)
                 if upstream.status_code == 200:
                     headers.update(await _native_billing_headers(request, api_path))
+                if watermark and watermark_stream:
+                    headers = without_body_validators(headers)
+                    headers.update(watermark.headers(streaming=True))
                 hold_gate = stack.pop_all()
                 first_chunk_at = None
 
-                async def _stream():
+                async def _chunks():
                     nonlocal first_chunk_at
+                    async for chunk in upstream.aiter_bytes():
+                        if first_chunk_at is None:
+                            first_chunk_at = time.monotonic()
+                            logger.info("📡 原生流首包 %s %.1fs", api_path, first_chunk_at - generation_started)
+                        yield chunk
+
+                async def _stream():
                     try:
-                        async for chunk in upstream.aiter_bytes():
-                            if first_chunk_at is None:
-                                first_chunk_at = time.monotonic()
-                                logger.info("📡 原生流首包 %s %.1fs", api_path, first_chunk_at - generation_started)
+                        chunks = _chunks()
+                        if watermark and watermark_stream:
+                            chunks = watermark.stream(chunks, watermark_stream, report_error=True)
+                        async for chunk in chunks:
                             yield chunk
-                        if upstream.status_code == 200:
+                        if upstream.status_code == 200 and (not watermark or watermark.status != "failed"):
                             _record_native_latency(request_body, api_path, generation_started)
                             logger.info("📡 原生流结束 %s %.1fs", api_path, time.monotonic() - generation_started)
                     finally:
-                        await upstream.aclose()
-                        await hold_gate.aclose()
+                        try:
+                            await upstream.aclose()
+                        finally:
+                            if watermark:
+                                watermark.finish()
+                            await hold_gate.aclose()
 
                 return StreamingResponse(
                     _stream(),
@@ -708,20 +871,27 @@ async def _proxy_native_nai(request: Request, api_path: str) -> Response:
                     ),
                 )
 
-            await upstream.aread()
+            try:
+                await upstream.aread()
+            finally:
+                await upstream.aclose()
             headers = _native_response_headers(upstream)
             content_bytes = upstream.content
-            if upstream.status_code == 200:
-                headers.update(await _native_billing_headers(request, api_path))
+            if buffer_zip:
+                headers.pop("content-length", None)
+            successful = upstream.status_code == 200 or (buffer_zip and 200 <= upstream.status_code < 300)
+            if successful:
+                headers.update(await _native_billing_headers(request, api_path, model=bridge_model))
             if upstream.status_code >= 400:
                 await _disable_v5_for_native_quota_error(
                     request, api_path, upstream.status_code,
                     content_bytes[:500].decode("utf-8", errors="replace"),
                 )
-            if upstream.status_code == 200:
+            if successful:
                 _record_native_latency(request_body, api_path, generation_started)
-            if settings.is_heavy(api_path) and upstream.status_code == 200:
+            if settings.is_heavy(api_path) and successful:
                 record_generation(content_bytes, api_path)
+            content_bytes, headers = await _signed_native_response(watermark, api_path, content_bytes, headers)
             return Response(
                 content=content_bytes,
                 status_code=upstream.status_code,
@@ -768,8 +938,10 @@ async def native_upscale(request: Request):
             headers.update(await _native_billing_headers(request, "/ai/upscale"))
         if settings.is_heavy("/ai/upscale") and upstream.status_code == 200:
             record_generation(upstream.content, "/ai/upscale")
+        watermark = await _native_watermark(request, "/ai/upscale", upstream.status_code)
+        content, headers = await _signed_native_response(watermark, "/ai/upscale", upstream.content, headers)
         return Response(
-            content=upstream.content,
+            content=content,
             status_code=upstream.status_code,
             headers=headers,
             media_type=upstream.headers.get("content-type", "application/octet-stream"),
@@ -814,6 +986,8 @@ async def proxy_api(request: Request, path: str):
 
     target_url = settings.get_upstream_url(f"/{path}")
     api_path = f"/{path}"
+    if request.method == "POST" and watermark_configured() and api_path.rstrip("/") in {"/ai/generate-image-stream", "/oa/v1/images/generations/stream"}:
+        return await _proxy_native_nai(request, api_path)
     try:
         await _validate_native_medium(request, api_path)
         # OpenAI 兼容入口已经在 openai.py 中门控；透明 API 入口也必须纳入
@@ -862,6 +1036,9 @@ async def proxy_site(request: Request, path: str):
         if auth_error is not None:
             return auth_error
 
+    api_path = f"/{path}"
+    if request.method == "POST" and watermark_configured() and api_path.rstrip("/") in NATIVE_IMAGE_PATHS:
+        return await _proxy_native_nai(request, api_path)
     target_url = f"{settings.novelai_base_url}/{path}"
     try:
         upstream = await forward(request, target_url)

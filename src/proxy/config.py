@@ -97,6 +97,11 @@ class Settings(BaseSettings):
     image_dir: Path = Path("images")
     image_base_url: str = ""  # 留空则根据请求 Host 自动生成
 
+    # Optional LFN image signer. Prefer a mounted token file in deployment.
+    lfn_watermark_signer_url: str = ""
+    lfn_watermark_signer_token: str = ""
+    lfn_watermark_signer_token_file: str = ""
+
     # Cloudflare Tunnel（可选）
     cloudflare_tunnel_token: str = ""
 
@@ -136,7 +141,7 @@ class Settings(BaseSettings):
     # 并发与冷却
     max_concurrent: int = 1
     queue_timeout: int = 300
-    # 有限排队避免突发请求在内存中无限堆积；满载时让客户端快速重试。
+    # 兼容旧 .env。运行位和等待位现在均按账号能力动态计算。
     queue_max_waiters: int = 8
     cooldown_min: float = 0.5
     cooldown_max: float = 1.0

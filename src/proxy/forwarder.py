@@ -11,6 +11,7 @@ from fastapi import Request, Response
 from fastapi.responses import StreamingResponse
 
 from .config import get_request_auth_token, settings
+from .image_watermark import SIGNING_RESPONSE_HEADERS
 from .rewriter import rewrite_html, rewrite_js
 
 # ── 全局 HTTP 客户端 ────────────────────────────────────────
@@ -60,7 +61,7 @@ _STRIP_RESPONSE_HEADERS = frozenset({
     "content-encoding", "transfer-encoding", "content-length", "connection",
     "content-security-policy", "content-security-policy-report-only",
     "strict-transport-security", "x-frame-options",
-})
+}) | SIGNING_RESPONSE_HEADERS
 
 
 def _build_upstream_headers(request: Request, target_url: str) -> dict[str, str]:
@@ -84,10 +85,12 @@ def _build_upstream_headers(request: Request, target_url: str) -> dict[str, str]
 
 # ── 转发 ────────────────────────────────────────────────────
 
-async def forward(request: Request, target_url: str) -> httpx.Response:
+async def forward(request: Request, target_url: str, *, accept: str | None = None) -> httpx.Response:
     """将请求原样转发到上游（流式模式，支持大响应体）。"""
     client = await get_client()
     headers = _build_upstream_headers(request, target_url)
+    if accept is not None:
+        headers["accept"] = accept
     body = await request.body()
 
     req = client.build_request(
