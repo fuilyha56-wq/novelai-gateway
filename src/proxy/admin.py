@@ -176,7 +176,13 @@ async def model_latency(request: Request) -> dict[str, Any]:
     mode = request.query_params.get("mode", "active")
     if mode not in {"active", "queued"}:
         raise HTTPException(status_code=400, detail="mode 必须是 active 或 queued")
-    return get_model_latency(window_minutes=window_minutes, points=24, mode=mode)
+    from .stats import get_latency_chart_data
+    return await asyncio.to_thread(get_latency_chart_data, window_minutes, mode)
+
+
+@router.get("/latency-charts.js")
+async def latency_chart_script() -> FileResponse:
+    return FileResponse(Path(__file__).parent / "templates" / "latency-charts.js", media_type="application/javascript", headers={"Cache-Control": "no-cache"})
 
 
 @router.get("/chart.js")

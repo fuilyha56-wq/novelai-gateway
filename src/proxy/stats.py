@@ -158,6 +158,7 @@ def get_model_latency(
     window_minutes: int = 24 * 60,
     points: int = 24,
     mode: str = "active",
+    bucket_seconds: int | None = None,
 ) -> dict:
     """Return per-window OHLC candles and averages for one latency mode."""
     window_minutes = max(1, min(window_minutes, 7 * 24 * 60))
@@ -166,21 +167,26 @@ def get_model_latency(
         raise ValueError("mode must be 'active' or 'queued'")
 
     now = time.time()
-    start = now - window_minutes * 60
+    cutoff = now - window_minutes * 60
+    start = cutoff
     bucket_width = (now - start) / points
+    if bucket_seconds is not None:
+        bucket_width = max(1, int(bucket_seconds))
+        start = math.floor(cutoff / bucket_width) * bucket_width
+        points = max(1, math.ceil((now - start) / bucket_width))
     timestamps = [start + index * bucket_width for index in range(points)]
     with _latency_lock:
         samples = _load_latency_samples()
         legacy = _load_latency() if mode == "active" else {}
 
     metric_key = "active_ms" if mode == "active" else "queued_ms"
-    by_model: dict[str, list[tuple[float, float]]] = {}
+    by_model: dict[str, list[tuple[float, float, bool]]] = {}
     sampled_minutes: set[tuple[int, str]] = set()
     for sample in samples:
         sample_time = float(sample["timestamp"])
-        if start <= sample_time <= now:
+        if cutoff <= sample_time <= now:
             model = sample["model"].removesuffix("-limit")
-            by_model.setdefault(model, []).append((sample_time, max(0.0, float(sample[metric_key]))))
+            by_model.setdefault(model, []).append((sample_time, max(0.0, float(sample[metric_key])), False))
             sampled_minutes.add((int(sample_time // 60), model))
 
     # Preserve the old active-time history as flat one-sample candles until the
@@ -192,7 +198,7 @@ def get_model_latency(
             except (TypeError, ValueError):
                 continue
             sample_time = minute * 60 + 30
-            if not start <= sample_time <= now or not isinstance(minute_data, dict):
+            if not cutoff <= sample_time <= now or not isinstance(minute_data, dict):
                 continue
             for raw_model, entry in minute_data.items():
                 if not isinstance(entry, dict):
@@ -208,14 +214,14 @@ def get_model_latency(
                     average = max(0.0, float(entry.get("total_ms", 0.0)) / count)
                 except (TypeError, ValueError, ZeroDivisionError):
                     continue
-                by_model.setdefault(model, []).append((sample_time, average))
+                by_model.setdefault(model, []).append((sample_time, average, True))
 
-    model_buckets: dict[str, list[list[tuple[float, float]]]] = {}
+    model_buckets: dict[str, list[list[tuple[float, float, bool]]]] = {}
     for model, values in by_model.items():
         buckets = [[] for _ in range(points)]
-        for sample_time, value in sorted(values):
+        for sample_time, value, legacy_value in sorted(values):
             index = min(points - 1, max(0, int((sample_time - start) / bucket_width)))
-            buckets[index].append((sample_time, value))
+            buckets[index].append((sample_time, value, legacy_value))
         model_buckets[model] = buckets
 
     series = []
@@ -229,13 +235,16 @@ def get_model_latency(
                 averages.append(None)
                 counts.append(0)
                 continue
-            latencies = [value for _, value in values]
+            latencies = [value for _, value, _ in values]
             candles.append({
                 "open_ms": latencies[0],
                 "high_ms": max(latencies),
                 "low_ms": min(latencies),
                 "close_ms": latencies[-1],
                 "count": len(latencies),
+                "legacy_count": sum(1 for _, _, legacy_value in values if legacy_value),
+                "first_timestamp": values[0][0],
+                "last_timestamp": values[-1][0],
             })
             averages.append(sum(latencies) / len(latencies))
             counts.append(len(latencies))
@@ -247,167 +256,29 @@ def get_model_latency(
         })
     return {
         "timestamps": timestamps,
+        "window_start": cutoff,
+        "window_end": now,
+        "bucket_seconds": bucket_width,
+        "display_start": start,
+        "display_end": start + points * bucket_width,
         "series": series,
         "window_minutes": window_minutes,
         "mode": mode,
     }
 
 
-def render_model_latency_png(window_minutes: int = 24 * 60, mode: str = "active") -> bytes:
-    from PIL import Image, ImageDraw, ImageFont
-    from datetime import timedelta, timezone
+def get_latency_chart_data(window_minutes: int = 1440, mode: str = "active") -> dict:
+    """Use natural clock boundaries and roughly 48 candles in both clients."""
+    window_minutes = max(1, min(int(window_minutes), 10080))
+    target = window_minutes * 60 / 48
+    intervals = (1, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400)
+    bucket_seconds = next((step for step in intervals if step >= target), intervals[-1])
+    return get_model_latency(window_minutes, mode=mode, bucket_seconds=bucket_seconds)
 
-    data = get_model_latency(window_minutes=window_minutes, points=24, mode=mode)
-    series = data["series"]
-    width = 1600
-    points = len(data["timestamps"])
-    panel_height = 340
-    top_margin = 190
-    height = top_margin + max(1, len(series)) * panel_height + 70
-    scale = 3
-    image = Image.new("RGB", (width * scale, height * scale), "white")
-    draw = ImageDraw.Draw(image)
-    font_path = os.path.join(os.path.dirname(__file__), "templates", "NotoSansSC.ttf")
-    font = ImageFont.truetype(font_path, 26 * scale)
-    title_font = ImageFont.truetype(font_path, 42 * scale)
-    model_font = ImageFont.truetype(font_path, 25 * scale)
-    font.set_variation_by_axes([400])
-    title_font.set_variation_by_axes([600])
-    model_font.set_variation_by_axes([600])
 
-    def text(position, content, fill="#738096", selected_font=font):
-        draw.text(tuple(value * scale for value in position), content, fill=fill, font=selected_font)
-
-    def line(coordinates, fill, thickness=1):
-        draw.line(tuple(value * scale for value in coordinates), fill=fill, width=thickness * scale)
-
-    def dashed_line(start_point, end_point, fill, thickness=2, dash=6, gap=5):
-        x1, y1 = start_point
-        x2, y2 = end_point
-        dx, dy = x2 - x1, y2 - y1
-        length = max(abs(dx), abs(dy))
-        if length == 0:
-            return
-        step_x, step_y = dx / length, dy / length
-        position = 0.0
-        while position < length:
-            end = min(length, position + dash)
-            line((x1 + step_x * position, y1 + step_y * position,
-                  x1 + step_x * end, y1 + step_y * end), fill, thickness)
-            position = end + gap
-
-    is_queued = mode == "queued"
-    mode_label = "含排队等待 + 请求执行" if is_queued else "不含排队 · 上游请求耗时"
-    title = "NAI K线 · 排队总耗时" if is_queued else "NAI K线 · 请求耗时"
-    text((56, 35), title, "#172033", title_font)
-    window_label = f"最近 {window_minutes} 分钟" if window_minutes < 60 else f"最近 {window_minutes / 60:g} 小时"
-    text((56, 105), f"{window_label} · {mode_label} · 北京时间（UTC+8）· {points} 根K线")
-    text((56, 148), "上涨为绿色，下降为红色；虚线空心K线表示含排队总耗时。")
-
-    values = [
-        candle[key] / 1000
-        for item in series
-        for candle in item["ohlc"] if candle
-        for key in ("high_ms",)
-    ]
-    maximum = max(1.0, max(values, default=1.0)) * 1.15
-    left, right = 150, 1530
-    panel_top = top_margin
-    plot_inset_top = 52
-    plot_inset_bottom = 54
-    plot_height = panel_height - plot_inset_top - plot_inset_bottom
-    red = "#e53935"
-    green = "#00a65a"
-
-    for model_index, item in enumerate(series):
-        panel_top = top_margin + model_index * panel_height
-        top = panel_top + plot_inset_top
-        bottom = top + plot_height
-        text((left, panel_top + 3), item["model"], "#172033", model_font)
-        text((right - 320, panel_top + 8), "虚线" if is_queued else "实心", "#738096")
-        for tick in range(5):
-            y = bottom - plot_height * tick / 4
-            for dash in range(left, right, 14):
-                line((dash, y, dash + 6, y), "#dce2ea")
-            text((52, y - 19), f"{maximum * tick / 4:.1f}")
-        line((left, bottom, right, bottom), "#bdc7d6")
-
-        slot_width = (right - left) / points
-        candle_width = max(8, min(24, slot_width * 0.54))
-        for index, candle in enumerate(item["ohlc"]):
-            if not candle:
-                continue
-            x = left + (index + 0.5) * slot_width
-            open_value = candle["open_ms"] / 1000
-            high_value = candle["high_ms"] / 1000
-            low_value = candle["low_ms"] / 1000
-            close_value = candle["close_ms"] / 1000
-            color = green if close_value >= open_value else red
-            y_of = lambda value: bottom - value / maximum * plot_height
-            wick_top, wick_bottom = y_of(high_value), y_of(low_value)
-            if is_queued:
-                dashed_line((x, wick_top), (x, wick_bottom), color, 2)
-            else:
-                line((x, wick_top, x, wick_bottom), color, 2)
-
-            y_open, y_close = y_of(open_value), y_of(close_value)
-            body_top = min(y_open, y_close)
-            body_bottom = max(y_open, y_close)
-            if body_bottom - body_top < 3:
-                body_top -= 1.5
-                body_bottom += 1.5
-            box = (x - candle_width / 2, body_top, x + candle_width / 2, body_bottom)
-            if is_queued:
-                x1, y1, x2, y2 = box
-                dashed_line((x1, y1), (x2, y1), color, 2)
-                dashed_line((x2, y1), (x2, y2), color, 2)
-                dashed_line((x2, y2), (x1, y2), color, 2)
-                dashed_line((x1, y2), (x1, y1), color, 2)
-            else:
-                draw.rectangle(tuple(value * scale for value in box), fill=color, outline=color, width=2 * scale)
-
-        if model_index == len(series) - 1:
-            for index, timestamp in enumerate(data["timestamps"]):
-                if index % 3 == 0 or index == points - 1:
-                    label = datetime.fromtimestamp(timestamp, timezone(timedelta(hours=8))).strftime("%H:%M")
-                    x = left + (index + 0.5) * slot_width
-                    text((x - 32, bottom + 14), label)
-
-    if not series:
-        panel_top = top_margin
-        top = panel_top + plot_inset_top
-        bottom = top + plot_height
-        for tick in range(5):
-            y = bottom - plot_height * tick / 4
-            for dash in range(left, right, 14):
-                line((dash, y, dash + 6, y), "#dce2ea")
-            text((52, y - 19), f"{maximum * tick / 4:.1f}")
-        line((left, bottom, right, bottom), "#bdc7d6")
-        empty_label = "暂无排队总耗时记录" if is_queued else "暂无请求耗时记录"
-        text((540, top + plot_height / 2 - 24), empty_label, "#738096", model_font)
-
-    legend_top = height - 62
-    line((56, legend_top + 14, 92, legend_top + 14), green, 5)
-    text((104, legend_top), "上涨（收盘 ≥ 开盘）", "#172033")
-    line((420, legend_top + 14, 456, legend_top + 14), red, 5)
-    text((468, legend_top), "下降（收盘 < 开盘）", "#172033")
-    if is_queued:
-        dashed_line((895, legend_top + 14), (931, legend_top + 14), "#526174", 3)
-        text((943, legend_top), "排队等待 + 请求执行", "#172033")
-    else:
-        line((895, legend_top + 14, 931, legend_top + 14), "#526174", 5)
-        text((943, legend_top), "仅请求执行", "#172033")
-
-    footnote = (
-        "排队总耗时包含入队等待和请求执行；每根K线按单次请求汇总开、高、低、收耗时。"
-        if is_queued
-        else "新记录按单次请求汇总开、高、低、收耗时；旧的分钟平均值会显示为平K线。"
-    )
-    text((56, height - 28), footnote)
-    image = image.resize((width, height), Image.Resampling.LANCZOS)
-    output = io.BytesIO()
-    image.save(output, format="PNG")
-    return output.getvalue()
+def render_model_latency_png(window_minutes: int = 1440, mode: str = "active") -> bytes:
+    from .latency_chart import render_latency_png
+    return render_latency_png(get_latency_chart_data(window_minutes, mode))
 
 
 # ── PNG 解析 ──────────────────────────────────────────────────

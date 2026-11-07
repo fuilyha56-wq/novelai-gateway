@@ -55,6 +55,11 @@ pre{margin:0;white-space:pre-wrap;word-break:break-all;font:12px Consolas,monosp
 @media(max-width:1100px){.account-metrics{grid-template-columns:repeat(3,minmax(150px,1fr))}}
 @media(max-width:760px){body{display:block}aside{width:auto;height:auto;position:static;margin:10px;padding:12px;display:block}aside .logo{padding-bottom:14px;margin-bottom:8px}.nav-label{display:none}aside button{display:inline-flex;margin:2px 1px;padding:9px 10px}aside .foot{display:flex;flex-direction:row;margin-top:8px;padding-top:9px}main{padding:18px 12px 36px}.appbar{margin-bottom:18px}.page-intro{align-items:flex-start;flex-direction:column;margin-bottom:16px}.page-intro .actions{width:100%}.page-intro .actions>*{flex:1}.account-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.metric-card{padding:13px}.metric-card .metric-value{font-size:24px}.grid.wide{grid-template-columns:1fr}.box{padding:14px}.table-wrap{overflow-x:auto}table{min-width:680px}.upstream-panel{overflow:hidden}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+
+/* Latency charts stay opaque and legible under every dashboard theme. */
+#latencyDashboard{background:#f4f7fb;color:#182b42;padding:20px;border-color:#dce4ee}
+.lc-top{display:flex;gap:20px;align-items:center;justify-content:space-between;flex-wrap:wrap}.lc-top h2{font-size:22px;margin:0}.lc-top p{margin:5px 0;color:#586b82;font-size:12px}.lc-tools{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.lc-tools label{margin:0;font-size:11px;color:#586b82}.lc-tools select{display:block;margin-top:4px;width:auto;max-width:260px;background:white;color:#182b42;border-color:#dce4ee;font-size:12px}.lc-meta{display:flex;gap:12px;justify-content:space-between;flex-wrap:wrap;color:#586b82;font-size:12px;margin:17px 0 10px;font-variant-numeric:tabular-nums}.lc-error{color:#b42335}.lc-legend{display:flex;gap:18px;flex-wrap:wrap;font-size:11px;color:#586b82;margin-bottom:18px}.lc-legend span{display:inline-flex;align-items:center;gap:6px}.lc-legend i{display:inline-block;width:9px;height:13px;border-radius:1px}.lc-model{background:white;border:1px solid #dce4ee;border-radius:12px;margin-top:16px;overflow:hidden}.lc-model-title{padding:15px 18px;border-bottom:1px solid #e5ebf2;background:#fbfcfe}.lc-model-title h3{margin:0;font-size:15px;font-weight:700;color:#182b42;overflow-wrap:anywhere}.lc-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0}.lc-plot{position:relative;min-width:0;padding:0 10px 10px}.lc-plot+.lc-plot{border-left:1px solid #e5ebf2}.lc-plot-heading{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:16px 8px 4px;font-size:12px}.lc-plot-heading strong{font-weight:600}.lc-latest{font-variant-numeric:tabular-nums;font-weight:700}.lc-plot svg{display:block;width:100%;height:320px;font-family:system-ui,"Microsoft YaHei",sans-serif;touch-action:pan-y;outline-offset:-2px}.lc-plot svg:focus-visible{outline:2px solid #5279ab}.lc-hint{font-size:11px;color:#65768b;text-align:center;margin-top:-10px}.lc-tooltip{position:absolute;z-index:3;pointer-events:none;max-width:calc(100% - 12px);width:280px;background:#182b42;color:#fff;border-radius:9px;padding:13px;box-shadow:0 8px 28px #10223b30;font-size:12px;overflow-wrap:anywhere}.lc-tooltip strong{font-size:12px;display:block}.lc-tip-time{font-size:11px;color:#c3d1e1;margin:7px 0;line-height:1.6}.lc-tip-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px 18px;border-top:1px solid #ffffff25;border-bottom:1px solid #ffffff25;padding:9px 0;margin:8px 0}.lc-tip-grid>div{display:flex;justify-content:space-between;gap:8px}.lc-tip-grid span{color:#a9bbd0}.lc-tip-note{color:#c3d1e1;font-size:11px;line-height:1.7;white-space:pre-line}.lc-empty{padding:70px 20px;text-align:center;color:#586b82}
+@media(max-width:1000px){.lc-pair{grid-template-columns:1fr}.lc-plot+.lc-plot{border-left:0;border-top:1px solid #e5ebf2}}@media(max-width:600px){#latencyDashboard{padding:12px}.lc-tools{width:100%}.lc-tools label{flex:1;min-width:100px}.lc-tools select{width:100%;max-width:100%}.lc-top h2{font-size:20px}.lc-model-title{padding:12px}.lc-model-title h3{font-size:13px}.lc-plot{padding:0 4px 10px}}
 </style>
 </head>
 <body>
@@ -72,7 +77,7 @@ pre{margin:0;white-space:pre-wrap;word-break:break-all;font:12px Consolas,monosp
 <div class="grid" id="cnt"></div>
 <div class="grid" id="balanceTotals" aria-live="polite"></div>
 <section class="glass box upstream-panel" style="margin-bottom:14px"><div class="panel-title"><div><h2>NovelAI 账号额度</h2><p>每 60 秒自动同步，可展开查看完整上游字段。</p></div><span class="pill" id="upT">加载中...</span></div><div class="grid wide" id="upList"></div></section>
-<section class="glass box" style="margin-bottom:14px"><div class="panel-title"><div><h2>NAI 调用耗时 K 线</h2><p>最近 24 小时；上涨为绿色，下降为红色。排队图用虚线空心蜡烛。</p></div></div><h3>不含排队 · 实心 K 线</h3><img id="modelLatencyChart" alt="NAI 不含排队请求耗时 K 线图" style="display:block;width:100%;height:auto;border-radius:12px;background:#fff"><h3 style="margin-top:18px">排队等待 + 请求执行 · 虚线 K 线</h3><img id="queuedLatencyChart" alt="NAI 排队总耗时 K 线图" style="display:block;width:100%;height:auto;border-radius:12px;background:#fff"></section>
+<section class="glass box" id="latencyDashboard" style="margin-bottom:14px" aria-label="模型延迟交互图表"></section>
 <div class="glass box"><div class="panel-title"><div><h2>按模型统计</h2><p>今日与近 7 天生成量。</p></div></div><div class="table-wrap"><table><thead><tr><th>模型</th><th>今日</th><th>近 7 天</th></tr></thead><tbody id="perm"></tbody></table></div></div></section>
 <section class="page" id="acct"><div class="page-intro"><div><span class="kicker">Account pool</span><h1>账号池</h1><p>控制账号是否参与请求，以及 V5 和 Anlas 能力。</p></div><div class="actions"><button class="btn" id="addA">＋ 新增账号</button></div></div>
 <div class="glass box"><div class="panel-title"><div><h2>账号能力与操作</h2><p id="accSummary" role="status">正在读取账号容量…</p></div></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>密钥</th><th>权重</th><th>状态</th><th>分类</th><th>成功 / 失败</th><th>能力与操作</th></tr></thead><tbody id="accs"></tbody></table></div></div></section>
@@ -97,6 +102,7 @@ pre{margin:0;white-space:pre-wrap;word-break:break-all;font:12px Consolas,monosp
 <label for="editWeight">权重</label><input id="editWeight" type="number" min="1" max="100" required>
 <div class="edit-flags"><label><input id="editEnabled" type="checkbox"> 启用账号</label><label><input id="editV5" type="checkbox"> 承接 V5</label><label><input id="editAnlas" type="checkbox"> 允许消耗 Anlas</label></div>
 <div class="bar" style="margin:16px 0 0"><span class="fill"></span><button type="submit" class="btn">保存修改</button></div></form></div>
+<script src="/admin/api/latency-charts.js?v=2"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -117,7 +123,7 @@ $('gateForm').onsubmit = run(async e => { e.preventDefault(); tok = $('pw').valu
 $('logout').onclick = () => { localStorage.removeItem('gw_admin_token'); location.reload(); };
 $('restart').onclick = run(async () => { if (!confirm('确认重启网关？')) return; toast((await api('/restart', { method: 'POST' })).message); setTimeout(() => location.reload(), 3500); });
 
-const loaders = { dash: () => Promise.all([loadDash(), loadUps()]), acct: loadAcct, model: loadModel, env: loadEnv, log: startLog, look: () => {} };
+const loaders = { dash: () => Promise.all([loadDash(), loadUps(), loadLatency()]), acct: loadAcct, model: loadModel, env: loadEnv, log: startLog, look: () => {} };
 function go(p) {
   document.querySelectorAll('aside [data-p]').forEach(b => b.dataset.p === p ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current'));
   document.querySelectorAll('.page').forEach(s => s.classList.toggle('on', s.id === p));
@@ -178,30 +184,12 @@ async function loadDash() {
     stat('今日 · V5', c.daily_v5 ?? 0, u.daily_limit) + stat('近 7 天 · V5', c.weekly_v5 ?? 0, u.weekly_limit) + stat('本月 · V5', c.monthly_v5 ?? 0);
   const rows = Object.entries(u.per_model || {}).sort((a, b) => b[1].used_today - a[1].used_today);
   $('perm').innerHTML = rows.map(([m, v]) => `<tr><td>${esc(m)}</td><td>${v.used_today}</td><td>${v.used_this_week}</td></tr>`).join('') || '<tr><td colspan="3">暂无数据</td></tr>';
-  await loadLatency();
 }
 
+let latencyView;
 async function loadLatency() {
-  await Promise.all([
-    loadLatencyImage('modelLatencyChart', 'active'),
-    loadLatencyImage('queuedLatencyChart', 'queued'),
-  ]);
-}
-async function loadLatencyImage(id, mode) {
-  const image = $(id);
-  const response = await fetch(`/admin/api/model-latency.png?minutes=1440&mode=${mode}&_=${Date.now()}`, {
-    headers: { Authorization: 'Bearer ' + tok },
-  });
-  if (response.status === 401) { gate(true); throw new Error('未授权'); }
-  if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
-  const nextUrl = URL.createObjectURL(await response.blob());
-  const previousUrl = image.dataset.objectUrl;
-  image.onload = () => {
-    if (previousUrl) URL.revokeObjectURL(previousUrl);
-    image.onload = null;
-    image.dataset.objectUrl = nextUrl;
-  };
-  image.src = nextUrl;
+  if (!latencyView) latencyView = new LatencyDashboard($('latencyDashboard'), api);
+  await latencyView.refresh();
 }
 
 const pill = s => `<span class="pill ${/^(active|ok|healthy)$/.test(s) ? 'ok' : s === 'disabled' ? '' : 'warn'}">${esc(s)}</span>`;
@@ -441,8 +429,9 @@ $('wReset').onclick = () => { th = { ...DEF }; keep(); };
 paint();
 
 if (tok) api('/session').then(() => { gate(false); go('dash'); }).catch(() => gate(true)); else gate(true);
-setInterval(() => $('dash').classList.contains('on') && $('gate').style.display === 'none' && run(loadDash)(), 15000);
-setInterval(() => $('dash').classList.contains('on') && $('gate').style.display === 'none' && run(loadUps)(), 60000);
+setInterval(() => !document.hidden && $('dash').classList.contains('on') && $('gate').style.display === 'none' && run(loadDash)(), 15000);
+setInterval(() => !document.hidden && $('dash').classList.contains('on') && $('gate').style.display === 'none' && run(loadLatency)(), 15000);
+setInterval(() => !document.hidden && $('dash').classList.contains('on') && $('gate').style.display === 'none' && run(loadUps)(), 60000);
 </script>
 </body>
 </html>
