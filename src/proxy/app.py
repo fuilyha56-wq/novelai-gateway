@@ -187,6 +187,7 @@ def _gateway_auth_error(request: Request) -> Response | None:
 @app.middleware("http")
 async def protect_api_routes(request: Request, call_next):
     """保护 OpenAI、透明代理和使用签名服务的原生图像入口。"""
+    request.state.gateway_request_started_at = time.monotonic()
     path = request.url.path
     # CORS 预检本身不会使用上游凭据，也通常不会携带 Authorization。
     if request.method != "OPTIONS" and (
