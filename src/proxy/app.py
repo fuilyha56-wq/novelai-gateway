@@ -21,7 +21,7 @@ from .config import settings
 from .account_pool import account_pool
 from .forwarder import forward, build_response, close_client, _CORS_HEADERS
 from .queue import gate
-from .stats import record_generation, record_model_latency
+from .stats import queue_inclusive_elapsed, record_generation, record_model_latency
 from .v5_quota import is_v5_model, is_v5_quota_exhausted_error
 from .openai import (
     handle_annotate,
@@ -729,7 +729,7 @@ async def _proxy_buffered_response(
                 content_bytes[:500].decode("utf-8", errors="replace"),
             )
         if upstream.status_code == 200:
-            _record_native_latency(await request.body(), api_path, generation_started)
+            _record_native_latency(await request.body(), api_path, generation_started, request)
         if settings.is_heavy(api_path):
             record_generation(content_bytes, api_path)
 
@@ -754,12 +754,17 @@ _NATIVE_DROP_HEADERS = frozenset({
 }) | SIGNING_RESPONSE_HEADERS
 
 
-def _record_native_latency(body: bytes, api_path: str, started: float) -> None:
+def _record_native_latency(body: bytes, api_path: str, started: float, request: Request) -> None:
     if not api_path.startswith("/ai/generate-image"):
         return
     try:
         payload = json.loads(body)
-        record_model_latency(str(payload.get("model", "")), time.monotonic() - started)
+        elapsed = time.monotonic() - started
+        record_model_latency(
+            str(payload.get("model", "")),
+            elapsed,
+            queued_elapsed_seconds=queue_inclusive_elapsed(request, elapsed),
+        )
     except (ValueError, AttributeError, TypeError):
         return
 
@@ -852,7 +857,7 @@ async def _proxy_native_nai(request: Request, api_path: str, *, bridge_model: st
                         async for chunk in chunks:
                             yield chunk
                         if upstream.status_code == 200 and (not watermark or watermark.status != "failed"):
-                            _record_native_latency(request_body, api_path, generation_started)
+                            _record_native_latency(request_body, api_path, generation_started, request)
                             logger.info("📡 原生流结束 %s %.1fs", api_path, time.monotonic() - generation_started)
                     finally:
                         try:
@@ -888,7 +893,7 @@ async def _proxy_native_nai(request: Request, api_path: str, *, bridge_model: st
                     content_bytes[:500].decode("utf-8", errors="replace"),
                 )
             if successful:
-                _record_native_latency(request_body, api_path, generation_started)
+                _record_native_latency(request_body, api_path, generation_started, request)
             if settings.is_heavy(api_path) and successful:
                 record_generation(content_bytes, api_path)
             content_bytes, headers = await _signed_native_response(watermark, api_path, content_bytes, headers)

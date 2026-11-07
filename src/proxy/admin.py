@@ -173,7 +173,10 @@ async def model_latency(request: Request) -> dict[str, Any]:
         window_minutes = max(1, min(int(request.query_params.get("minutes", 1440)), 10080))
     except ValueError:
         raise HTTPException(status_code=400, detail="minutes 必须是整数") from None
-    return get_model_latency(window_minutes=window_minutes, points=24)
+    mode = request.query_params.get("mode", "active")
+    if mode not in {"active", "queued"}:
+        raise HTTPException(status_code=400, detail="mode 必须是 active 或 queued")
+    return get_model_latency(window_minutes=window_minutes, points=24, mode=mode)
 
 
 @router.get("/chart.js")
@@ -188,7 +191,10 @@ async def model_latency_image(request: Request) -> Response:
         window_minutes = max(1, min(int(request.query_params.get("minutes", 1440)), 10080))
     except ValueError:
         raise HTTPException(status_code=400, detail="minutes 必须是整数") from None
-    image = await asyncio.to_thread(render_model_latency_png, window_minutes)
+    mode = request.query_params.get("mode", "active")
+    if mode not in {"active", "queued"}:
+        raise HTTPException(status_code=400, detail="mode 必须是 active 或 queued")
+    image = await asyncio.to_thread(render_model_latency_png, window_minutes, mode)
     return Response(image, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 

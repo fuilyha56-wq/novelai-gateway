@@ -9,6 +9,7 @@ import io
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+import math
 import os
 import struct
 import time
@@ -44,86 +45,235 @@ _stats_lock = Lock()
 _LARGE_THRESHOLD = 1024 * 1024
 
 LATENCY_JSON = "logs/model_latency.json"
+LATENCY_SAMPLES_JSON = "logs/model_latency_samples.json"
+_LATENCY_RETENTION_SECONDS = 7 * 24 * 60 * 60
+_MAX_LATENCY_SAMPLES = 100_000
 _latency_lock = Lock()
 
 
-def record_model_latency(model: str, elapsed_seconds: float) -> None:
+def record_model_latency(
+    model: str,
+    elapsed_seconds: float,
+    queued_elapsed_seconds: float | None = None,
+) -> None:
+    """Record active upstream time and full queue-to-response time."""
     model = model.removesuffix("-limit")
     if not any(family in model for family in ("diffusion-4-5", "diffusion-5", "v4.5", "v5")):
         return
-    minute = int(time.time() // 60)
+
+    timestamp = time.time()
+    minute = int(timestamp // 60)
+    active_ms = max(0.0, float(elapsed_seconds)) * 1000
+    queued_ms = max(
+        active_ms,
+        max(0.0, float(queued_elapsed_seconds if queued_elapsed_seconds is not None else elapsed_seconds)) * 1000,
+    )
     with _latency_lock:
         data = _load_latency()
-        data = {key: value for key, value in data.items() if int(key) >= minute - 7 * 24 * 60}
-        bucket = data.setdefault(str(minute), {}).setdefault(model, {"count": 0, "total_ms": 0.0})
+        data = {
+            key: value
+            for key, value in data.items()
+            if _is_recent_minute(key, minute)
+        }
+        minute_data = data.setdefault(str(minute), {})
+        if not isinstance(minute_data, dict):
+            minute_data = data[str(minute)] = {}
+        bucket = minute_data.setdefault(model, {"count": 0, "total_ms": 0.0})
+        if not isinstance(bucket, dict):
+            bucket = minute_data[model] = {"count": 0, "total_ms": 0.0}
         bucket["count"] += 1
-        bucket["total_ms"] += max(0.0, elapsed_seconds) * 1000
-        temporary = LATENCY_JSON + ".tmp"
-        with open(temporary, "w", encoding="utf-8") as stream:
-            json.dump(data, stream)
-        os.replace(temporary, LATENCY_JSON)
+        bucket["total_ms"] += active_ms
+        _write_json_atomic(LATENCY_JSON, data)
+
+        samples = _load_latency_samples()
+        threshold = timestamp - _LATENCY_RETENTION_SECONDS
+        samples = [
+            sample for sample in samples
+            if _valid_latency_sample(sample) and float(sample["timestamp"]) >= threshold
+        ]
+        samples.append({
+            "timestamp": timestamp,
+            "model": model,
+            "active_ms": active_ms,
+            "queued_ms": queued_ms,
+        })
+        if len(samples) > _MAX_LATENCY_SAMPLES:
+            samples = samples[-_MAX_LATENCY_SAMPLES:]
+        _write_json_atomic(LATENCY_SAMPLES_JSON, samples)
+
+
+def _is_recent_minute(key: str, current_minute: int) -> bool:
+    try:
+        return int(key) >= current_minute - 7 * 24 * 60
+    except (TypeError, ValueError):
+        return False
+
+
+def _valid_latency_sample(sample: object) -> bool:
+    return (
+        isinstance(sample, dict)
+        and isinstance(sample.get("model"), str)
+        and all(isinstance(sample.get(key), (int, float)) for key in ("timestamp", "active_ms", "queued_ms"))
+        and all(math.isfinite(float(sample[key])) for key in ("timestamp", "active_ms", "queued_ms"))
+    )
+
+
+def _write_json_atomic(path: str, data: object) -> None:
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as stream:
+        json.dump(data, stream, separators=(",", ":"))
+    os.replace(temporary, path)
 
 
 def _load_latency() -> dict:
     try:
         with open(LATENCY_JSON, encoding="utf-8") as stream:
-            return json.load(stream)
+            data = json.load(stream)
+        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
-def get_model_latency(window_minutes: int = 24 * 60, points: int = 24) -> dict:
+def _load_latency_samples() -> list[dict]:
+    try:
+        with open(LATENCY_SAMPLES_JSON, encoding="utf-8") as stream:
+            data = json.load(stream)
+        return [sample for sample in data if _valid_latency_sample(sample)] if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def queue_inclusive_elapsed(request, fallback_seconds: float) -> float:
+    state = getattr(request, "state", None)
+    started = getattr(state, "gateway_request_started_at", None)
+    if started is None:
+        return max(0.0, fallback_seconds)
+    try:
+        return max(max(0.0, fallback_seconds), time.monotonic() - float(started))
+    except (TypeError, ValueError):
+        return max(0.0, fallback_seconds)
+
+
+def get_model_latency(
+    window_minutes: int = 24 * 60,
+    points: int = 24,
+    mode: str = "active",
+) -> dict:
+    """Return per-window OHLC candles and averages for one latency mode."""
     window_minutes = max(1, min(window_minutes, 7 * 24 * 60))
     points = max(2, points)
-    now_minute = int(time.time() // 60)
-    start_minute = now_minute - window_minutes + 1
-    bucket_width = window_minutes / points
-    buckets = [
-        (start_minute + index * bucket_width, start_minute + (index + 1) * bucket_width)
-        for index in range(points)
-    ]
+    if mode not in {"active", "queued"}:
+        raise ValueError("mode must be 'active' or 'queued'")
+
+    now = time.time()
+    start = now - window_minutes * 60
+    bucket_width = (now - start) / points
+    timestamps = [start + index * bucket_width for index in range(points)]
     with _latency_lock:
-        data = _load_latency()
-    models = sorted({model for key in data if start_minute <= int(key) <= now_minute for model in data[key]})
+        samples = _load_latency_samples()
+        legacy = _load_latency() if mode == "active" else {}
+
+    metric_key = "active_ms" if mode == "active" else "queued_ms"
+    by_model: dict[str, list[tuple[float, float]]] = {}
+    sampled_minutes: set[tuple[int, str]] = set()
+    for sample in samples:
+        sample_time = float(sample["timestamp"])
+        if start <= sample_time <= now:
+            model = sample["model"].removesuffix("-limit")
+            by_model.setdefault(model, []).append((sample_time, max(0.0, float(sample[metric_key]))))
+            sampled_minutes.add((int(sample_time // 60), model))
+
+    # Preserve the old active-time history as flat one-sample candles until the
+    # gateway has collected request-level OHLC samples for those minutes.
+    if mode == "active":
+        for minute_key, minute_data in legacy.items():
+            try:
+                minute = int(minute_key)
+            except (TypeError, ValueError):
+                continue
+            sample_time = minute * 60 + 30
+            if not start <= sample_time <= now or not isinstance(minute_data, dict):
+                continue
+            for raw_model, entry in minute_data.items():
+                if not isinstance(entry, dict):
+                    continue
+                model = str(raw_model).removesuffix("-limit")
+                try:
+                    count = max(0, int(entry.get("count", 0) or 0))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if count == 0 or (minute, model) in sampled_minutes:
+                    continue
+                try:
+                    average = max(0.0, float(entry.get("total_ms", 0.0)) / count)
+                except (TypeError, ValueError, ZeroDivisionError):
+                    continue
+                by_model.setdefault(model, []).append((sample_time, average))
+
+    model_buckets: dict[str, list[list[tuple[float, float]]]] = {}
+    for model, values in by_model.items():
+        buckets = [[] for _ in range(points)]
+        for sample_time, value in sorted(values):
+            index = min(points - 1, max(0, int((sample_time - start) / bucket_width)))
+            buckets[index].append((sample_time, value))
+        model_buckets[model] = buckets
+
     series = []
-    for model in models:
-        model_buckets = []
-        for bucket_start, bucket_end in buckets:
-            first_minute = int(bucket_start)
-            last_minute = max(first_minute, int(bucket_end - 1e-9))
-            if first_minute == last_minute:
-                sample_minute = int(round((bucket_start + bucket_end) / 2))
-                minute_keys = [sample_minute]
-            else:
-                minute_keys = range(first_minute, last_minute + 1)
-            entries = [data.get(str(key), {}).get(model, {}) for key in minute_keys]
-            model_buckets.append({
-                "count": sum(entry.get("count", 0) for entry in entries),
-                "total_ms": sum(entry.get("total_ms", 0.0) for entry in entries),
+    for model in sorted(model_buckets):
+        candles = []
+        averages = []
+        counts = []
+        for values in model_buckets[model]:
+            if not values:
+                candles.append(None)
+                averages.append(None)
+                counts.append(0)
+                continue
+            latencies = [value for _, value in values]
+            candles.append({
+                "open_ms": latencies[0],
+                "high_ms": max(latencies),
+                "low_ms": min(latencies),
+                "close_ms": latencies[-1],
+                "count": len(latencies),
             })
+            averages.append(sum(latencies) / len(latencies))
+            counts.append(len(latencies))
         series.append({
             "model": model,
-            "average_ms": [bucket["total_ms"] / bucket["count"] if bucket["count"] else None for bucket in model_buckets],
-            "counts": [bucket["count"] for bucket in model_buckets],
+            "ohlc": candles,
+            "average_ms": averages,
+            "counts": counts,
         })
-    return {"timestamps": [bucket_start * 60 for bucket_start, _ in buckets], "series": series, "window_minutes": window_minutes}
+    return {
+        "timestamps": timestamps,
+        "series": series,
+        "window_minutes": window_minutes,
+        "mode": mode,
+    }
 
 
-def render_model_latency_png(window_minutes: int = 24 * 60) -> bytes:
+def render_model_latency_png(window_minutes: int = 24 * 60, mode: str = "active") -> bytes:
     from PIL import Image, ImageDraw, ImageFont
+    from datetime import timedelta, timezone
 
-    data = get_model_latency(window_minutes=window_minutes, points=24)
+    data = get_model_latency(window_minutes=window_minutes, points=24, mode=mode)
     series = data["series"]
     width = 1600
-    height = 940 + max(1, (len(series) + 1) // 2) * 60
+    points = len(data["timestamps"])
+    panel_height = 340
+    top_margin = 190
+    height = top_margin + max(1, len(series)) * panel_height + 70
     scale = 3
     image = Image.new("RGB", (width * scale, height * scale), "white")
     draw = ImageDraw.Draw(image)
     font_path = os.path.join(os.path.dirname(__file__), "templates", "NotoSansSC.ttf")
     font = ImageFont.truetype(font_path, 26 * scale)
     title_font = ImageFont.truetype(font_path, 42 * scale)
+    model_font = ImageFont.truetype(font_path, 25 * scale)
     font.set_variation_by_axes([400])
     title_font.set_variation_by_axes([600])
+    model_font.set_variation_by_axes([600])
 
     def text(position, content, fill="#738096", selected_font=font):
         draw.text(tuple(value * scale for value in position), content, fill=fill, font=selected_font)
@@ -131,61 +281,129 @@ def render_model_latency_png(window_minutes: int = 24 * 60) -> bytes:
     def line(coordinates, fill, thickness=1):
         draw.line(tuple(value * scale for value in coordinates), fill=fill, width=thickness * scale)
 
-    text((56, 35), "NovelAI 模型调用耗时", "#172033", title_font)
-    window_label = f"最近 {window_minutes} 分钟" if window_minutes < 60 else f"最近 {window_minutes / 60:g} 小时"
-    text((56, 105), f"{window_label} · 平均上游耗时 · 北京时间（UTC+8）· 共24个时间点")
-    text((56, 158), "平均耗时（秒）")
-    left, top, right, bottom = 150, 225, 1530, 780
-    values = [value / 1000 for item in series for value in item["average_ms"] if value is not None]
-    maximum = max(1, max(values, default=1)) * 1.15
-    for tick in range(5):
-        position = bottom - (bottom - top) * tick / 4
-        for dash in range(left, right, 14):
-            line((dash, position, dash + 6, position), "#dce2ea")
-        text((45, position - 19), f"{maximum * tick / 4:.1f}")
-    line((left, bottom, right, bottom), "#bdc7d6")
-    from datetime import timedelta, timezone
+    def dashed_line(start_point, end_point, fill, thickness=2, dash=6, gap=5):
+        x1, y1 = start_point
+        x2, y2 = end_point
+        dx, dy = x2 - x1, y2 - y1
+        length = max(abs(dx), abs(dy))
+        if length == 0:
+            return
+        step_x, step_y = dx / length, dy / length
+        position = 0.0
+        while position < length:
+            end = min(length, position + dash)
+            line((x1 + step_x * position, y1 + step_y * position,
+                  x1 + step_x * end, y1 + step_y * end), fill, thickness)
+            position = end + gap
 
-    for index, timestamp in enumerate(data["timestamps"]):
-        if index % 3 == 0 or index == 23:
-            label = datetime.fromtimestamp(timestamp, timezone(timedelta(hours=8))).strftime("%H:%M:%S")
-            text((left + index * (right - left) / 23 - 46, bottom + 20), label)
-    colors = ["#3186ff", "#14a36e", "#e89b22", "#e65a68", "#18aabc", "#b45cc6", "#7a9824", "#936944"]
-    point_font = ImageFont.truetype(font_path, 20 * scale)
-    point_font.set_variation_by_axes([500])
-    point_labels = []
+    is_queued = mode == "queued"
+    mode_label = "含排队等待 + 请求执行" if is_queued else "不含排队 · 上游请求耗时"
+    title = "NAI K线 · 排队总耗时" if is_queued else "NAI K线 · 请求耗时"
+    text((56, 35), title, "#172033", title_font)
+    window_label = f"最近 {window_minutes} 分钟" if window_minutes < 60 else f"最近 {window_minutes / 60:g} 小时"
+    text((56, 105), f"{window_label} · {mode_label} · 北京时间（UTC+8）· {points} 根K线")
+    text((56, 148), "上涨为绿色，下降为红色；虚线空心K线表示含排队总耗时。")
+
+    values = [
+        candle[key] / 1000
+        for item in series
+        for candle in item["ohlc"] if candle
+        for key in ("high_ms",)
+    ]
+    maximum = max(1.0, max(values, default=1.0)) * 1.15
+    left, right = 150, 1530
+    panel_top = top_margin
+    plot_inset_top = 52
+    plot_inset_bottom = 54
+    plot_height = panel_height - plot_inset_top - plot_inset_bottom
+    red = "#e53935"
+    green = "#00a65a"
+
     for model_index, item in enumerate(series):
-        color = colors[model_index % len(colors)]
-        previous = None
-        for index, value in enumerate(item["average_ms"]):
-            if value is None:
-                previous = None
+        panel_top = top_margin + model_index * panel_height
+        top = panel_top + plot_inset_top
+        bottom = top + plot_height
+        text((left, panel_top + 3), item["model"], "#172033", model_font)
+        text((right - 320, panel_top + 8), "虚线" if is_queued else "实心", "#738096")
+        for tick in range(5):
+            y = bottom - plot_height * tick / 4
+            for dash in range(left, right, 14):
+                line((dash, y, dash + 6, y), "#dce2ea")
+            text((52, y - 19), f"{maximum * tick / 4:.1f}")
+        line((left, bottom, right, bottom), "#bdc7d6")
+
+        slot_width = (right - left) / points
+        candle_width = max(8, min(24, slot_width * 0.54))
+        for index, candle in enumerate(item["ohlc"]):
+            if not candle:
                 continue
-            point = (left + index * (right - left) / 23, bottom - value / 1000 / maximum * (bottom - top))
-            if previous is not None:
-                line((*previous, *point), color, 4)
-            draw.ellipse(tuple(value * scale for value in (point[0] - 5, point[1] - 5, point[0] + 5, point[1] + 5)), fill=color)
-            point_labels.append((point, f"{value / 1000:.2f} 秒", color))
-            previous = point
-        legend_left = 56 + (model_index % 2) * 770
-        legend_top = 890 + (model_index // 2) * 60
-        line((legend_left, legend_top + 20, legend_left + 38, legend_top + 20), color, 4)
-        text((legend_left + 52, legend_top), item["model"], "#172033")
-    occupied = []
-    for point, label, color in point_labels:
-        label_width = draw.textlength(label, font=point_font) / scale
-        label_left = max(left, min(right - label_width, point[0] - label_width / 2))
-        for offset in (-38, 14, -68, 44, -98, 74):
-            label_top = max(top - 32, min(bottom - 28, point[1] + offset))
-            rectangle = (label_left - 3, label_top, label_left + label_width + 3, label_top + 30)
-            if not any(rectangle[0] < area[2] and rectangle[2] > area[0] and rectangle[1] < area[3] and rectangle[3] > area[1] for area in occupied):
-                break
-        occupied.append(rectangle)
-        draw.text((label_left * scale, label_top * scale), label, fill=color, font=point_font,
-                  stroke_width=2 * scale, stroke_fill="white")
-    if not values:
-        text((480, 470), "暂无成功调用的耗时数据", selected_font=title_font)
-    text((56, height - 54), "空白时段表示暂无调用记录；limit 模型已合并至对应普通模型。")
+            x = left + (index + 0.5) * slot_width
+            open_value = candle["open_ms"] / 1000
+            high_value = candle["high_ms"] / 1000
+            low_value = candle["low_ms"] / 1000
+            close_value = candle["close_ms"] / 1000
+            color = green if close_value >= open_value else red
+            y_of = lambda value: bottom - value / maximum * plot_height
+            wick_top, wick_bottom = y_of(high_value), y_of(low_value)
+            if is_queued:
+                dashed_line((x, wick_top), (x, wick_bottom), color, 2)
+            else:
+                line((x, wick_top, x, wick_bottom), color, 2)
+
+            y_open, y_close = y_of(open_value), y_of(close_value)
+            body_top = min(y_open, y_close)
+            body_bottom = max(y_open, y_close)
+            if body_bottom - body_top < 3:
+                body_top -= 1.5
+                body_bottom += 1.5
+            box = (x - candle_width / 2, body_top, x + candle_width / 2, body_bottom)
+            if is_queued:
+                x1, y1, x2, y2 = box
+                dashed_line((x1, y1), (x2, y1), color, 2)
+                dashed_line((x2, y1), (x2, y2), color, 2)
+                dashed_line((x2, y2), (x1, y2), color, 2)
+                dashed_line((x1, y2), (x1, y1), color, 2)
+            else:
+                draw.rectangle(tuple(value * scale for value in box), fill=color, outline=color, width=2 * scale)
+
+        if model_index == len(series) - 1:
+            for index, timestamp in enumerate(data["timestamps"]):
+                if index % 3 == 0 or index == points - 1:
+                    label = datetime.fromtimestamp(timestamp, timezone(timedelta(hours=8))).strftime("%H:%M")
+                    x = left + (index + 0.5) * slot_width
+                    text((x - 32, bottom + 14), label)
+
+    if not series:
+        panel_top = top_margin
+        top = panel_top + plot_inset_top
+        bottom = top + plot_height
+        for tick in range(5):
+            y = bottom - plot_height * tick / 4
+            for dash in range(left, right, 14):
+                line((dash, y, dash + 6, y), "#dce2ea")
+            text((52, y - 19), f"{maximum * tick / 4:.1f}")
+        line((left, bottom, right, bottom), "#bdc7d6")
+        empty_label = "暂无排队总耗时记录" if is_queued else "暂无请求耗时记录"
+        text((540, top + plot_height / 2 - 24), empty_label, "#738096", model_font)
+
+    legend_top = height - 62
+    line((56, legend_top + 14, 92, legend_top + 14), green, 5)
+    text((104, legend_top), "上涨（收盘 ≥ 开盘）", "#172033")
+    line((420, legend_top + 14, 456, legend_top + 14), red, 5)
+    text((468, legend_top), "下降（收盘 < 开盘）", "#172033")
+    if is_queued:
+        dashed_line((895, legend_top + 14), (931, legend_top + 14), "#526174", 3)
+        text((943, legend_top), "排队等待 + 请求执行", "#172033")
+    else:
+        line((895, legend_top + 14, 931, legend_top + 14), "#526174", 5)
+        text((943, legend_top), "仅请求执行", "#172033")
+
+    footnote = (
+        "排队总耗时包含入队等待和请求执行；每根K线按单次请求汇总开、高、低、收耗时。"
+        if is_queued
+        else "新记录按单次请求汇总开、高、低、收耗时；旧的分钟平均值会显示为平K线。"
+    )
+    text((56, height - 28), footnote)
     image = image.resize((width, height), Image.Resampling.LANCZOS)
     output = io.BytesIO()
     image.save(output, format="PNG")

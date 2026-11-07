@@ -30,7 +30,7 @@ except ImportError:
 from .config import get_request_auth_token, settings
 from .image_watermark import ERROR_CODE, ImageSigningError, ImageWatermark, STATUS_HEADER, VERSION_HEADER, image_mime, sign_buffered
 from .queue import account_generation_gate, gate
-from .stats import record_generation, record_model_latency
+from .stats import queue_inclusive_elapsed, record_generation, record_model_latency
 from .v5_quota import (
     check_v5_quota,
     is_v5_quota_exhausted_error,
@@ -2129,7 +2129,12 @@ async def _send_nai_request(
     account_id = getattr(request.state, "gateway_account_id", None)
     if account_id:
         account_pool.success(account_id)
-    record_model_latency(nai_model, time.monotonic() - generation_started)
+    elapsed = time.monotonic() - generation_started
+    record_model_latency(
+        nai_model,
+        elapsed,
+        queued_elapsed_seconds=queue_inclusive_elapsed(request, elapsed),
+    )
     return resp.content
 
 

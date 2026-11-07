@@ -72,7 +72,7 @@ pre{margin:0;white-space:pre-wrap;word-break:break-all;font:12px Consolas,monosp
 <div class="grid" id="cnt"></div>
 <div class="grid" id="balanceTotals" aria-live="polite"></div>
 <section class="glass box upstream-panel" style="margin-bottom:14px"><div class="panel-title"><div><h2>NovelAI 账号额度</h2><p>每 60 秒自动同步，可展开查看完整上游字段。</p></div><span class="pill" id="upT">加载中...</span></div><div class="grid wide" id="upList"></div></section>
-<section class="glass box" style="margin-bottom:14px"><div class="panel-title"><div><h2>模型调用耗时</h2><p>最近 24 小时，每小时平均值。</p></div></div><div style="height:300px;position:relative"><canvas id="modelLatencyChart" aria-label="V4.5与V5模型每小时平均调用耗时" role="img"></canvas></div><p id="latencyEmpty" class="t" hidden>暂无调用耗时数据</p></section>
+<section class="glass box" style="margin-bottom:14px"><div class="panel-title"><div><h2>NAI 调用耗时 K 线</h2><p>最近 24 小时；上涨为绿色，下降为红色。排队图用虚线空心蜡烛。</p></div></div><h3>不含排队 · 实心 K 线</h3><img id="modelLatencyChart" alt="NAI 不含排队请求耗时 K 线图" style="display:block;width:100%;height:auto;border-radius:12px;background:#fff"><h3 style="margin-top:18px">排队等待 + 请求执行 · 虚线 K 线</h3><img id="queuedLatencyChart" alt="NAI 排队总耗时 K 线图" style="display:block;width:100%;height:auto;border-radius:12px;background:#fff"></section>
 <div class="glass box"><div class="panel-title"><div><h2>按模型统计</h2><p>今日与近 7 天生成量。</p></div></div><div class="table-wrap"><table><thead><tr><th>模型</th><th>今日</th><th>近 7 天</th></tr></thead><tbody id="perm"></tbody></table></div></div></section>
 <section class="page" id="acct"><div class="page-intro"><div><span class="kicker">Account pool</span><h1>账号池</h1><p>控制账号是否参与请求，以及 V5 和 Anlas 能力。</p></div><div class="actions"><button class="btn" id="addA">＋ 新增账号</button></div></div>
 <div class="glass box"><div class="panel-title"><div><h2>账号能力与操作</h2><p id="accSummary" role="status">正在读取账号容量…</p></div></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>密钥</th><th>权重</th><th>状态</th><th>分类</th><th>成功 / 失败</th><th>能力与操作</th></tr></thead><tbody id="accs"></tbody></table></div></div></section>
@@ -97,7 +97,6 @@ pre{margin:0;white-space:pre-wrap;word-break:break-all;font:12px Consolas,monosp
 <label for="editWeight">权重</label><input id="editWeight" type="number" min="1" max="100" required>
 <div class="edit-flags"><label><input id="editEnabled" type="checkbox"> 启用账号</label><label><input id="editV5" type="checkbox"> 承接 V5</label><label><input id="editAnlas" type="checkbox"> 允许消耗 Anlas</label></div>
 <div class="bar" style="margin:16px 0 0"><span class="fill"></span><button type="submit" class="btn">保存修改</button></div></form></div>
-<script src="/admin/api/chart.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -182,33 +181,27 @@ async function loadDash() {
   await loadLatency();
 }
 
-let latencyChart;
 async function loadLatency() {
-  const result = await api('/model-latency');
-  const series = Array.isArray(result?.series) ? result.series : [];
-  const hours = Array.isArray(result?.hours)
-    ? result.hours
-    : Array.isArray(result?.timestamps) ? result.timestamps : [];
-  $('latencyEmpty').hidden = series.length > 0;
-  const colors = ['#58a6ff', '#43d17a', '#ffb454', '#ff6370', '#38c9d6', '#e78edb', '#d6df63', '#c7b299'];
-  const datasets = series.map((item, index) => ({
-    label: item.model,
-    data: (Array.isArray(item.average_ms) ? item.average_ms : []).map(value => value === null ? null : value / 1000),
-    borderColor: colors[index % colors.length], backgroundColor: colors[index % colors.length],
-    borderWidth: 2, pointRadius: 3, spanGaps: false, counts: Array.isArray(item.counts) ? item.counts : [],
-  }));
-  const data = {labels: hours.map(hour => new Date(hour * 1000).toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit', hour12:false})), datasets};
-  if (latencyChart) { latencyChart.data = data; latencyChart.update('none'); return; }
-  latencyChart = new Chart($('modelLatencyChart'), {
-    type: 'line', data,
-    options: {responsive: true, maintainAspectRatio: false, interaction: {mode:'index', intersect:false},
-      plugins: {legend: {labels: {color:'#f1f3f8', boxWidth:12}}, tooltip: {callbacks: {
-        label: item => `${item.dataset.label}: ${item.parsed.y.toFixed(2)} 秒（${item.dataset.counts[item.dataIndex]} 次）`,
-      }}},
-      scales: {x: {ticks: {color:'#a3abc2', maxTicksLimit:12}, grid: {display:false}},
-        y: {beginAtZero:true, title:{display:true, text:'平均耗时（秒）', color:'#a3abc2'}, ticks:{color:'#a3abc2'}, grid:{color:'rgba(255,255,255,.12)'}}},
-    },
+  await Promise.all([
+    loadLatencyImage('modelLatencyChart', 'active'),
+    loadLatencyImage('queuedLatencyChart', 'queued'),
+  ]);
+}
+async function loadLatencyImage(id, mode) {
+  const image = $(id);
+  const response = await fetch(`/admin/api/model-latency.png?minutes=1440&mode=${mode}&_=${Date.now()}`, {
+    headers: { Authorization: 'Bearer ' + tok },
   });
+  if (response.status === 401) { gate(true); throw new Error('未授权'); }
+  if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
+  const nextUrl = URL.createObjectURL(await response.blob());
+  const previousUrl = image.dataset.objectUrl;
+  image.onload = () => {
+    if (previousUrl) URL.revokeObjectURL(previousUrl);
+    image.onload = null;
+    image.dataset.objectUrl = nextUrl;
+  };
+  image.src = nextUrl;
 }
 
 const pill = s => `<span class="pill ${/^(active|ok|healthy)$/.test(s) ? 'ok' : s === 'disabled' ? '' : 'warn'}">${esc(s)}</span>`;

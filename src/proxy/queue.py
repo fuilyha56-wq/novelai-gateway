@@ -171,6 +171,8 @@ class ConcurrencyGate:
     async def _enter(self, request=None):
         queued_at = time.monotonic()
         state = getattr(request, "state", None)
+        if state is not None and getattr(state, "gateway_request_started_at", None) is None:
+            state.gateway_request_started_at = queued_at
         waiter = _Waiter(
             request=request,
             managed=request is not None and uses_managed_account_pool(),
