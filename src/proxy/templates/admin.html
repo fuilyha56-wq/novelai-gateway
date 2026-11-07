@@ -275,6 +275,7 @@ const ts = t => { if (!t) return '--'; const d = new Date(t > 1e12 ? t : t * 100
 const yes = (ok, a, b) => `<span class="pill ${ok ? 'ok' : 'err'}">${ok ? a : b}</span>`;
 const kv = r => r.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('');
 const TIER = { 0: 'Free', 1: 'Tablet', 2: 'Scroll', 3: 'Opus' };
+const V5_ESTIMATED_IMAGES_PER_PERCENT = 17.3;
 const isTsKey = k => /(At|Time|Date|expires)$/i.test(k);
 function flat(o, p = '', out = []) {
   for (const [k, v] of Object.entries(o ?? {})) {
@@ -313,7 +314,10 @@ function renderBalanceTotals(results = [], total = null) {
   const card = (key, title, unit, hint) => {
     const ready = total !== null, value = !ready || (total > 0 && !known[key]) ? '--' : sums[key].toLocaleString('zh-CN', { maximumFractionDigits: 2 }) + unit;
     const coverage = !ready ? '正在同步全部账号…' : `已同步 ${known[key]}/${total} 个独立账号${known[key] < total ? ' · 部分数据缺失，当前为已知合计' : ' · 重复凭据只计一次'}`;
-    return `<div class="glass box"><h3>${title}</h3><div class="big">${value}</div><div class="t">${hint}</div><small class="${ready && known[key] < total ? 'pill warn' : 't'}">${coverage}</small></div>`;
+    const estimated = key === 'v5' && known[key] > 0
+      ? `<div class="t">预计可生成 V5：<b>${Math.round(sums[key] * V5_ESTIMATED_IMAGES_PER_PERCENT).toLocaleString('zh-CN')} 张</b></div>`
+      : '';
+    return `<div class="glass box"><h3>${title}</h3><div class="big">${value}</div>${estimated}<div class="t">${hint}</div><small class="${ready && known[key] < total ? 'pill warn' : 't'}">${coverage}</small></div>`;
   };
   $('balanceTotals').innerHTML = card('anlas', '全部账号 · 剩余 Anlas', '', '包含订阅 Anlas 与购买 Anlas') +
     card('v5', '全部账号 · 剩余 V5 额度', '%', '100% = 1 个账号的完整额度，可累计超过 100%');
